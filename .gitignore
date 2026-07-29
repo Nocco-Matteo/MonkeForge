@@ -5,15 +5,20 @@ __pycache__/
 dist/
 build/
 *.egg
+venv/
 
 # Environment
 .env
 .env.tmp
 
+# Pipeline data (SQLite, plans, debates, reviews, metrics, tasks)
+docs/
+
 # Runtime artifacts
 nohup.out
 *.log
 *.pid
+task.txt
 
 # OS
 .DS_Store

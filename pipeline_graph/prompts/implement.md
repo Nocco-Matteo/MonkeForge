@@ -1,6 +1,6 @@
 ROLE: implementer of BATCH {batch_n} only.
 
-SPEC: docs/final/FINAL-{task_id}.md. Implement batch {batch_n} exactly —
+SPEC: {docs_dir}/final/FINAL-{task_id}.md. Implement batch {batch_n} exactly —
 nothing from other batches, nothing not in the spec. Batch scope: {batch_scope}
 Checklist items for this batch: {checklist_items}
 
@@ -15,7 +15,7 @@ the architecture that already exists; do not invent your own structure.
 
 PRIOR STATE: before writing anything, read what previous batches actually
 produced — `git log --oneline` for this branch, the Deviations recorded in
-docs/final/PROGRESS-{task_id}.md, and the current source of every module you
+{docs_dir}/final/PROGRESS-{task_id}.md, and the current source of every module you
 depend on. Where the code and the plan disagree, THE CODE IS THE GROUND TRUTH
 for signatures, names and interfaces: the plan describes intent, the code
 describes reality. If a dependency you need does not exist as the plan

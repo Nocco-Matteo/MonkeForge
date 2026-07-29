@@ -40,7 +40,7 @@ def _allowed(user_id: int) -> bool:
 async def _cli(*args: str) -> str:
     """Run `run.py <args>` and return its (trimmed) output. resume can take minutes."""
     proc = await asyncio.create_subprocess_exec(
-        sys.executable, str(C.RUN_PY), *args, cwd=str(C.REPO / "lg"),
+        sys.executable, str(C.RUN_PY), *args, cwd=str(C.MF_ROOT),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=C.RESUME_TIMEOUT)

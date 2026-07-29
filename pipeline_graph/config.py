@@ -29,7 +29,7 @@ _docs_rel = str(DOCS.relative_to(REPO)) + "/" if DOCS.is_relative_to(REPO) else 
 INIT_DIRTY_OK_PREFIXES = tuple(
     _docs_rel + sub for sub in ("tasks/", "metrics/", "prompts/", "queue/")
 ) + (
-    "lg/",  # pipeline graph / run.py — often edited on the same machine as a run
+    "lg/",  # legacy path — kept for backward compat when pipeline runs in-tree
 )
 
 TEMPLATES = Path(__file__).parent / "prompts"

@@ -6,14 +6,16 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-# Repo root: lg/bot/ -> lg/ -> repo.
-REPO = Path(__file__).resolve().parents[2]
-RUN_PY = REPO / "lg" / "run.py"
+# MonkeForge root: bot/config.py -> bot/ -> MonkeForge/
+MF_ROOT = Path(__file__).resolve().parents[1]
+# Pipeline repo: where docs/ and run.py live (may differ from MonkeForge).
+REPO = Path(os.environ.get("PIPELINE_REPO") or MF_ROOT).resolve()
+RUN_PY = MF_ROOT / "run.py"
 EVENTS_LOG = REPO / "docs" / "metrics" / "events.jsonl"
 STATE_FILE = REPO / "docs" / "metrics" / ".discord-bot-offset"
 
-# Load lg/.env (the run.py pattern), without overriding a real environment.
-_env = REPO / "lg" / ".env"
+# Load .env from MonkeForge root, without overriding a real environment.
+_env = MF_ROOT / ".env"
 if _env.exists():
     for _line in _env.read_text().splitlines():
         _line = _line.strip()

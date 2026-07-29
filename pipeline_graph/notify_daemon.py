@@ -28,9 +28,9 @@ from pathlib import Path
 
 from . import config as C
 
-# Load lg/.env so the daemon works standalone (not just when launched via run.py,
-# which loads .env before importing). Same pattern as bot/config.py.
-_env = C.REPO / "lg" / ".env"
+# Load .env from MonkeForge root so the daemon works standalone.
+_MF_ROOT = Path(__file__).resolve().parents[1]
+_env = _MF_ROOT / ".env"
 if _env.exists():
     for _line in _env.read_text().splitlines():
         _line = _line.strip()
@@ -59,8 +59,34 @@ if not WEBHOOK:
     if _wh_file.exists():
         WEBHOOK = _wh_file.read_text().strip()
 
-BOT_NAME = os.environ.get("DISCORD_BOT_NAME", "Nexus Pipeline")
+BOT_NAME = os.environ.get("DISCORD_BOT_NAME", "MonkeForge Pipeline")
 BOT_AVATAR = os.environ.get("DISCORD_BOT_AVATAR", "")
+
+# --- Per-agent Discord identity -------------------------------------------
+# Each agent role gets its own bot name and avatar when posting to Discord.
+# Avatars are hardcoded URLs — replace with real images later.
+_AVATAR_BASE = "https://raw.githubusercontent.com/Nocco-Matteo/MonkeForge/main/assets/avatars"
+
+AGENT_IDENTITIES: dict[str, tuple[str, str]] = {
+    "INTERVIEWER":       ("Curious Chimp",        f"{_AVATAR_BASE}/curious_chimp.png"),
+    "PROPOSER":          ("Wise Orangutan",       f"{_AVATAR_BASE}/wise_orangutan.png"),
+    "PLAN_REVIEWER":     ("Skeptical Baboon",     f"{_AVATAR_BASE}/skeptical_baboon.png"),
+    "UX_REVIEWER":       ("Thoughtful Gibbon",    f"{_AVATAR_BASE}/thoughtful_gibbon.png"),
+    "SUMMARIZER":        ("Concise Capuchin",     f"{_AVATAR_BASE}/concise_capuchin.png"),
+    "JUDGE":             ("Stern Silverback",     f"{_AVATAR_BASE}/stern_silverback.png"),
+    "IMPLEMENTER":       ("Diligent Drill",       f"{_AVATAR_BASE}/diligent_drill.png"),
+    "CODE_REVIEWER":     ("Vigilant Vervet",      f"{_AVATAR_BASE}/vigilant_vervet.png"),
+    "VISUAL_REVIEWER":   ("Observant Howler",     f"{_AVATAR_BASE}/observant_howler.png"),
+    "VISUAL_FIXER":      ("Nimble Spider Monkey", f"{_AVATAR_BASE}/nimble_spider_monkey.png"),
+}
+
+DEFAULT_IDENTITY = (BOT_NAME, BOT_AVATAR)
+
+
+def _identity_for(role: str) -> tuple[str, str]:
+    """Return (username, avatar_url) for the given agent role."""
+    return AGENT_IDENTITIES.get(role, DEFAULT_IDENTITY)
+
 
 # --- Queue item ------------------------------------------------------------
 
@@ -74,6 +100,7 @@ class Item:
     msg: str = field(compare=False)
     prio: str = field(compare=False)
     color: int = field(compare=False)
+    role: str = field(compare=False, default="")
 
 
 def _next_seq() -> int:
@@ -82,21 +109,23 @@ def _next_seq() -> int:
     return _seq
 
 
-def _enqueue(q: list[Item], title: str, msg: str, prio: str) -> None:
+def _enqueue(q: list[Item], title: str, msg: str, prio: str,
+             role: str = "") -> None:
     color = PRIO_COLOR.get(prio, PRIO_COLOR["default"])
     key = (PRIO_ORDER.get(prio, 2), _next_seq())
-    heapq.heappush(q, Item(key, title, msg, prio, color))
+    heapq.heappush(q, Item(key, title, msg, prio, color, role))
 
 
 # --- Discord send ---------------------------------------------------------
 
-def _send(title: str, msg: str, color: int) -> int:
+def _send(title: str, msg: str, color: int, role: str = "") -> int:
     """POST to Discord webhook. Returns HTTP status code (204 = success)."""
     if not WEBHOOK:
         return 0
+    username, avatar = _identity_for(role)
     payload = json.dumps({
-        "username": BOT_NAME,
-        "avatar_url": BOT_AVATAR,
+        "username": username,
+        "avatar_url": avatar,
         "embeds": [{"title": title[:256], "description": msg[:4000], "color": color}],
     })
     try:
@@ -141,7 +170,8 @@ def _wait_until_slot() -> float:
 
 def _persist(q: list[Item]) -> None:
     try:
-        data = [{"title": it.title, "msg": it.msg, "prio": it.prio}
+        data = [{"title": it.title, "msg": it.msg, "prio": it.prio,
+                 "role": it.role}
                 for it in sorted(q)]
         QUEUE_FILE.write_text(json.dumps(data))
     except OSError:
@@ -153,7 +183,8 @@ def _load() -> list[Item]:
     try:
         if QUEUE_FILE.exists():
             for item in json.loads(QUEUE_FILE.read_text()):
-                _enqueue(q, item["title"], item["msg"], item["prio"])
+                _enqueue(q, item["title"], item["msg"], item["prio"],
+                         item.get("role", ""))
             QUEUE_FILE.unlink(missing_ok=True)
     except (OSError, ValueError):
         pass
@@ -162,7 +193,8 @@ def _load() -> list[Item]:
         for f in sorted(SPOOL_DIR.glob("*.json")):
             try:
                 rec = json.loads(f.read_text())
-                _enqueue(q, rec["title"], rec["msg"], rec["prio"])
+                _enqueue(q, rec["title"], rec["msg"], rec["prio"],
+                         rec.get("role", ""))
                 f.unlink()
             except (OSError, ValueError):
                 pass
@@ -242,7 +274,7 @@ def run_daemon() -> int:
                 continue
 
             item = heapq.heappop(q)
-            code = _send(item.title, item.msg, item.color)
+            code = _send(item.title, item.msg, item.color, item.role)
 
             if code == 204:
                 _record_send()
@@ -276,7 +308,8 @@ def run_daemon() -> int:
                         try:
                             rec = json.loads(data)
                             _enqueue(q, rec["title"], rec["msg"],
-                                     rec.get("prio", "default"))
+                                     rec.get("prio", "default"),
+                                     rec.get("role", ""))
                         except (ValueError, KeyError):
                             _log(f"malformed payload: {data[:200]}")
             except socket.timeout:

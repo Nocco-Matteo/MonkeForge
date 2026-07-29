@@ -81,11 +81,11 @@ def _should_notify(kind: str, override: bool | None) -> bool:
     return NOTIFY_LEVEL == "all"
 
 
-def _push(title: str, msg: str, prio: str) -> None:
+def _push(title: str, msg: str, prio: str, role: str = "") -> None:
     """Send a notification: try the daemon socket, fall back to spool, then
     to the legacy notify.sh script. A failed push must never take the pipeline
     down."""
-    payload = json.dumps({"title": title, "msg": msg, "prio": prio})
+    payload = json.dumps({"title": title, "msg": msg, "prio": prio, "role": role})
     # 1. Try the notify daemon via unix socket.
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
@@ -140,8 +140,10 @@ def emit(kind: str, task: str = "?", step: str = "", msg: str = "",
         pass
 
     if _should_notify(kind, notify):
+        role = extra.get("role", "")
         _push(f"TASK-{task} · {step or kind}",
-              msg or kind, prio or PRIORITY.get(kind, "default"))
+              msg or kind, prio or PRIORITY.get(kind, "default"),
+              role=role)
 
 
 def read_journal(task: str, n: int = 20) -> list[str]:

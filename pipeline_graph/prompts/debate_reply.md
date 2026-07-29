@@ -2,7 +2,7 @@ ROLE: proposer answering TWO critics — a technical reviewer and a UX designer.
 Defend or fix; do not rewrite the plan.
 
 INPUT: the latest "## Round {round} — Reviewer" and "## Round {round} — UX"
-blocks in docs/debates/DEBATE-{task_id}.md, plus docs/plans/PLAN-{task_id}.md and
+blocks in {docs_dir}/debates/DEBATE-{task_id}.md, plus {docs_dir}/plans/PLAN-{task_id}.md and
 the repo. Verified technical limits so far: {tech_limits}
 
 THE DESIGNER IS AUTHORITATIVE ON UX. Treat a UX finding as a requirement to
@@ -28,7 +28,7 @@ mark it UNVERIFIED and say what you would need to check it.
 
 CONSTRAINTS:
 - Fix only what the items raise. No opportunistic redesign, no new scope.
-- Update docs/plans/PLAN-{task_id}.md in place; list the sections you touched.
+- Update {docs_dir}/plans/PLAN-{task_id}.md in place; list the sections you touched.
 - Mark each settled item RESOLVED.
 - Max 3 lines of reasoning per item. No summary of the plan.
 

@@ -12,8 +12,9 @@ import argparse, contextlib, json, os, shutil, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Load lg/.env into os.environ so CLI runs match LangGraph Studio behaviour.
+# Load .env into os.environ so CLI runs match LangGraph Studio behaviour.
 _env_file = Path(__file__).parent / ".env"
+_MF_ROOT = Path(__file__).resolve().parent
 if _env_file.exists():
     for _line in _env_file.read_text().splitlines():
         _line = _line.strip()
@@ -115,6 +116,14 @@ def _drive(graph, task_id, payload):
     except KeyboardInterrupt:
         ev.emit("run_stalled", task_id, "driver", "interrupted from the keyboard")
         raise
+    except BrokenPipeError:
+        # stdout pipe closed (parent terminal died during a background run).
+        # Redirect to /dev/null so remaining prints don't re-raise, then continue
+        # to the post-stream logic — the pipeline state is still valid.
+        try:
+            sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
     except Exception as exc:
         # Something outside any node — the checkpointer, the stream itself.
         # instrument() cannot see this, so it is caught and announced here.
@@ -258,7 +267,7 @@ def _ensure_bot() -> None:
         return
     if not os.environ.get("DISCORD_BOT_TOKEN"):
         return                                  # bot not configured
-    bot_py = C.REPO / "lg" / "bot" / "bot.py"
+    bot_py = _MF_ROOT / "bot" / "bot.py"
     if not bot_py.exists():
         return
     pidfile = C.METRICS / ".bot.pid"
@@ -269,7 +278,7 @@ def _ensure_bot() -> None:
         pass
     C.METRICS.mkdir(parents=True, exist_ok=True)
     log = (C.METRICS / "bot.log").open("a")
-    proc = subprocess.Popen([sys.executable, str(bot_py)], cwd=str(C.REPO),
+    proc = subprocess.Popen([sys.executable, str(bot_py)], cwd=str(_MF_ROOT),
                             stdout=log, stderr=log, start_new_session=True)
     print(f"  bot: launched detached (pid {proc.pid}, log docs/metrics/bot.log)")
 
@@ -304,7 +313,7 @@ def _ensure_notify_daemon() -> None:
     log = (C.METRICS / "notify.log").open("a")
     proc = subprocess.Popen(
         [sys.executable, "-m", "pipeline_graph.notify_daemon"],
-        cwd=str(C.REPO / "lg"),
+        cwd=str(_MF_ROOT),
         stdout=log, stderr=log,
         start_new_session=True,
     )

@@ -1,7 +1,7 @@
 ROLE: code reviewer for BATCH {batch_n}. You do not implement and do not
 propose patches.
 
-INPUT: `git diff {diff_base}`, docs/final/FINAL-{task_id}.md.
+INPUT: `git diff {diff_base}`, {docs_dir}/final/FINAL-{task_id}.md.
 `{diff_base}` is this batch's BASE commit (HEAD before the batch started), so
 `git diff {diff_base}` is exactly this batch's changes — whether the implementer
 left them staged OR committed them, and including new files. Use this exact base:
@@ -55,5 +55,5 @@ a violation of a documented architecture rule (wrong layer, forbidden
 anti-pattern, Next API used against AGENTS.md). Style and personal architectural
 taste are never blockers. Do not propose the fix.
 
-OUTPUT -> docs/reviews/CODE-{task_id}-b{batch_n}.md, ending with
+OUTPUT -> {docs_dir}/reviews/CODE-{task_id}-b{batch_n}.md, ending with
 VERDICT: APPROVE | APPROVE_WITH_CHANGES | REJECT.

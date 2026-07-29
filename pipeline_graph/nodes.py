@@ -411,7 +411,8 @@ def plan(state):
     brief = _seed_brief(tid, state["request"])
     prompt = render_prompt("plan", task_id=tid, request=state["request"],
                            brief_path=str(brief.relative_to(C.REPO)),
-                           arch_docs=C.arch_docs_block())
+                           arch_docs=C.arch_docs_block(),
+                           docs_dir=str(C.DOCS))
     code, _ = run_agent("PROPOSER", tid, "plan", prompt)
     if code != 0:
         return {"escalation": f"plan step failed (exit {code})",
@@ -506,7 +507,8 @@ def debate_tech(state):
     tid = state["task_id"]
     rnd = state.get("debate_round", 0) + 1
     is_verification = rnd > C.MAX_DEBATE_ROUNDS
-    prompt = render_prompt("debate_review", task_id=tid, round=rnd)
+    prompt = render_prompt("debate_review", task_id=tid, round=rnd,
+                           docs_dir=str(C.DOCS))
     _, out = run_agent("PLAN_REVIEWER", tid, f"debate-r{rnd}-tech", prompt)
     text = read_if_exists(C.DEBATES / f"DEBATE-{tid}.md") or out
     latest_tech = _latest_section(text, "Reviewer")
@@ -535,7 +537,8 @@ def debate_ux(state):
     tid = state["task_id"]
     rnd = state.get("debate_round", 0)
     prompt = render_prompt("debate_ux", task_id=tid, round=rnd,
-                           tech_limits="; ".join(state.get("tech_limits", [])) or "none")
+                           tech_limits="; ".join(state.get("tech_limits", [])) or "none",
+                           docs_dir=str(C.DOCS))
 
     # The UX reviewer is print-only (gemini): it prints the review, WE file it.
     # Asking it to write files itself makes its CLI attempt a tool call and
@@ -645,7 +648,8 @@ def debate_reply(state):
     tid = state["task_id"]
     rnd = state["debate_round"]
     prompt = render_prompt("debate_reply", task_id=tid, round=rnd,
-                           tech_limits="; ".join(state.get("tech_limits", [])) or "none")
+                           tech_limits="; ".join(state.get("tech_limits", [])) or "none",
+                           docs_dir=str(C.DOCS))
     run_agent("PROPOSER", tid, f"debate-r{rnd}-reply", prompt)
     return {"journal": [f"debate r{rnd}: proposer replied to both critics"]}
 
@@ -654,7 +658,8 @@ def debate_reply(state):
 
 def summary(state):
     tid = state["task_id"]
-    prompt = render_prompt("summary", task_id=tid)
+    prompt = render_prompt("summary", task_id=tid,
+                           docs_dir=str(C.DOCS))
     run_agent("SUMMARIZER", tid, "summary", prompt)
     return {"journal": ["summary: written"]}
 
@@ -663,7 +668,8 @@ def summary(state):
 
 def judge(state):
     tid = state["task_id"]
-    prompt = render_prompt("judge", task_id=tid)
+    prompt = render_prompt("judge", task_id=tid,
+                           docs_dir=str(C.DOCS))
     code, out = run_agent("JUDGE", tid, "verdict", prompt)
 
     if out.strip().startswith("ESCALATE:") or "\nESCALATE:" in out:
@@ -828,7 +834,8 @@ def implement(state):
     prompt = render_prompt("implement", task_id=tid, batch_n=b["n"],
                            batch_scope=b["scope"], db_note=db_note,
                            arch_docs=C.arch_docs_block(),
-                           checklist_items=", ".join(map(str, b.get("checklist", []))))
+                           checklist_items=", ".join(map(str, b.get("checklist", []))),
+                           docs_dir=str(C.DOCS))
     step = f"impl-b{b['n']}"
     if attempt:
         step += f"-fix{attempt}"
@@ -889,7 +896,8 @@ def code_review(state):
     prompt = render_prompt("code_review", task_id=tid, batch_n=b["n"],
                            batch_scope=b["scope"], diff_base=base,
                            checklist_items=", ".join(map(str, b.get("checklist", []))),
-                           trusted_context=state.get("trusted_context", ""))
+                           trusted_context=state.get("trusted_context", ""),
+                           docs_dir=str(C.DOCS))
     _, out = run_agent("CODE_REVIEWER", tid, f"cr-b{b['n']}", prompt)
     review = read_if_exists(C.REVIEWS / f"CODE-{tid}-b{b['n']}.md") or out
     verdict, not_met = parse_verdict(review), parse_not_met(review)
@@ -926,7 +934,8 @@ def code_fix(state):
     tid = state["task_id"]
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 0) + 1
-    prompt = render_prompt("code_fix", task_id=tid, batch_n=b["n"])
+    prompt = render_prompt("code_fix", task_id=tid, batch_n=b["n"],
+                           docs_dir=str(C.DOCS))
     _, out = run_agent("IMPLEMENTER", tid, f"cr-b{b['n']}-fix{cycle}", prompt)
     disputed = parse_disputed(out)
     if disputed:
@@ -942,7 +951,8 @@ def code_verify(state):
     tid = state["task_id"]
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 1)
-    prompt = render_prompt("code_verify", task_id=tid, batch_n=b["n"])
+    prompt = render_prompt("code_verify", task_id=tid, batch_n=b["n"],
+                           docs_dir=str(C.DOCS))
     _, out = run_agent("CODE_REVIEWER", tid, f"cr-b{b['n']}-verify{cycle}", prompt)
     if "NOT_FIXED" in out:
         if cycle >= C.MAX_FIX_CYCLES:
@@ -1114,7 +1124,8 @@ def ux_visual_fix(state):
     # that plateaued task-009 at 2 blockers across 4 cycles).
     prompt = render_prompt("visual_fix", task_id=tid,
                            screens_dir=str(shots.relative_to(C.REPO)) if shots.is_relative_to(C.REPO) else str(shots),
-                           render_facts=state.get("render_facts", "{}"))
+                           render_facts=state.get("render_facts", "{}"),
+                           docs_dir=str(C.DOCS))
     run_agent("VISUAL_FIXER", tid, f"visual-fix-c{cyc}", prompt)
     _stage_all()
     return {"ux_render_cycle": cyc,
@@ -1350,7 +1361,8 @@ def final_check(state):
             delta["degradations"] = ["e2e DB unreachable at final check — DB-backed tests were skipped, not passed"]
         return delta
 
-    prompt = render_prompt("final_check", task_id=tid, db_note=db_note)
+    prompt = render_prompt("final_check", task_id=tid, db_note=db_note,
+                           docs_dir=str(C.DOCS))
     _, out = run_agent("IMPLEMENTER", tid, "final-check", prompt)
     not_met = parse_not_met(out)
     suffix = "" if db_ok else " (DB-gated tests skipped: e2e Postgres unreachable)"
