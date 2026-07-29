@@ -1,0 +1,19 @@
+[project]
+name = "pipeline-graph"
+version = "0.1.0"
+description = "Multi-agent development pipeline as a LangGraph"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=0.2",
+  "langgraph-checkpoint-sqlite>=1.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["pipeline_graph"]
+
+[tool.setuptools.package-data]
+pipeline_graph = ["prompts/*.md"]

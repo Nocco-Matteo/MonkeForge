@@ -1,0 +1,46 @@
+"""Step 1 — the unified degradation ledger. Every compromise the run ships with
+lands in one append-only list that wrap_up reports and doctor surfaces, so the
+human reviews it at the end instead of being interrupted per-bump.
+"""
+import unittest
+from unittest.mock import patch
+
+from pipeline_graph import nodes as N, config as C
+
+
+class StepOutcome(unittest.TestCase):
+    def test_ledger_entry_is_degraded(self):
+        self.assertEqual(N._step_outcome({"degradations": ["x"]}), "degraded")
+
+    def test_escalation_beats_degraded(self):
+        self.assertEqual(N._step_outcome({"escalation": "e", "degradations": ["x"]}), "blocked")
+
+    def test_clean_is_ok(self):
+        self.assertEqual(N._step_outcome({"journal": ["done"]}), "ok")
+
+
+class WrapUpReport(unittest.TestCase):
+    def test_report_lists_every_degradation(self):
+        st = {"task_id": "ledgertest", "branch": "b", "batches": [{"n": 1}],
+              "degradations": ["e2e DB skipped", "shipped with UX blockers"],
+              "journal": ["done"]}
+        with patch.object(N.ev, "emit"):
+            N.wrap_up(st)
+        report = (C.FINAL / "REPORT-ledgertest.md").read_text()
+        self.assertIn("degradations: 2", report)
+        self.assertIn("DEGRADED: e2e DB skipped", report)
+        self.assertIn("DEGRADED: shipped with UX blockers", report)
+        (C.FINAL / "REPORT-ledgertest.md").unlink(missing_ok=True)
+
+    def test_clean_run_says_none(self):
+        st = {"task_id": "ledgertest", "branch": "b", "batches": [{"n": 1}],
+              "degradations": [], "journal": ["done"]}
+        with patch.object(N.ev, "emit"):
+            N.wrap_up(st)
+        report = (C.FINAL / "REPORT-ledgertest.md").read_text()
+        self.assertIn("degradations: none", report)
+        (C.FINAL / "REPORT-ledgertest.md").unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

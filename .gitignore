@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.env.tmp
+
+# Runtime artifacts
+nohup.out
+*.log
+*.pid
+
+# OS
+.DS_Store
+Thumbs.db

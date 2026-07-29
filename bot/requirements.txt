@@ -1,0 +1,3 @@
+# Optional — only needed to run the Discord control bot (lg/bot/bot.py).
+# The pipeline itself does not depend on this.
+discord.py>=2.3,<3
