@@ -117,6 +117,29 @@ def run_agent(role: str, task_id: str, step: str, prompt: str,
     prompt_file = C.PROMPTS / f"{task_id}-{step}.md"
     prompt_file.write_text(prompt)
 
+    # --- Context condenser (function-local import: see condenser.py header) ---
+    # Runs once per call, before the retry loop, so a transient retry sees the
+    # already-condensed file. No-op unless PIPELINE_TOKEN_BUDGET_<ROLE> is set,
+    # so existing tests (which never set it) are byte-identical to before.
+    from .condenser import condense, estimate_tokens
+    budget = C.token_budget(role)
+    if budget is not None:
+        debate_path = C.DEBATES / f"DEBATE-{task_id}.md"
+        if debate_path.exists():
+            original = debate_path.read_text()
+            if estimate_tokens(original) > budget:
+                condensed = condense(original, C.CONDENSER_KEEP_RECENT)
+                debate_path.write_text(condensed)
+                ev.emit(
+                    "degraded", task_id, step,
+                    f"condensed DEBATE-{task_id}.md for {role}: "
+                    f"{estimate_tokens(original)} -> {estimate_tokens(condensed)} "
+                    f"est-tokens (budget {budget})",
+                    original_size=len(original),
+                    condensed_size=len(condensed),
+                    role=role,
+                )
+
     out_file = C.RAW / f"{task_id}-{step}-{binary}-{int(time.time())}.log"
     started = datetime.now(timezone.utc).isoformat()
     t0 = time.time()

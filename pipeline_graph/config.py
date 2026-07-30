@@ -1,6 +1,6 @@
 """Configuration: roles -> agent CLIs, paths, timeouts. Single source of truth."""
 from __future__ import annotations
-import os, shlex, shutil, subprocess
+import os, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 REPO = Path(
@@ -187,6 +187,25 @@ def role_cmd(role: str, prompt_file: Path, prompt: str) -> list[str]:
     subs = {"model": cfg["model"], "prompt": prompt, "prompt_file": str(prompt_file), "docs_dir": str(DOCS)}
     return [tok.format(**subs) if "{" in tok else tok for tok in tokens]
 
+
+def token_budget(role: str) -> int | None:
+    """Per-role token budget for the condenser, from `PIPELINE_TOKEN_BUDGET_<ROLE>`.
+
+    Returns None when the var is unset/blank (condenser is a no-op for that
+    role — the default, backward-compatible path) and None — with a stderr
+    warning, never an exception — when it is set to a non-integer. Read
+    function-locally so a `monkeypatch.setenv` after import is effective.
+    """
+    raw = os.environ.get(f"PIPELINE_TOKEN_BUDGET_{role}")
+    if not raw or not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"PIPELINE_TOKEN_BUDGET_{role}={raw!r} not an int; treating as unset",
+              file=sys.stderr)
+        return None
+
 # No timeout by default: this is the whole point of leaving the Bash-tool ceiling behind.
 AGENT_TIMEOUT = int(os.environ.get("PIPELINE_AGENT_TIMEOUT", "0")) or None
 
@@ -198,6 +217,24 @@ MAX_INTAKE_ROUNDS = int(os.environ.get("PIPELINE_MAX_INTAKE_ROUNDS", "4"))
 # 4→4→2 blockers and escalated with real issues still open). Override per-run
 # with PIPELINE_MAX_UX_RENDER_CYCLES for simpler UI (down) or stuck ones (up).
 MAX_UX_RENDER_CYCLES = int(os.environ.get("PIPELINE_MAX_UX_RENDER_CYCLES", "3"))
+
+# --- Condenser (context management) ----------------------------------------
+# Validated parse: a bare int(os.environ.get(...)) (the pattern used by the
+# pre-existing vars above) would crash the whole CLI on a bad value. The two
+# new condenser vars instead fall back to a safe default with a stderr warning.
+_raw_keep_recent = os.environ.get("PIPELINE_CONDENSER_KEEP_RECENT", "3")
+try:
+    CONDENSER_KEEP_RECENT = int(_raw_keep_recent)
+except ValueError:
+    print(f"PIPELINE_CONDENSER_KEEP_RECENT={_raw_keep_recent!r} not an int; using default 3",
+          file=sys.stderr)
+    CONDENSER_KEEP_RECENT = 3
+if CONDENSER_KEEP_RECENT < 0:
+    # Negatives invert rounds[:-keep_recent] slicing semantics; clamp to 0 so
+    # the condenser collapses all rounds (the safe reading of "keep zero recent").
+    print(f"PIPELINE_CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT} negative; clamping to 0",
+          file=sys.stderr)
+    CONDENSER_KEEP_RECENT = 0
 
 # Consecutive non-improving cycles before the visual/render gates escalate early
 # (plateau detection — the fix loop is oscillating, not converging).
