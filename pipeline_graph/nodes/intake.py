@@ -131,13 +131,13 @@ def init(state):
             "may stay dirty in interactive mode)",
             "journal": [f"init: dirty tree ({hint}), escalating"],
         }
-    if dirty_paths:
+    if dirty_paths and not C.DRY_RUN:
         # Commit on the task branch, not on whatever branch is checked out now:
         # the WIP snapshot belongs to the task that caused it.
         subprocess.run(["git", "checkout", "-B", branch], cwd=C.REPO, capture_output=True)
         _git("add", "-A")
         _git("commit", "-m", f"WIP: pre-task-{task_id} working tree")
-    elif _git("rev-parse", "--abbrev-ref", "HEAD") != branch:
+    elif not C.DRY_RUN and _git("rev-parse", "--abbrev-ref", "HEAD") != branch:
         subprocess.run(["git", "checkout", "-B", branch], cwd=C.REPO, capture_output=True)
 
     return {

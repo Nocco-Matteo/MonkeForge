@@ -192,12 +192,13 @@ def close_batch(state):
         b["deviations"] = b["deviations"] or "none"
 
     _write_progress(tid, batches)
-    subprocess.run(["git", "add", "-A"], cwd=C.REPO, capture_output=True)
-    subprocess.run(
-        ["git", "commit", "-m", f"task-{tid}: batch {b['n']} — {b['scope']}"],
-        cwd=C.REPO,
-        capture_output=True,
-    )
+    if not C.DRY_RUN:
+        subprocess.run(["git", "add", "-A"], cwd=C.REPO, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"task-{tid}: batch {b['n']} — {b['scope']}"],
+            cwd=C.REPO,
+            capture_output=True,
+        )
     ev.emit(
         "batch_done",
         tid,
