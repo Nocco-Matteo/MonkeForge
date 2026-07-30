@@ -236,6 +236,15 @@ BRANCH_PREFIX = os.environ.get("PIPELINE_BRANCH_PREFIX", "feature/task-")
 
 DRY_RUN = os.environ.get("PIPELINE_DRY_RUN") == "1"
 
+# Observe-only git: run the REAL agents but make every history-mutating step a
+# no-op (no branch checkout, no WIP/batch/final commits). Unlike DRY_RUN — which
+# also stubs the agents — this leaves a true end-to-end smoke that never adds a
+# commit or a branch. The agents still edit the working tree (and the review gate
+# still stages it so it can see the diff), so nothing is committed but the tree
+# is left dirty/staged: discard with `git reset --hard && git clean -fd`, or run
+# in a sacrificial `git worktree` you delete afterwards.
+NO_GIT = os.environ.get("PIPELINE_NO_GIT") == "1"
+
 # --- E2E / test infrastructure
 E2E_DB_PORT = int(os.environ.get("PIPELINE_E2E_DB_PORT", "5433"))
 E2E_DB_CONTAINER = os.environ.get("PIPELINE_E2E_DB_CONTAINER", "nexus_vtt_e2e_db")

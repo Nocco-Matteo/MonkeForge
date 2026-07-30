@@ -10,7 +10,7 @@ from .. import config as C
 from .. import events as ev
 from .. import test_runner as tr
 from ..agents import render_prompt
-from .common import _current_batch, _db_note, _git, _stage_all, _write_progress
+from .common import _current_batch, _db_note, _dirty_paths, _git, _stage_all, _write_progress
 
 
 def _capture_test_baseline(state, b: dict, db_ok: bool) -> dict:
@@ -82,6 +82,15 @@ def implement(state):
     # against it, not HEAD — the batch's work then shows whether the implementer
     # left it staged OR committed it (the false-REJECT that hit TASK-010 b1/b5).
     if attempt == 0 and not C.DRY_RUN:
+        # Scope guard: the tree must be clean before the implementer edits, so
+        # close_batch's `git add -A` commits ONLY this batch's work. Any leftover
+        # (a crashed run, a smoke sharing the working copy) gets its own clearly
+        # labelled commit instead of being absorbed into — and mislabelled as —
+        # this batch. This is the fix for the "task-smoke: batch 1" mix-up.
+        if not C.NO_GIT and _dirty_paths():
+            _git("add", "-A")
+            _git("commit", "-m",
+                 f"WIP: uncommitted leftovers before task-{tid} batch {b['n']}")
         baseline_delta = {**baseline_delta, "batch_base_ref": _git("rev-parse", "HEAD").strip()}
     merged = {**state, **baseline_delta}
 
@@ -192,7 +201,7 @@ def close_batch(state):
         b["deviations"] = b["deviations"] or "none"
 
     _write_progress(tid, batches)
-    if not C.DRY_RUN:
+    if not C.DRY_RUN and not C.NO_GIT:
         subprocess.run(["git", "add", "-A"], cwd=C.REPO, capture_output=True)
         subprocess.run(
             ["git", "commit", "-m", f"task-{tid}: batch {b['n']} — {b['scope']}"],

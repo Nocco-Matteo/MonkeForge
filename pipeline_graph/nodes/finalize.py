@@ -191,7 +191,7 @@ def _final_test_fix_loop(tid: str, db_ok: bool, baseline: set[str]) -> dict | No
                 f"auto-fix attempt {attempt}: no new failures ({summary})",
             )
             _N._stage_all()
-            if not C.DRY_RUN:
+            if not C.DRY_RUN and not C.NO_GIT:
                 _N._git("commit", "-m", f"final gate: fix {n0} new test failure(s)")
             return None
         ev.emit(
