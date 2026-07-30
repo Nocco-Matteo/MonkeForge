@@ -173,6 +173,30 @@ class TestExtractJson:
         result = _extract_json(text)
         assert result == [{"a": "b"}]
 
+    def test_json_block_no_newline_before_fence(self):
+        text = '```json\n[{"n": 1, "scope": "test", "checklist": [1, 2]}]```'
+        result = _extract_json(text)
+        assert result == [{"n": 1, "scope": "test", "checklist": [1, 2]}]
+
+    def test_bare_array_with_brackets_in_prose(self):
+        text = (
+            "Ruling on [BLOCKER]: fix needed.\n\n"
+            '[{"n": 1, "scope": "test", "checklist": [1, 2]}]\n'
+            "HAS_UI: NO"
+        )
+        result = _extract_json(text)
+        assert result == [{"n": 1, "scope": "test", "checklist": [1, 2]}]
+
+    def test_nested_arrays_in_json(self):
+        text = '```json\n[{"n": 1, "checklist": [1, 2, 3], "allow": ["a > b"]}]```'
+        result = _extract_json(text)
+        assert result == [{"n": 1, "checklist": [1, 2, 3], "allow": ["a > b"]}]
+
+    def test_brackets_inside_json_strings(self):
+        text = '[{"n": 1, "scope": "fix [foo] bar"}]'
+        result = _extract_json(text)
+        assert result == [{"n": 1, "scope": "fix [foo] bar"}]
+
     def test_no_json(self):
         assert _extract_json("no json here") is None
 

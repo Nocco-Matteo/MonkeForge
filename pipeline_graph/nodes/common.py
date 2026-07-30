@@ -91,13 +91,53 @@ def _extract_json(text: str) -> list | dict | None:
     """Find and parse a JSON array or object from agent stdout."""
     import re as _re
 
-    for pattern in (r"```json\s*\n(.*?)\n```", r"```\s*\n(\[.*?\])\n```", r"(\[.*\])"):
-        m = _re.search(pattern, text, _re.DOTALL)
-        if m:
-            try:
-                return json.loads(m.group(1))
-            except json.JSONDecodeError:
-                pass
+    # Fenced ```json block — relaxed closing (no \n required before ```)
+    m = _re.search(r"```json\s*\n?(.*?)```", text, _re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Fenced ``` block containing a JSON array
+    m = _re.search(r"```\s*\n(\[.*?\])\s*```", text, _re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    # Raw JSON array — bracket-match from each `[`, return first valid parse.
+    # More robust than a greedy regex: handles nested arrays, ignores brackets
+    # inside strings, and skips `[` characters in prose that don't form JSON.
+    for start in range(len(text)):
+        if text[start] != "[":
+            continue
+        depth = 0
+        in_string = False
+        escape = False
+        for end in range(start, len(text)):
+            c = text[end]
+            if escape:
+                escape = False
+                continue
+            if c == "\\":
+                escape = True
+                continue
+            if c == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : end + 1])
+                    except json.JSONDecodeError:
+                        break
     return None
 
 
