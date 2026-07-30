@@ -1,7 +1,39 @@
+import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from pipeline_graph import config as C, nodes as N
+
+
+class GitExcludes(unittest.TestCase):
+    def _init_repo(self, path: Path) -> None:
+        subprocess.run(["git", "init", "-q", str(path)], check=True)
+
+    def test_exclude_registered_and_idempotent(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            C._ensure_git_excludes(repo, ".pipeline-docs/")
+            exclude = repo / ".git" / "info" / "exclude"
+            self.assertIn(".pipeline-docs/", exclude.read_text().splitlines())
+            # Second call must not duplicate the entry.
+            C._ensure_git_excludes(repo, ".pipeline-docs/")
+            self.assertEqual(
+                exclude.read_text().count(".pipeline-docs/"), 1)
+
+    def test_excluded_path_is_invisible_to_git(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            self._init_repo(repo)
+            C._ensure_git_excludes(repo, ".pipeline-docs/")
+            (repo / ".pipeline-docs").mkdir()
+            (repo / ".pipeline-docs" / "plan.md").write_text("x")
+            untracked = subprocess.run(
+                ["git", "ls-files", "-o", "--exclude-standard"],
+                cwd=repo, capture_output=True, text=True).stdout
+            self.assertEqual(untracked.strip(), "")
 
 
 class DirtyPathsInit(unittest.TestCase):

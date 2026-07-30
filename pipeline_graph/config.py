@@ -13,6 +13,52 @@ REPO = Path(
 # MonkeForge root: pipeline_graph/config.py -> pipeline_graph/ -> MonkeForge/
 MF_ROOT = Path(__file__).resolve().parents[1]
 
+
+def _git_common_dir(repo: Path) -> Path | None:
+    """Absolute path to the repo's .git common dir (handles worktrees/submodules).
+
+    In a linked worktree `.git` is a file pointing elsewhere, so we can't assume
+    `repo/.git`; ask git for the common dir where info/exclude actually lives.
+    """
+    out = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=repo, capture_output=True, text=True,
+    ).stdout.strip()
+    if not out:
+        return None
+    p = Path(out)
+    return p if p.is_absolute() else (repo / p).resolve()
+
+
+def _ensure_git_excludes(repo: Path, *entries: str) -> None:
+    """Add local-only ignore rules via .git/info/exclude, not the tracked .gitignore.
+
+    This keeps pipeline artifacts that live inside the repo invisible to git:
+    `git status`, `git add -A`, and `git ls-files -o --exclude-standard` all honour
+    info/exclude. So the working tree stays clean and the per-batch commits carry
+    only real code — without dirtying a committed .gitignore. Best-effort: on any
+    filesystem hiccup we silently fall back to the dirty-check tolerance.
+    """
+    common = _git_common_dir(repo)
+    if common is None:
+        return
+    try:
+        info = common / "info"
+        info.mkdir(parents=True, exist_ok=True)
+        exclude = info / "exclude"
+        existing = exclude.read_text().splitlines() if exclude.exists() else []
+        missing = [e for e in entries if e not in existing]
+        if not missing:
+            return
+        with exclude.open("a") as fh:
+            if existing and existing[-1].strip():
+                fh.write("\n")
+            fh.write("# MonkeForge pipeline artifacts (local, never committed)\n")
+            for e in missing:
+                fh.write(f"{e}\n")
+    except OSError:
+        pass
+
 # Per-repo docs: MonkeForge/docs/<repo-name>/...  Override with PIPELINE_DOCS_DIR.
 _repo_slug = REPO.name
 DOCS      = Path(os.environ.get("PIPELINE_DOCS_DIR") or (MF_ROOT / "docs" / _repo_slug))
@@ -33,12 +79,18 @@ CHECKPOINT_DB = METRICS / "graph-checkpoints.sqlite"
 # we copy them into .pipeline-docs/ inside the repo and repoint DOCS there so
 # all agents (including claude, which blocks symlinks) can read/write within
 # their working directory.  The original DOCS is kept for sync-back.
+#
+# .pipeline-docs/ is registered in .git/info/exclude (a local, uncommitted
+# ignore) the moment we create it, so git never sees it: the working tree stays
+# clean, `init` doesn't escalate/WIP-commit on it, and per-batch commits carry
+# only real code.  That's why INIT_DIRTY_OK_PREFIXES stays empty here.
 if DOCS.is_relative_to(REPO):
     DOCS_REL = str(DOCS.relative_to(REPO))
     DOCS_ORIG = None
 else:
     import shutil as _sh
     _local = REPO / ".pipeline-docs"
+    _ensure_git_excludes(REPO, ".pipeline-docs/")
     if _local.exists() and not _local.is_dir():
         _local.unlink()
     if not _local.exists():
