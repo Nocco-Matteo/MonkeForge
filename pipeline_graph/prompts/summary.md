@@ -2,7 +2,7 @@ ROLE: neutral summariser. You are not a participant and take no side.
 
 INPUT: {docs_dir}/debates/DEBATE-{task_id}.md (all rounds + fix verification).
 
-OUTPUT -> {docs_dir}/debates/SUMMARY-{task_id}.md:
+OUTPUT -> print the summary to stdout (the pipeline files it automatically):
   ## Settled — one line per item: what was decided and by whose argument
   ## Open — per item: the claim, each side's position in <=3 lines, and what
      evidence each cited. Do NOT indicate who you think is right.

@@ -179,7 +179,11 @@ def _warn_stale_task_files(task_id: str) -> None:
         return
     print(f"  note: task id {task_id} already has files from an earlier run:")
     for p in leftovers:
-        print(f"    {p.relative_to(C.REPO)}")
+        try:
+            label = p.relative_to(C.REPO)
+        except ValueError:
+            label = p
+        print(f"    {label}")
     print("    the interview appends to the intake file and will not accept the "
           "old brief as its own; delete them first for a clean start.")
 

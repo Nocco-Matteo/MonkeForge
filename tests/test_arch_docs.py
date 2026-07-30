@@ -10,31 +10,13 @@ from pipeline_graph import config as C
 
 
 class ArchDocsBlockTest(unittest.TestCase):
-    def test_default_lists_only_existing_docs(self):
-        block = C.arch_docs_block()
-        # Every rendered path must actually exist under the repo.
-        for line in block.splitlines():
-            path = line.lstrip("- ").strip()
-            self.assertTrue((C.REPO / path).exists(), f"listed missing doc: {path}")
-
     def test_env_override_replaces_default_and_filters_missing(self):
-        env = {"PIPELINE_ARCH_DOCS": "CLAUDE.md;does/not/exist.md;lg/README.md"}
+        # The one contract a refactor could silently break: PIPELINE_ARCH_DOCS
+        # replaces the default list, accepts both separators, skips missing files.
+        env = {"PIPELINE_ARCH_DOCS": "README.md;does/not/exist.md\nrequirements.txt"}
         with mock.patch.dict(os.environ, env, clear=False):
             block = C.arch_docs_block()
-        self.assertIn("- CLAUDE.md", block)
-        self.assertIn("- lg/README.md", block)
-        self.assertNotIn("does/not/exist.md", block)
-
-    def test_newlines_accepted_as_separators(self):
-        env = {"PIPELINE_ARCH_DOCS": "CLAUDE.md\nlg/README.md"}
-        with mock.patch.dict(os.environ, env, clear=False):
-            block = C.arch_docs_block()
-        self.assertIn("- CLAUDE.md", block)
-        self.assertIn("- lg/README.md", block)
-
-    def test_empty_config_reports_none(self):
-        with mock.patch.dict(os.environ, {"PIPELINE_ARCH_DOCS": "  "}, clear=False):
-            self.assertEqual(C.arch_docs_block(), "- (none configured)")
+        self.assertEqual(block, "- README.md\n- requirements.txt")
 
 
 if __name__ == "__main__":

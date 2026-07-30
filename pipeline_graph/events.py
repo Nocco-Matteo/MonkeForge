@@ -66,6 +66,22 @@ PRIORITY = {
     "agent_end": "low",
 }
 
+_KIND_ROLE: dict[str, str] = {
+    "step_start": "COUNCIL",
+    "step_end": "COUNCIL",
+    "step_error": "COUNCIL",
+    "escalation_open": "ESCALATION",
+    "escalation_resolved": "COUNCIL",
+    "batch_done": "COUNCIL",
+    "degraded": "COUNCIL",
+    "intake_questions": "INTAKE",
+    "intake_complete": "INTAKE",
+    "run_end": "COUNCIL",
+    "agent_unhealthy": "COUNCIL",
+    "agent_start": "COUNCIL",
+    "agent_end": "COUNCIL",
+}
+
 
 def _journal_file(task: str) -> Path:
     return C.METRICS / f"journal-{task}.log"
@@ -141,6 +157,8 @@ def emit(kind: str, task: str = "?", step: str = "", msg: str = "",
 
     if _should_notify(kind, notify):
         role = extra.get("role", "")
+        if not role:
+            role = _KIND_ROLE.get(kind, "")
         _push(f"TASK-{task} · {step or kind}",
               msg or kind, prio or PRIORITY.get(kind, "default"),
               role=role)

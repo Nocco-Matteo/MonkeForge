@@ -17,7 +17,7 @@ METHOD (do this before writing):
 3. If the work touches user-facing UI, read docs/UX-MANIFESTO.md and design the
    flows to satisfy it — it is a hard constraint, not advice.
 
-OUTPUT -> {docs_dir}/plans/PLAN-{task_id}.md, with these sections exactly:
+OUTPUT -> print the plan to stdout (the pipeline files it automatically), with these sections exactly:
   1. Goal (max 3 lines)
   2. Constraints (from CLAUDE.md + the request; each one testable)
   3. Architecture decisions (decision, alternative rejected, why — max 3 lines each)

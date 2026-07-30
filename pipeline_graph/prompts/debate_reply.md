@@ -28,9 +28,20 @@ mark it UNVERIFIED and say what you would need to check it.
 
 CONSTRAINTS:
 - Fix only what the items raise. No opportunistic redesign, no new scope.
-- Update {docs_dir}/plans/PLAN-{task_id}.md in place; list the sections you touched.
+- Do NOT edit the plan file directly — print the updated plan to stdout between
+  the markers below. The pipeline extracts it and overwrites the plan file for you.
 - Mark each settled item RESOLVED.
 - Max 3 lines of reasoning per item. No summary of the plan.
 
-OUTPUT -> append under "## Round {round} — Proposer", technical items first,
-then UX items, then any TECH-LIMIT lines.
+OUTPUT -> print the reply to stdout (the pipeline appends it to the debate file
+automatically) under "## Round {round} — Proposer", in this order:
+1. Technical items first, then UX items, then any TECH-LIMIT lines — one block
+   per item with ACCEPTED / REJECTED / PARTIAL and RESOLVED markers as before.
+2. Then the COMPLETE updated plan (the full plan text with your fixes applied,
+   not a diff), enclosed between these exact marker lines on their own:
+   === PLAN START ===
+   <the full plan text>
+   === PLAN END ===
+The markers are mandatory: the pipeline extracts only the text between them and
+overwrites {docs_dir}/plans/PLAN-{task_id}.md with it. Everything outside the
+markers (your per-item notes) is appended to the debate file as the reply.

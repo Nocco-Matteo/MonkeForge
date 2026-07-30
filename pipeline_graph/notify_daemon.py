@@ -78,9 +78,13 @@ AGENT_IDENTITIES: dict[str, tuple[str, str]] = {
     "CODE_REVIEWER":     ("Vigilant Vervet",      f"{_AVATAR_BASE}/vigilant_vervet.png"),
     "VISUAL_REVIEWER":   ("Observant Howler",     f"{_AVATAR_BASE}/observant_howler.png"),
     "VISUAL_FIXER":      ("Nimble Spider Monkey", f"{_AVATAR_BASE}/nimble_spider_monkey.png"),
+    # System-level roles (pipeline orchestration, not a specific agent)
+    "COUNCIL":           ("Monke Council",        f"{_AVATAR_BASE}/monke_council.png"),
+    "ESCALATION":        ("Monke Council",        f"{_AVATAR_BASE}/monke_council.png"),
+    "INTAKE":            ("Monke Council",        f"{_AVATAR_BASE}/monke_council.png"),
 }
 
-DEFAULT_IDENTITY = (BOT_NAME, BOT_AVATAR)
+DEFAULT_IDENTITY = ("Monke Council", f"{_AVATAR_BASE}/monke_council.png")
 
 
 def _identity_for(role: str) -> tuple[str, str]:

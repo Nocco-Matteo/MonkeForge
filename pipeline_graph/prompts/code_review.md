@@ -55,5 +55,5 @@ a violation of a documented architecture rule (wrong layer, forbidden
 anti-pattern, Next API used against AGENTS.md). Style and personal architectural
 taste are never blockers. Do not propose the fix.
 
-OUTPUT -> {docs_dir}/reviews/CODE-{task_id}-b{batch_n}.md, ending with
+OUTPUT -> print the review to stdout (the pipeline files it automatically), ending with
 VERDICT: APPROVE | APPROVE_WITH_CHANGES | REJECT.

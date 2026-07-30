@@ -1,0 +1,202 @@
+"""Nodes package — re-exports all public names from the split modules.
+
+graph.py and tests import ``from pipeline_graph import nodes as N`` and access
+N.<name> exactly as before the split.  This module re-exports every name that
+was public in the original monolithic nodes.py.
+"""
+
+# Re-export shared dependencies so tests can patch N.run_agent, N.ev, etc.
+from .. import events as ev
+from .. import test_runner as tr
+from ..agents import (
+    count_blockers,
+    parse_disputed,
+    parse_not_met,
+    parse_verdict,
+    read_if_exists,
+    render_prompt,
+    run_agent,
+)
+from ..intake_materialize import materialize_intake_output
+from .common import (
+    DB_DOWN_NOTE,
+    DB_OK_NOTE,
+    _context,
+    _current_batch,
+    _db_note,
+    _dirty_blocks_interactive_init,
+    _dirty_paths,
+    _escalation_options,
+    _extract_json,
+    _file_or_stdout,
+    _git,
+    _ignorable_dirty_path,
+    _recover_artifact,
+    _rel,
+    _save,
+    _stage_all,
+    _step_outcome,
+    _write_progress,
+    escalate,
+    instrument,
+)
+from .debate import (
+    _SECTION_HEADER_RE,
+    PLAN_MARKER_RE,
+    TECH_LIMIT_RE,
+    _debate_decision,
+    _extract_plan,
+    _latest_section,
+    debate_reply,
+    debate_tech,
+    debate_ux,
+)
+from .finalize import (
+    FINAL_FIX_ATTEMPTS,
+    FINAL_FIX_MAX_FAILURES_PER_ATTEMPT,
+    FINAL_FIX_TIMEOUT,
+    _final_test_fix_loop,
+    checkpoint_plan,
+    final_check,
+    judge,
+    queue_scope,
+    summary,
+    wrap_up,
+)
+from .implement import (
+    _capture_test_baseline,
+    _in_graph_test_gate,
+    close_batch,
+    implement,
+)
+from .intake import (
+    ANSWER_RE,
+    INTAKE_END_ANSWERS,
+    INTAKE_SUBMIT_ANSWERS,
+    _init_intake,
+    _seed_brief,
+    brief_file,
+    init,
+    intake_answers,
+    intake_ask,
+    intake_enabled,
+    intake_file,
+    intake_wait,
+    refs_dir,
+)
+from .planning import (
+    PERF_SURFACE_RE,
+    UI_SURFACE_RE,
+    _detect_has_perf,
+    _detect_has_ui,
+    plan,
+)
+from .quality_gates import (
+    _renders_dir,
+    _screens_dir,
+    render_fix,
+    render_measure,
+    render_review,
+    ux_render,
+    ux_visual_fix,
+    ux_visual_review,
+)
+from .review import (
+    code_fix,
+    code_review,
+    code_verify,
+)
+
+__all__ = [
+    # shared deps
+    "ev",
+    "tr",
+    "run_agent",
+    "render_prompt",
+    "parse_verdict",
+    "count_blockers",
+    "parse_not_met",
+    "parse_disputed",
+    "read_if_exists",
+    "materialize_intake_output",
+    # common
+    "_git",
+    "_rel",
+    "_save",
+    "_file_or_stdout",
+    "_recover_artifact",
+    "_extract_json",
+    "_stage_all",
+    "_dirty_paths",
+    "_ignorable_dirty_path",
+    "_dirty_blocks_interactive_init",
+    "_context",
+    "instrument",
+    "_step_outcome",
+    "_current_batch",
+    "DB_OK_NOTE",
+    "DB_DOWN_NOTE",
+    "_db_note",
+    "_write_progress",
+    "_escalation_options",
+    "escalate",
+    # intake
+    "brief_file",
+    "intake_file",
+    "refs_dir",
+    "ANSWER_RE",
+    "intake_answers",
+    "_seed_brief",
+    "intake_enabled",
+    "_init_intake",
+    "init",
+    "intake_ask",
+    "INTAKE_END_ANSWERS",
+    "INTAKE_SUBMIT_ANSWERS",
+    "intake_wait",
+    # planning
+    "plan",
+    "UI_SURFACE_RE",
+    "PERF_SURFACE_RE",
+    "_detect_has_ui",
+    "_detect_has_perf",
+    # debate
+    "TECH_LIMIT_RE",
+    "_SECTION_HEADER_RE",
+    "PLAN_MARKER_RE",
+    "_extract_plan",
+    "_latest_section",
+    "debate_tech",
+    "debate_ux",
+    "_debate_decision",
+    "debate_reply",
+    # implement
+    "_capture_test_baseline",
+    "_in_graph_test_gate",
+    "implement",
+    "close_batch",
+    # review
+    "code_review",
+    "code_fix",
+    "code_verify",
+    # quality_gates
+    "_screens_dir",
+    "ux_render",
+    "ux_visual_review",
+    "ux_visual_fix",
+    "_renders_dir",
+    "render_measure",
+    "render_review",
+    "render_fix",
+    # finalize
+    "summary",
+    "judge",
+    "checkpoint_plan",
+    "queue_scope",
+    "FINAL_FIX_ATTEMPTS",
+    "FINAL_FIX_MAX_FAILURES_PER_ATTEMPT",
+    "FINAL_FIX_TIMEOUT",
+    "_final_test_fix_loop",
+    "final_check",
+    "wrap_up",
+]

@@ -8,12 +8,37 @@ dependencies = [
   "langgraph-checkpoint-sqlite>=1.0",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.11"]
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["pipeline_graph"]
+packages = ["pipeline_graph", "pipeline_graph.nodes"]
 
 [tool.setuptools.package-data]
 pipeline_graph = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_configs = true
+explicit_package_bases = true
+# Gradual: only check our own package, not tests or third-party stubs
+files = ["pipeline_graph"]
+exclude = ["notify_daemon\\.py"]
+# Relax strictness for now — the codebase uses untyped dict state everywhere
+check_untyped_defs = false
+disallow_untyped_defs = false

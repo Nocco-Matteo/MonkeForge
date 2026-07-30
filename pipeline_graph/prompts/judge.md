@@ -25,7 +25,7 @@ and the losing one is irreversible or expensive to undo; or ruling would change
 the task's scope. To escalate, write ESCALATE: <reason> as the first line of
 your final message and stop.
 
-WRITE {docs_dir}/final/FINAL-{task_id}.md:
+PRINT the FINAL-{task_id}.md content to stdout (the pipeline files it automatically):
 1. Rulings — one line per open point: decision + the criterion that decided it.
 2. Consolidated plan (or delta vs the plan), including the batch list.
 3. Risk notes for implementation.
@@ -47,7 +47,7 @@ WRITE {docs_dir}/final/FINAL-{task_id}.md:
    "VERIFIED AT FINAL GATE" — it is checked once by the final check, never by a
    batch review, and its lines must not appear in BATCHES-{task_id}.json.
 
-ALSO WRITE {docs_dir}/final/BATCHES-{task_id}.json — machine-readable array, one object per batch:
+ALSO PRINT the BATCHES-{task_id}.json content to stdout — machine-readable array, one object per batch:
 [{"n": 1, "scope": "<short scope>", "checklist": [1,2,3],
   "test_failure_allowlist": ["creationMatrixManifest.test.ts > drift check"]}, ...]
 Required keys per object: "n", "scope", "checklist" (checklist item numbers for that batch).

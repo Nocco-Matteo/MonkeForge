@@ -19,7 +19,8 @@ METHOD:
    - Is it a style preference rather than a defect?
    - Is it an edge case so unlikely that fixing it costs more than the risk?
    Deleting a weak item is a success, not a loss.
-3. Only then write the file.
+3. Only then print the review to stdout — do NOT write or edit any file, the
+   pipeline files it for you.
 
 SEVERITY RULE: [BLOCKER] = ships broken, loses data, breaks existing behaviour,
 or makes the plan unimplementable as written. Everything else is [SUGGESTION].
@@ -46,7 +47,7 @@ on whether that constraint is technically real. For each such claim:
 You are not ruling on whether the UX matters (that is the designer's call), only
 on whether the stated constraint is true.
 
-OUTPUT -> append to {docs_dir}/debates/DEBATE-{task_id}.md under
+OUTPUT -> print the review to stdout (the pipeline appends it to the debate file automatically) under
 "## Round {round} — Reviewer":
   VERDICT: APPROVE | APPROVE_WITH_CHANGES | REJECT
   then at most 5 items, max 4 lines each:
