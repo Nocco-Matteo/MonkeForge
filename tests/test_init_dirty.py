@@ -1,3 +1,4 @@
+import importlib
 import subprocess
 import tempfile
 import unittest
@@ -7,33 +8,31 @@ from unittest.mock import patch
 from pipeline_graph import config as C, nodes as N
 
 
-class GitExcludes(unittest.TestCase):
-    def _init_repo(self, path: Path) -> None:
-        subprocess.run(["git", "init", "-q", str(path)], check=True)
+class DocsAddressing(unittest.TestCase):
+    """Agents reach external docs by absolute path, never through an in-repo mirror."""
 
-    def test_exclude_registered_and_idempotent(self):
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            self._init_repo(repo)
-            C._ensure_git_excludes(repo, ".pipeline-docs/")
-            exclude = repo / ".git" / "info" / "exclude"
-            self.assertIn(".pipeline-docs/", exclude.read_text().splitlines())
-            # Second call must not duplicate the entry.
-            C._ensure_git_excludes(repo, ".pipeline-docs/")
-            self.assertEqual(
-                exclude.read_text().count(".pipeline-docs/"), 1)
+    def _config_for(self, repo: Path):
+        with patch.dict("os.environ", {"PIPELINE_REPO": str(repo)}, clear=False):
+            return importlib.reload(C)
 
-    def test_excluded_path_is_invisible_to_git(self):
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            self._init_repo(repo)
-            C._ensure_git_excludes(repo, ".pipeline-docs/")
-            (repo / ".pipeline-docs").mkdir()
-            (repo / ".pipeline-docs" / "plan.md").write_text("x")
-            untracked = subprocess.run(
-                ["git", "ls-files", "-o", "--exclude-standard"],
-                cwd=repo, capture_output=True, text=True).stdout
-            self.assertEqual(untracked.strip(), "")
+    def test_external_docs_are_absolute_and_not_mirrored(self):
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                subprocess.run(["git", "init", "-q", str(repo)], check=True)
+                cfg = self._config_for(repo)
+                self.assertFalse(cfg.DOCS.is_relative_to(repo))
+                self.assertTrue(Path(cfg.DOCS_REL).is_absolute())
+                self.assertIsNone(cfg.DOCS_ORIG)
+                self.assertEqual(cfg.INIT_DIRTY_OK_PREFIXES, ())
+                self.assertFalse((repo / ".pipeline-docs").exists())
+        finally:
+            importlib.reload(C)  # restore module state for the rest of the suite
+
+    def test_gemini_command_grants_external_docs_dir(self):
+        cmd = C.role_cmd("UX_REVIEWER", Path("/x/p.md"), "prompt")
+        self.assertIn("--include-directories", cmd)
+        self.assertIn(str(C.DOCS), cmd)
 
 
 class DirtyPathsInit(unittest.TestCase):

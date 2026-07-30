@@ -19,6 +19,16 @@ _MF_ROOT = Path(__file__).resolve().parent
 _yaml_file = _MF_ROOT / "monkeforge.yaml"
 _env_file = _MF_ROOT / ".env"
 
+def _envstr(val) -> str:
+    """Render a YAML value for an env var. Booleans go to lowercase "true"/"false":
+    Python's str(True) is "True", but CLIs that read a raw env value case-sensitively
+    (gemini's GEMINI_CLI_TRUST_WORKSPACE only accepts "true") reject the capitalised
+    form and silently refuse to run."""
+    if isinstance(val, bool):
+        return "true" if val else "false"
+    return str(val)
+
+
 def _load_yaml_to_env(path: Path) -> None:
     import yaml as _yaml
     data = _yaml.safe_load(path.read_text()) or {}
@@ -29,7 +39,7 @@ def _load_yaml_to_env(path: Path) -> None:
             val = ";".join(val) if isinstance(val, list) else str(val)
         elif key == "dry_run":
             val = "1" if val else ""
-        os.environ.setdefault(f"PIPELINE_{key.upper()}", str(val))
+        os.environ.setdefault(f"PIPELINE_{key.upper()}", _envstr(val))
 
     # agents: -> PIPELINE_MODEL_<ROLE>, PIPELINE_CMD_<ROLE>
     for role, cfg in (data.get("agents") or {}).items():
@@ -42,17 +52,17 @@ def _load_yaml_to_env(path: Path) -> None:
     _tool_keys = {"gemini_trust_workspace": "GEMINI_CLI_TRUST_WORKSPACE"}
     for key, val in (data.get("tools") or {}).items():
         env_key = _tool_keys.get(key, key.upper())
-        os.environ.setdefault(env_key, str(val))
+        os.environ.setdefault(env_key, _envstr(val))
 
     # notifications: -> PIPELINE_NOTIFY_*
     for key, val in (data.get("notifications") or {}).items():
-        os.environ.setdefault(f"PIPELINE_NOTIFY_{key.upper()}", str(val))
+        os.environ.setdefault(f"PIPELINE_NOTIFY_{key.upper()}", _envstr(val))
 
     # discord: -> DISCORD_* (with special cases)
     _discord_keys = {"bot_autostart": "PIPELINE_BOT_AUTOSTART"}
     for key, val in (data.get("discord") or {}).items():
         env_key = _discord_keys.get(key, f"DISCORD_{key.upper()}")
-        os.environ.setdefault(env_key, str(val))
+        os.environ.setdefault(env_key, _envstr(val))
 
 if _yaml_file.exists():
     _load_yaml_to_env(_yaml_file)

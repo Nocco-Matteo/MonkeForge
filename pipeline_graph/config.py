@@ -14,51 +14,6 @@ REPO = Path(
 MF_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _git_common_dir(repo: Path) -> Path | None:
-    """Absolute path to the repo's .git common dir (handles worktrees/submodules).
-
-    In a linked worktree `.git` is a file pointing elsewhere, so we can't assume
-    `repo/.git`; ask git for the common dir where info/exclude actually lives.
-    """
-    out = subprocess.run(
-        ["git", "rev-parse", "--git-common-dir"],
-        cwd=repo, capture_output=True, text=True,
-    ).stdout.strip()
-    if not out:
-        return None
-    p = Path(out)
-    return p if p.is_absolute() else (repo / p).resolve()
-
-
-def _ensure_git_excludes(repo: Path, *entries: str) -> None:
-    """Add local-only ignore rules via .git/info/exclude, not the tracked .gitignore.
-
-    This keeps pipeline artifacts that live inside the repo invisible to git:
-    `git status`, `git add -A`, and `git ls-files -o --exclude-standard` all honour
-    info/exclude. So the working tree stays clean and the per-batch commits carry
-    only real code — without dirtying a committed .gitignore. Best-effort: on any
-    filesystem hiccup we silently fall back to the dirty-check tolerance.
-    """
-    common = _git_common_dir(repo)
-    if common is None:
-        return
-    try:
-        info = common / "info"
-        info.mkdir(parents=True, exist_ok=True)
-        exclude = info / "exclude"
-        existing = exclude.read_text().splitlines() if exclude.exists() else []
-        missing = [e for e in entries if e not in existing]
-        if not missing:
-            return
-        with exclude.open("a") as fh:
-            if existing and existing[-1].strip():
-                fh.write("\n")
-            fh.write("# MonkeForge pipeline artifacts (local, never committed)\n")
-            for e in missing:
-                fh.write(f"{e}\n")
-    except OSError:
-        pass
-
 # Per-repo docs: MonkeForge/docs/<repo-name>/...  Override with PIPELINE_DOCS_DIR.
 _repo_slug = REPO.name
 DOCS      = Path(os.environ.get("PIPELINE_DOCS_DIR") or (MF_ROOT / "docs" / _repo_slug))
@@ -74,55 +29,19 @@ RAW       = METRICS / "raw"
 RUNS_LOG  = METRICS / "runs.jsonl"
 CHECKPOINT_DB = METRICS / "graph-checkpoints.sqlite"
 
-# Repo-relative path to docs for agent prompts.  When docs live inside the
-# repo this is just the relative path.  When they live outside (the default),
-# we copy them into .pipeline-docs/ inside the repo and repoint DOCS there so
-# all agents (including claude, which blocks symlinks) can read/write within
-# their working directory.  The original DOCS is kept for sync-back.
-#
-# .pipeline-docs/ is registered in .git/info/exclude (a local, uncommitted
-# ignore) the moment we create it, so git never sees it: the working tree stays
-# clean, `init` doesn't escalate/WIP-commit on it, and per-batch commits carry
-# only real code.  That's why INIT_DIRTY_OK_PREFIXES stays empty here.
+# {docs_dir} injected into every agent prompt. Two modes, and NOTHING is copied
+# into the repo in either one — the working tree only ever holds real task code:
+#   - docs INSIDE the repo (PIPELINE_DOCS_DIR=REPO/docs): repo-relative path;
+#     they're tracked and INIT_DIRTY_OK_PREFIXES keeps them from blocking init.
+#   - docs OUTSIDE the repo (default): ABSOLUTE path. Agents reach it through each
+#     CLI's external-dir flag (claude --add-dir {docs_dir}, gemini
+#     --include-directories {docs_dir}, devin reads absolute paths natively).
+#     No .pipeline-docs mirror, no sync-back.
 if DOCS.is_relative_to(REPO):
     DOCS_REL = str(DOCS.relative_to(REPO))
-    DOCS_ORIG = None
 else:
-    import shutil as _sh
-    _local = REPO / ".pipeline-docs"
-    _ensure_git_excludes(REPO, ".pipeline-docs/")
-    if _local.exists() and not _local.is_dir():
-        _local.unlink()
-    if not _local.exists():
-        _local.mkdir(parents=True)
-    for _sub in _local.iterdir():
-        if _sub.is_dir():
-            _sh.rmtree(_sub)
-        else:
-            _sub.unlink()
-    for _item in DOCS.iterdir():
-        if _item.is_dir():
-            _sh.copytree(_item, _local / _item.name, dirs_exist_ok=True,
-                         ignore=_sh.ignore_patterns('*.sock', 'notify.spool*'))
-        elif _item.is_socket() or not _item.is_file():
-            continue
-        else:
-            _sh.copy2(_item, _local / _item.name)
-    DOCS_ORIG = DOCS
-    DOCS = _local
-    DOCS_REL = ".pipeline-docs"
-    # Re-derive sub-paths from the repointed DOCS
-    PLANS     = DOCS / "plans"
-    DEBATES   = DOCS / "debates"
-    FINAL     = DOCS / "final"
-    REVIEWS   = DOCS / "reviews"
-    PROMPTS   = DOCS / "prompts"
-    QUEUE     = DOCS / "queue" / "pending"
-    TASKS     = DOCS / "tasks"
-    METRICS   = DOCS / "metrics"
-    RAW       = METRICS / "raw"
-    RUNS_LOG  = METRICS / "runs.jsonl"
-    CHECKPOINT_DB = METRICS / "graph-checkpoints.sqlite"
+    DOCS_REL = str(DOCS)
+DOCS_ORIG = None  # kept for API stability; no in-repo mirror to sync back anymore
 
 # Dirty paths that do not block `init` in interactive mode (pipeline/task docs only).
 # When docs live inside the repo (PIPELINE_DOCS_DIR=REPO/docs), pipeline artifacts
@@ -156,7 +75,7 @@ def arch_docs_block() -> str:
 _DEFAULT_ROLE_CONFIG = {
     "INTERVIEWER": {
         "model": "gemini-3.1-pro-preview",
-        "cmd":   "gemini -m {model} -p {prompt}",
+        "cmd":   "gemini -m {model} --include-directories {docs_dir} -p {prompt}",
     },
     "PROPOSER": {
         "model": "glm-5.2",
@@ -180,7 +99,7 @@ _DEFAULT_ROLE_CONFIG = {
     # (composer was the plan but cursor-agent is out of usage.)
     "UX_REVIEWER": {
         "model": "gemini-3.6-flash",
-        "cmd":   "gemini -m {model} -p {prompt}",
+        "cmd":   "gemini -m {model} --include-directories {docs_dir} -p {prompt}",
     },
     # Reviews RENDERED screenshots, so it must reliably read image files — claude
     # does (its Read tool renders PNGs); gemini botches the tool call. This is the
@@ -407,17 +326,10 @@ def ensure_dirs() -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 def sync_back_docs() -> None:
-    """Copy .pipeline-docs/ back to the original DOCS location after a run."""
-    if not DOCS_ORIG:
-        return
-    import shutil as _sh
-    DOCS_ORIG.mkdir(parents=True, exist_ok=True)
-    for _item in DOCS.iterdir():
-        _dest = DOCS_ORIG / _item.name
-        if _item.is_dir():
-            _sh.copytree(_item, _dest, dirs_exist_ok=True,
-                         ignore=_sh.ignore_patterns('*.sock', 'notify.spool*'))
-        elif _item.is_socket() or not _item.is_file():
-            continue
-        else:
-            _sh.copy2(_item, _dest)
+    """No-op: DOCS is written in place now (no in-repo mirror to copy back).
+
+    Kept so existing call sites (e.g. finalize) stay valid. Agents read DOCS
+    directly via their external-dir flags, and the Python orchestrator writes
+    artifacts straight to DOCS, so there is nothing to synchronise after a run.
+    """
+    return
