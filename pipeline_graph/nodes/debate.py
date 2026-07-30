@@ -62,6 +62,25 @@ def _latest_section(debate_text: str, critic: str) -> str:
     return debate_text[last_start:next_start]
 
 
+def _open_blocker_count(verdict: str, out: str, latest_tech: str) -> int:
+    """[BLOCKER] tokens count as OPEN blockers only when the critic actually
+    blocked (VERDICT: REJECT).
+
+    Under APPROVE / APPROVE_WITH_CHANGES the reviewer is shipping, so any
+    [BLOCKER] token in that output is a reference to a resolved or prior item —
+    counting it (or letting the stale-round `latest_tech` fallback resurrect an
+    earlier REJECT's count) is what falsely escalated "N blocker(s) confirmed"
+    after rounds 2-3 had downgraded the theme to a SUGGESTION with
+    APPROVE_WITH_CHANGES. Trust the verdict over the loose severity marker.
+
+    UNKNOWN stays conservative (still counts), so a review we could not parse
+    can't silently converge as if it had approved.
+    """
+    if verdict in ("APPROVE", "APPROVE_WITH_CHANGES"):
+        return 0
+    return count_blockers(out) or count_blockers(latest_tech)
+
+
 def debate_tech(state):
     """The technical critic. Critiques the plan AND certifies TECH-LIMIT claims.
 
@@ -91,7 +110,7 @@ def debate_tech(state):
         text = read_if_exists(debate_path)
     latest_tech = _latest_section(text, "Reviewer")
     verdict = parse_verdict(out) if parse_verdict(out) != "UNKNOWN" else parse_verdict(text)
-    blockers = count_blockers(out) or count_blockers(latest_tech)
+    blockers = _open_blocker_count(verdict, out, latest_tech)
     limits = sorted(set(TECH_LIMIT_RE.findall(out) + TECH_LIMIT_RE.findall(latest_tech)))
     delta = {
         "debate_round": rnd,

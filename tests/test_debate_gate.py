@@ -15,6 +15,45 @@ import unittest
 
 from pipeline_graph import nodes as N, agents as A
 from pipeline_graph import graph as G
+from pipeline_graph.nodes import debate as D
+
+
+class OpenBlockerCount(unittest.TestCase):
+    """A [BLOCKER] token counts as an OPEN blocker only under VERDICT: REJECT.
+
+    Regression for the TASK-002 false escalation: rounds 2-3 downgraded the theme
+    to SUGGESTION with APPROVE_WITH_CHANGES, but the count resurrected the Round 1
+    REJECT's 2 blockers and escalated "2 technical blocker(s) confirmed".
+    """
+    REJECT_OUT = "VERDICT: REJECT\n[BLOCKER] a is wrong.\n[BLOCKER] b is wrong.\n"
+    STALE_R1 = "VERDICT: REJECT\n[BLOCKER] a is wrong.\n[BLOCKER] b is wrong.\n"
+
+    def test_reject_counts_blockers(self):
+        self.assertEqual(D._open_blocker_count("REJECT", self.REJECT_OUT, ""), 2)
+
+    def test_approve_with_changes_zeroes_blockers(self):
+        # Same [BLOCKER] text, but the reviewer is shipping → not blocking.
+        self.assertEqual(
+            D._open_blocker_count("APPROVE_WITH_CHANGES", self.REJECT_OUT, ""), 0)
+
+    def test_approve_zeroes_blockers(self):
+        self.assertEqual(D._open_blocker_count("APPROVE", self.REJECT_OUT, ""), 0)
+
+    def test_clean_round_does_not_resurrect_stale_reject(self):
+        # Current round clean (0 blockers) + APPROVE_WITH_CHANGES must NOT fall
+        # back to a stale earlier Reviewer section that still had blockers.
+        clean_out = "VERDICT: APPROVE_WITH_CHANGES\n[SUGGESTION] minor thing.\n"
+        self.assertEqual(
+            D._open_blocker_count("APPROVE_WITH_CHANGES", clean_out, self.STALE_R1), 0)
+
+    def test_reject_falls_back_to_latest_section_when_out_empty(self):
+        # Recovery path preserved: a REJECT with unreadable `out` still counts
+        # from the filed section.
+        self.assertEqual(D._open_blocker_count("REJECT", "", self.STALE_R1), 2)
+
+    def test_unknown_stays_conservative(self):
+        # An unparseable verdict must not silently converge — still counts.
+        self.assertEqual(D._open_blocker_count("UNKNOWN", self.REJECT_OUT, ""), 2)
 
 
 DEBATE_OUT_OF_ORDER = """\
