@@ -8,7 +8,8 @@ import time
 
 from .. import config as C
 from .. import events as ev
-from ..agents import count_blockers, parse_verdict, read_if_exists, render_prompt, run_agent
+from ..agents import count_blockers, parse_verdict, read_if_exists, run_agent
+from ..state import Conversation
 from .common import _file_or_stdout, _recover_artifact, _save
 
 TECH_LIMIT_RE = re.compile(
@@ -99,8 +100,15 @@ def debate_tech(state):
     tid = state["task_id"]
     rnd = state.get("debate_round", 0) + 1
     is_verification = rnd > C.MAX_DEBATE_ROUNDS
-    prompt = render_prompt("debate_review", task_id=tid, round=rnd, docs_dir=C.DOCS_REL)
-    _, out = run_agent("PLAN_REVIEWER", tid, f"debate-r{rnd}-tech", prompt)
+    conv = Conversation.from_state(state)
+    _, out = run_agent(
+        "PLAN_REVIEWER",
+        conv,
+        f"debate-r{rnd}-tech",
+        template="debate_review",
+        round=rnd,
+        docs_dir=C.DOCS_REL,
+    )
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
     text = _file_or_stdout(
         debate_path, out, content=f"\n\n## Round {rnd} — Reviewer\n\n{out.strip()}\n", append=True
@@ -139,13 +147,7 @@ def debate_ux(state):
     """
     tid = state["task_id"]
     rnd = state.get("debate_round", 0)
-    prompt = render_prompt(
-        "debate_ux",
-        task_id=tid,
-        round=rnd,
-        tech_limits="; ".join(state.get("tech_limits", [])) or "none",
-        docs_dir=C.DOCS_REL,
-    )
+    conv = Conversation.from_state(state)
 
     # The UX reviewer is print-only (gemini): it prints the review, WE file it.
     # Asking it to write files itself makes its CLI attempt a tool call and
@@ -160,7 +162,15 @@ def debate_ux(state):
     review, verdict = "", "UNKNOWN"
     for attempt in range(UX_REVIEW_RETRIES):
         step = f"debate-r{rnd}-ux" + (f"-retry{attempt}" if attempt else "")
-        _, out = run_agent("UX_REVIEWER", tid, step, prompt)
+        _, out = run_agent(
+            "UX_REVIEWER",
+            conv,
+            step,
+            template="debate_ux",
+            round=rnd,
+            tech_limits="; ".join(state.get("tech_limits", [])) or "none",
+            docs_dir=C.DOCS_REL,
+        )
         verdict = parse_verdict(out)
         if verdict != "UNKNOWN":
             review = out
@@ -281,14 +291,16 @@ def _debate_decision(state, is_verification: bool = False) -> dict:
 def debate_reply(state):
     tid = state["task_id"]
     rnd = state["debate_round"]
-    prompt = render_prompt(
-        "debate_reply",
-        task_id=tid,
+    conv = Conversation.from_state(state)
+    _, out = run_agent(
+        "PROPOSER",
+        conv,
+        f"debate-r{rnd}-reply",
+        template="debate_reply",
         round=rnd,
         tech_limits="; ".join(state.get("tech_limits", [])) or "none",
         docs_dir=C.DOCS_REL,
     )
-    _, out = run_agent("PROPOSER", tid, f"debate-r{rnd}-reply", prompt)
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
     # Extract the updated plan from between the markers; the per-item notes
     # (everything outside the markers) go into the debate file as the reply.

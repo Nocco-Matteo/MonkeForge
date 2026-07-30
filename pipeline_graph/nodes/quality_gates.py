@@ -13,6 +13,7 @@ import pipeline_graph.nodes as _N
 
 from .. import config as C
 from ..agents import count_blockers, parse_verdict, read_if_exists
+from ..state import Conversation
 from .common import _db_note, _stage_all
 
 
@@ -99,17 +100,19 @@ def ux_visual_review(state):
     tid = state["task_id"]
     cyc = state.get("ux_render_cycle", 0)
     shots = _screens_dir(tid)
-    prompt = _N.render_prompt(
-        "visual_review",
-        task_id=tid,
-        screens_dir=str(shots.relative_to(C.REPO)) if shots.is_relative_to(C.REPO) else str(shots),
-        render_facts=state.get("render_facts", "{}"),
-    )
+    conv = Conversation.from_state(state)
 
     review, verdict = "", "UNKNOWN"
     for attempt in range(2):
         step = f"visual-c{cyc}" + (f"-retry{attempt}" if attempt else "")
-        _, out = _N.run_agent("VISUAL_REVIEWER", tid, step, prompt)
+        _, out = _N.run_agent(
+            "VISUAL_REVIEWER",
+            conv,
+            step,
+            template="visual_review",
+            screens_dir=str(shots.relative_to(C.REPO)) if shots.is_relative_to(C.REPO) else str(shots),
+            render_facts=state.get("render_facts", "{}"),
+        )
         verdict = parse_verdict(out)
         if verdict != "UNKNOWN":
             review = out
@@ -168,14 +171,16 @@ def ux_visual_fix(state):
     # VISUAL_FIXER (claude), not the blind IMPLEMENTER: it OPENS the screenshots,
     # so a fix to one mode does not silently break the other (the whack-a-mole
     # that plateaued task-009 at 2 blockers across 4 cycles).
-    prompt = _N.render_prompt(
-        "visual_fix",
-        task_id=tid,
+    conv = Conversation.from_state(state)
+    _N.run_agent(
+        "VISUAL_FIXER",
+        conv,
+        f"visual-fix-c{cyc}",
+        template="visual_fix",
         screens_dir=str(shots.relative_to(C.REPO)) if shots.is_relative_to(C.REPO) else str(shots),
         render_facts=state.get("render_facts", "{}"),
         docs_dir=C.DOCS_REL,
     )
-    _N.run_agent("VISUAL_FIXER", tid, f"visual-fix-c{cyc}", prompt)
     _stage_all()
     return {
         "ux_render_cycle": cyc,
@@ -356,7 +361,13 @@ def render_fix(state):
     tid = state["task_id"]
     cyc = state.get("render_cycle", 0) + 1
     delta = read_if_exists(_renders_dir(tid) / "render-delta.md") or "(no delta file)"
-    prompt = _N.render_prompt("render_fix", task_id=tid, render_delta=delta)
-    _N.run_agent("IMPLEMENTER", tid, f"render-fix-c{cyc}", prompt)
+    conv = Conversation.from_state(state)
+    _N.run_agent(
+        "IMPLEMENTER",
+        conv,
+        f"render-fix-c{cyc}",
+        template="render_fix",
+        render_delta=delta,
+    )
     _stage_all()
     return {"render_cycle": cyc, "journal": [f"render fix c{cyc}: applied, re-profiling"]}

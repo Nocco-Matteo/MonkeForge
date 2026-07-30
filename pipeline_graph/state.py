@@ -1,7 +1,18 @@
 """Typed state carried through the graph and persisted by the checkpointer."""
 from __future__ import annotations
+import dataclasses
+import json
+from pathlib import Path
 from typing import Annotated, Literal, TypedDict
 import operator
+
+from . import config as C
+
+
+def read_if_exists(path: Path) -> str:
+    """Local copy of `agents.read_if_exists` to avoid an `agents`->`state` import
+    cycle (`agents.py` imports `Conversation` from here)."""
+    return path.read_text() if path.exists() else ""
 
 
 class Batch(TypedDict):
@@ -83,3 +94,69 @@ class PipelineState(TypedDict, total=False):
 
     # --- append-only journal (each node adds one line; survives checkpointing)
     journal: Annotated[list[str], operator.add]
+
+
+@dataclasses.dataclass(frozen=True)
+class Conversation:
+    """Read-only snapshot of `PipelineState` + on-disk artifacts handed to agents.
+
+    Built once per node via `from_state`; agents render prompts from it instead
+    of receiving an opaque pre-rendered string. `frozen=True` blocks
+    reassignment and `journal` is a `tuple` so in-place mutation
+    (`conv.journal.append(...)`) raises `AttributeError` — the read-only
+    contract from the brief holds against both reassignment and in-place edits.
+    """
+
+    task_id: str
+    request: str
+    brief: str
+    plan: str
+    debate_history: str
+    batch_context: str
+    review_history: str
+    journal: tuple[str, ...]
+
+    @classmethod
+    def from_state(cls, state: "PipelineState") -> "Conversation":
+        """Snapshot `state` + on-disk brief/plan/debate/reviews into a frozen
+        `Conversation`. Single construction site so field derivations live in
+        one place. Disk reads are accepted by the brief (no caching layer)."""
+        task_id = state.get("task_id", "")
+        request = state.get("request", "")
+        brief = read_if_exists(C.TASKS / f"TASK-{task_id}-brief.md")
+        plan = read_if_exists(C.PLANS / f"PLAN-{task_id}.md")
+        debate_history = read_if_exists(C.DEBATES / f"DEBATE-{task_id}.md")
+        batch_context = json.dumps(
+            {
+                "batch_idx": state.get("batch_idx", 0),
+                "batches": state.get("batches", []),
+            }
+        )
+        # Fixed order: CODE-* (sorted lexicographically — deterministic, the
+        # brief only requires "concatenated text"; b1, b10, b2 ordering is
+        # stable and documented), then UX, then VISUAL. Each non-empty file
+        # contributes a `--- STEM ---` header (P5 structural separator).
+        review_parts: list[str] = []
+        for path in sorted(C.REVIEWS.glob(f"CODE-{task_id}-b*.md")):
+            body = read_if_exists(path)
+            if body:
+                review_parts.append(f"--- {path.stem} ---\n\n{body}")
+        for name in (f"UX-{task_id}.md", f"VISUAL-{task_id}.md"):
+            path = C.REVIEWS / name
+            body = read_if_exists(path)
+            if body:
+                review_parts.append(f"--- {path.stem} ---\n\n{body}")
+        review_history = "\n\n".join(review_parts)
+        # Copy + freeze: tuple(state.get(...)) so neither reassignment nor
+        # in-place mutation can corrupt the snapshot.
+        journal = tuple(state.get("journal", []))
+        return cls(
+            task_id=task_id,
+            request=request,
+            brief=brief,
+            plan=plan,
+            debate_history=debate_history,
+            batch_context=batch_context,
+            review_history=review_history,
+            journal=journal,
+        )

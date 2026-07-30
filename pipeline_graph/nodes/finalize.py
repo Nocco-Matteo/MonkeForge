@@ -12,7 +12,8 @@ import pipeline_graph.nodes as _N
 from .. import config as C
 from .. import events as ev
 from .. import test_runner as tr
-from ..agents import parse_not_met, render_prompt
+from ..agents import parse_not_met
+from ..state import Conversation
 from .common import (
     _db_note,
     _extract_json,
@@ -27,8 +28,8 @@ from .common import (
 
 def summary(state):
     tid = state["task_id"]
-    prompt = render_prompt("summary", task_id=tid, docs_dir=C.DOCS_REL)
-    _, out = _N.run_agent("SUMMARIZER", tid, "summary", prompt)
+    conv = Conversation.from_state(state)
+    _, out = _N.run_agent("SUMMARIZER", conv, "summary", template="summary", docs_dir=C.DOCS_REL)
     summary_path = C.DEBATES / f"SUMMARY-{tid}.md"
     _file_or_stdout(summary_path, out)
     if not summary_path.exists():
@@ -41,8 +42,8 @@ def summary(state):
 
 def judge(state):
     tid = state["task_id"]
-    prompt = render_prompt("judge", task_id=tid, docs_dir=C.DOCS_REL)
-    code, out = _N.run_agent("JUDGE", tid, "verdict", prompt)
+    conv = Conversation.from_state(state)
+    code, out = _N.run_agent("JUDGE", conv, "verdict", template="judge", docs_dir=C.DOCS_REL)
 
     if out.strip().startswith("ESCALATE:") or "\nESCALATE:" in out:
         reason = out.split("ESCALATE:", 1)[1].strip().splitlines()[0]
@@ -129,7 +130,7 @@ FINAL_FIX_MAX_FAILURES_PER_ATTEMPT = 5
 FINAL_FIX_TIMEOUT = int(os.environ.get("PIPELINE_FINAL_FIX_TIMEOUT", "600")) or None
 
 
-def _final_test_fix_loop(tid: str, db_ok: bool, baseline: set[str]) -> dict | None:
+def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) -> dict | None:
     """Run the full suite after all batches; auto-fix only NEW failures.
 
     Baseline-aware, like the per-batch gate: failures already present at task
@@ -143,6 +144,7 @@ def _final_test_fix_loop(tid: str, db_ok: bool, baseline: set[str]) -> dict | No
     or DB down / dry run), or a dict with an escalation if new failures remain
     after FINAL_FIX_ATTEMPTS.
     """
+    tid = conv.task_id
     if C.DRY_RUN or not db_ok:
         return None
 
@@ -171,15 +173,15 @@ def _final_test_fix_loop(tid: str, db_ok: bool, baseline: set[str]) -> dict | No
             if remaining
             else ""
         )
-        prompt = render_prompt(
-            "preflight_fix",
-            task_id=tid,
+        _, out = _N.run_agent(
+            "IMPLEMENTER",
+            conv,
+            f"final-fix-{attempt}",
+            template="preflight_fix",
+            timeout=FINAL_FIX_TIMEOUT,
             failures=fail_list,
             summary=summary,
             remaining_label=remaining_label,
-        )
-        _, out = _N.run_agent(
-            "IMPLEMENTER", tid, f"final-fix-{attempt}", prompt, timeout=FINAL_FIX_TIMEOUT
         )
         _, all_failures, summary = tr.run_repo_tests()
         failures = tr.new_failures_since_baseline(all_failures, baseline, [])
@@ -215,6 +217,7 @@ def _final_test_fix_loop(tid: str, db_ok: bool, baseline: set[str]) -> dict | No
 def final_check(state):
     tid = state["task_id"]
     db_ok, db_note = _db_note(tid, "final_check")
+    conv = Conversation.from_state(state)
 
     # Test gate: run the full suite and auto-fix any failures before the
     # LLM checklist review.  This catches both pre-existing baseline
@@ -223,7 +226,7 @@ def final_check(state):
     test_result = (
         None
         if state.get("final_tests_waived")
-        else _final_test_fix_loop(tid, db_ok, set(state.get("task_baseline") or []))
+        else _final_test_fix_loop(conv, db_ok, set(state.get("task_baseline") or []))
     )
     if test_result:
         suffix = "" if db_ok else " (DB-gated tests skipped: e2e Postgres unreachable)"
@@ -239,8 +242,14 @@ def final_check(state):
             ]
         return delta
 
-    prompt = render_prompt("final_check", task_id=tid, db_note=db_note, docs_dir=C.DOCS_REL)
-    _, out = _N.run_agent("IMPLEMENTER", tid, "final-check", prompt)
+    _, out = _N.run_agent(
+        "IMPLEMENTER",
+        conv,
+        "final-check",
+        template="final_check",
+        db_note=db_note,
+        docs_dir=C.DOCS_REL,
+    )
     not_met = parse_not_met(out)
     suffix = "" if db_ok else " (DB-gated tests skipped: e2e Postgres unreachable)"
     delta = {

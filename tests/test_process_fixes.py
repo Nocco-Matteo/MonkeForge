@@ -11,6 +11,22 @@ import unittest
 from unittest.mock import patch
 
 from pipeline_graph import nodes as N, test_runner as tr
+from pipeline_graph.state import Conversation
+
+
+def _conv(tid):
+    """Minimal Conversation for `_final_test_fix_loop` tests: only `task_id`
+    is read by the helper (for the `degraded` event); the rest is unused."""
+    return Conversation(
+        task_id=tid,
+        request="",
+        brief="",
+        plan="",
+        debate_history="",
+        batch_context="{}",
+        review_history="",
+        journal=(),
+    )
 
 
 class EslintParsing(unittest.TestCase):
@@ -47,7 +63,7 @@ class FinalGateBaseline(unittest.TestCase):
         # Only baseline failures remain → no fixer runs, gate passes.
         with patch.object(N.tr, "run_repo_tests", return_value=(0, {"A", "B"}, "s")), \
              patch.object(N, "run_agent") as ra:
-            out = N._final_test_fix_loop("t", True, {"A", "B"})
+            out = N._final_test_fix_loop(_conv("t"), True, {"A", "B"})
         self.assertIsNone(out)
         ra.assert_not_called()
 
@@ -58,7 +74,7 @@ class FinalGateBaseline(unittest.TestCase):
              patch.object(N, "run_agent", return_value=(0, "")) as ra, \
              patch.object(N, "_stage_all"), patch.object(N, "_git"), \
              patch.object(N.ev, "emit"):
-            out = N._final_test_fix_loop("t", True, {"A"})
+            out = N._final_test_fix_loop(_conv("t"), True, {"A"})
         self.assertIsNone(out)
         ra.assert_called_once()
 
@@ -67,7 +83,7 @@ class FinalGateBaseline(unittest.TestCase):
              patch.object(N, "run_agent", return_value=(0, "")), \
              patch.object(N, "_stage_all"), patch.object(N, "_git"), \
              patch.object(N.ev, "emit"):
-            out = N._final_test_fix_loop("t", True, {"A"})
+            out = N._final_test_fix_loop(_conv("t"), True, {"A"})
         self.assertIsNotNone(out)
         self.assertIn("escalation", out)
         self.assertIn("NEW", out["escalation"])

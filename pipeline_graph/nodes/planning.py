@@ -6,7 +6,8 @@ import re
 from pathlib import Path
 
 from .. import config as C
-from ..agents import read_if_exists, render_prompt, run_agent
+from ..agents import read_if_exists, run_agent
+from ..state import Conversation
 from .common import _file_or_stdout, _recover_artifact, _rel
 from .intake import _seed_brief
 
@@ -16,15 +17,20 @@ def plan(state):
     # Never hand the proposer a path that is not there: an interview that
     # escalated at the round cap can reach this node with no brief written.
     brief = _seed_brief(tid, state["request"])
-    prompt = render_prompt(
+    conv = Conversation.from_state(state)
+    # `request` is also a Conversation field but passing it in extra_kw is
+    # harmless (same value); kept explicit for parity with the old call so the
+    # rendered text is byte-identical.
+    code, out = run_agent(
+        "PROPOSER",
+        conv,
         "plan",
-        task_id=tid,
+        template="plan",
         request=state["request"],
         brief_path=str(_rel(brief)),
         arch_docs=C.arch_docs_block(),
         docs_dir=C.DOCS_REL,
     )
-    code, out = run_agent("PROPOSER", tid, "plan", prompt)
     if code != 0:
         return {"escalation": f"plan step failed (exit {code})", "journal": ["plan: failed"]}
     plan_path = C.PLANS / f"PLAN-{tid}.md"

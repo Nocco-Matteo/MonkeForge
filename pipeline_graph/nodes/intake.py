@@ -10,8 +10,9 @@ from langgraph.types import interrupt
 
 from .. import config as C
 from .. import events as ev
-from ..agents import render_prompt, run_agent
+from ..agents import run_agent
 from ..intake_materialize import materialize_intake_output
+from ..state import Conversation
 from .common import _dirty_blocks_interactive_init, _dirty_paths, _git, _rel
 
 
@@ -175,9 +176,18 @@ def intake_ask(state):
     refs = refs_dir(tid)
     ref_list = ", ".join(sorted(p.name for p in refs.iterdir())) if refs.is_dir() else "none"
 
-    prompt = render_prompt(
-        "intake",
-        task_id=tid,
+    # A brief or intake file left behind by an earlier run of the same task id
+    # must not be mistaken for this round's output. Only a file actually written
+    # during this round counts.
+    before = brief_file(tid).stat().st_mtime if brief_file(tid).exists() else None
+    intake_before = intake_file(tid).stat().st_mtime if intake_file(tid).exists() else None
+
+    conv = Conversation.from_state(state)
+    code, out = run_agent(
+        "INTERVIEWER",
+        conv,
+        f"intake-r{rnd}",
+        template="intake",
         round=rnd,
         max_rounds=C.MAX_INTAKE_ROUNDS,
         request=state.get("request", ""),
@@ -186,14 +196,6 @@ def intake_ask(state):
         refs_path=str(_rel(refs)),
         refs_list=ref_list,
     )
-
-    # A brief or intake file left behind by an earlier run of the same task id
-    # must not be mistaken for this round's output. Only a file actually written
-    # during this round counts.
-    before = brief_file(tid).stat().st_mtime if brief_file(tid).exists() else None
-    intake_before = intake_file(tid).stat().st_mtime if intake_file(tid).exists() else None
-
-    code, out = run_agent("INTERVIEWER", tid, f"intake-r{rnd}", prompt)
     if code != 0:
         return {
             "intake_round": rnd,

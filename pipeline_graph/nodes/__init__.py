@@ -18,6 +18,7 @@ from ..agents import (
     run_agent,
 )
 from ..intake_materialize import materialize_intake_output
+from ..state import Conversation
 from .common import (
     DB_DOWN_NOTE,
     DB_OK_NOTE,
@@ -119,6 +120,7 @@ __all__ = [
     "parse_disputed",
     "read_if_exists",
     "materialize_intake_output",
+    "Conversation",
     # common
     "_git",
     "_rel",

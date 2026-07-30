@@ -9,7 +9,7 @@ import pipeline_graph.nodes as _N
 from .. import config as C
 from .. import events as ev
 from .. import test_runner as tr
-from ..agents import render_prompt
+from ..state import Conversation
 from .common import _current_batch, _db_note, _dirty_paths, _git, _stage_all, _write_progress
 
 
@@ -94,9 +94,15 @@ def implement(state):
         baseline_delta = {**baseline_delta, "batch_base_ref": _git("rev-parse", "HEAD").strip()}
     merged = {**state, **baseline_delta}
 
-    prompt = render_prompt(
-        "implement",
-        task_id=tid,
+    conv = Conversation.from_state(state)
+    step = f"impl-b{b['n']}"
+    if attempt:
+        step += f"-fix{attempt}"
+    code, out = _N.run_agent(
+        "IMPLEMENTER",
+        conv,
+        step,
+        template="implement",
         batch_n=b["n"],
         batch_scope=b["scope"],
         db_note=db_note,
@@ -104,10 +110,6 @@ def implement(state):
         checklist_items=", ".join(map(str, b.get("checklist", []))),
         docs_dir=C.DOCS_REL,
     )
-    step = f"impl-b{b['n']}"
-    if attempt:
-        step += f"-fix{attempt}"
-    code, out = _N.run_agent("IMPLEMENTER", tid, step, prompt)
 
     if "discrepancy" in out.lower() and "plan" in out.lower():
         return {

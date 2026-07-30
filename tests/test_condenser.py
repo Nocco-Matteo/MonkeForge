@@ -19,6 +19,23 @@ from pipeline_graph import agents as A
 from pipeline_graph import condenser
 from pipeline_graph import config as C
 from pipeline_graph import events as ev
+from pipeline_graph.state import Conversation
+
+
+def _conv(tid):
+    """Minimal Conversation for condenser-block tests: only `task_id` matters
+    (the condenser keys off it + the debate file on disk); prompt content is
+    irrelevant. `journal=()` matches the new tuple field type."""
+    return Conversation(
+        task_id=tid,
+        request="",
+        brief="",
+        plan="",
+        debate_history="",
+        batch_context="{}",
+        review_history="",
+        journal=(),
+    )
 
 # --- estimate_tokens --------------------------------------------------------
 
@@ -308,7 +325,7 @@ class TestRunAgentIntegration:
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t3.md").write_text(text)
 
-        A.run_agent("PLAN_REVIEWER", "t3", "step", "prompt")
+        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
 
         rewritten = (debates / "DEBATE-t3.md").read_text()
         assert rewritten != text
@@ -332,7 +349,7 @@ class TestRunAgentIntegration:
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t3.md").write_text(text)
 
-        A.run_agent("PLAN_REVIEWER", "t3", "step", "prompt")
+        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
 
         assert (debates / "DEBATE-t3.md").read_text() == text
         assert self._degraded_events() == []
@@ -345,7 +362,7 @@ class TestRunAgentIntegration:
         text = "".join("\n\n" + _round(n) for n in range(1, 3))
         (debates / "DEBATE-t3.md").write_text(text)
 
-        A.run_agent("PLAN_REVIEWER", "t3", "step", "prompt")
+        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
 
         assert (debates / "DEBATE-t3.md").read_text() == text
         assert self._degraded_events() == []
@@ -357,7 +374,7 @@ class TestRunAgentIntegration:
         # No debate file written.
         assert not (debates / "DEBATE-t3.md").exists()
 
-        A.run_agent("PLAN_REVIEWER", "t3", "step", "prompt")
+        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
 
         assert not (debates / "DEBATE-t3.md").exists()
         assert self._degraded_events() == []
@@ -376,8 +393,8 @@ class TestRunAgentIntegration:
 
         before_mtime = os.stat(debates / "DEBATE-t3.md").st_mtime_ns
 
-        A.run_agent("PLAN_REVIEWER", "t3", "step1", "prompt")
-        A.run_agent("PLAN_REVIEWER", "t3", "step2", "prompt")
+        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step1", template="debate_review")
+        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step2", template="debate_review")
 
         after = (debates / "DEBATE-t3.md").read_text()
         assert after == stabilized

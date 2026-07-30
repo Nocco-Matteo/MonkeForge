@@ -3,11 +3,13 @@
 No Bash-tool ceiling here: a batch may take 40 minutes and we simply wait.
 """
 from __future__ import annotations
+import dataclasses
 import json, os, re, subprocess, time
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config as C, events as ev
+from .state import Conversation
 
 HEARTBEAT_EVERY_S = int(os.environ.get("PIPELINE_HEARTBEAT_INTERVAL_S", "10"))
 
@@ -92,22 +94,69 @@ def _write_current(payload: dict) -> None:
     (C.METRICS / "current.json").write_text(json.dumps(stamped))
 
 
-def render_prompt(template: str, **kw) -> str:
-    """Load prompts/<template>.md and substitute {placeholders}."""
+def _fmt(value) -> str:
+    """Render a substitution value as clean text.
+
+    Sequence-typed values (`list`/`tuple`) are newline-joined so a future
+    `{journal}` (or any other sequence attribute) renders as clean text rather
+    than Python repr (`('a', 'b')`) — P1 template safety. `dataclasses.asdict`
+    converts `Conversation.journal`'s `tuple` into a plain `list`, so both
+    container types are handled here.
+    """
+    if isinstance(value, (list, tuple)):
+        return "\n".join(map(str, value))
+    return str(value)
+
+
+def render_prompt(template: str, conversation: "Conversation", **kw) -> str:
+    """Load prompts/<template>.md and substitute {placeholders}.
+
+    The substitution map is `dataclasses.asdict(conversation)` flat-mapped
+    alongside `kw` (per-node dynamic vars like `round`, `batch_n`...); `kw`
+    wins on key collision (none currently collide). This keeps the existing
+    `{task_id}`, `{request}`, `{docs_dir}` etc. placeholders working without
+    rewriting the 16 templates.
+    """
     text = (C.TEMPLATES / f"{template}.md").read_text()
-    for key, value in kw.items():
-        text = text.replace("{" + key + "}", str(value))
+    subs = dataclasses.asdict(conversation)
+    subs.update(kw)
+    for key, value in subs.items():
+        text = text.replace("{" + key + "}", _fmt(value))
     return text
 
 
-def run_agent(role: str, task_id: str, step: str, prompt: str,
-              timeout: int | None = None) -> tuple[int, str]:
+def run_agent(role: str, conversation: "Conversation", step: str,
+              template: str | None = None, timeout: int | None = None,
+              **extra_kw) -> tuple[int, str]:
     """Dispatch a prompt to the agent bound to `role`. Returns (exit_code, output).
+
+    The prompt is rendered internally from `template` (defaulting to `step`)
+    plus `extra_kw` against the frozen `conversation` snapshot; `task_id` is
+    read from `conversation.task_id`, not passed separately.
 
     Output is streamed to the log file line by line while the agent works, and
     docs/metrics/current.json is kept up to date, so watch-pipeline.sh,
     pipeline-status.sh and diagnose.sh all keep working live.
     """
+    task_id = conversation.task_id
+    tpl = template or step
+    prompt = render_prompt(tpl, conversation, **extra_kw)
+
+    # One debug snapshot per agent invocation (D6): the single choke point
+    # already used for agent_start/agent_end, so every invocation logs exactly
+    # one snapshot without 16 node edits duplicating the logic.
+    ev.emit(
+        "conversation_snapshot",
+        task_id,
+        step,
+        "conversation built",
+        brief_len=len(conversation.brief),
+        plan_len=len(conversation.plan),
+        debate_len=len(conversation.debate_history),
+        review_len=len(conversation.review_history),
+        journal_entries=len(conversation.journal),
+    )
+
     # Label logs and filenames by the model, not the command's first token:
     # `stdbuf -oL devin …` used to log as "stdbuf" for four different roles.
     binary = C.role_label(role)

@@ -9,9 +9,9 @@ from ..agents import (
     parse_not_met,
     parse_verdict,
     read_if_exists,
-    render_prompt,
     run_agent,
 )
+from ..state import Conversation
 from .common import _current_batch, _file_or_stdout, _git, _recover_artifact, _stage_all
 
 
@@ -19,9 +19,12 @@ def code_review(state):
     tid = state["task_id"]
     b = _current_batch(state)
     base = state.get("batch_base_ref") or "HEAD"
-    prompt = render_prompt(
-        "code_review",
-        task_id=tid,
+    conv = Conversation.from_state(state)
+    _, out = run_agent(
+        "CODE_REVIEWER",
+        conv,
+        f"cr-b{b['n']}",
+        template="code_review",
         batch_n=b["n"],
         batch_scope=b["scope"],
         diff_base=base,
@@ -29,7 +32,6 @@ def code_review(state):
         trusted_context=state.get("trusted_context", ""),
         docs_dir=C.DOCS_REL,
     )
-    _, out = run_agent("CODE_REVIEWER", tid, f"cr-b{b['n']}", prompt)
     review_path = C.REVIEWS / f"CODE-{tid}-b{b['n']}.md"
     review = _file_or_stdout(review_path, out)
     if not review.strip():
@@ -77,8 +79,15 @@ def code_fix(state):
     tid = state["task_id"]
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 0) + 1
-    prompt = render_prompt("code_fix", task_id=tid, batch_n=b["n"], docs_dir=C.DOCS_REL)
-    _, out = run_agent("IMPLEMENTER", tid, f"cr-b{b['n']}-fix{cycle}", prompt)
+    conv = Conversation.from_state(state)
+    _, out = run_agent(
+        "IMPLEMENTER",
+        conv,
+        f"cr-b{b['n']}-fix{cycle}",
+        template="code_fix",
+        batch_n=b["n"],
+        docs_dir=C.DOCS_REL,
+    )
     disputed = parse_disputed(out)
     if disputed:
         return {
@@ -96,8 +105,15 @@ def code_verify(state):
     tid = state["task_id"]
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 1)
-    prompt = render_prompt("code_verify", task_id=tid, batch_n=b["n"], docs_dir=C.DOCS_REL)
-    _, out = run_agent("CODE_REVIEWER", tid, f"cr-b{b['n']}-verify{cycle}", prompt)
+    conv = Conversation.from_state(state)
+    _, out = run_agent(
+        "CODE_REVIEWER",
+        conv,
+        f"cr-b{b['n']}-verify{cycle}",
+        template="code_verify",
+        batch_n=b["n"],
+        docs_dir=C.DOCS_REL,
+    )
     if "NOT_FIXED" in out:
         if cycle >= C.MAX_FIX_CYCLES:
             return {
