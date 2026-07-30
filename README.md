@@ -27,6 +27,7 @@ Verifica che i CLI siano raggiungibili (`devin`, `cursor-agent`, `gemini`,
 ./run.py status <ID>
 ./run.py doctor <ID>                               # cos'è andato storto (fallimenti, degradi, agenti)
 ./run.py graph
+./run.py metrics <ID> | --all                       # tempi, fallimenti, retry, escalation da events.jsonl
 ```
 
 `--auto` salta i checkpoint umani (approvazione del piano, intervista); le
@@ -306,7 +307,7 @@ chiuso, domande dell'intervista, fine run, e stallo del run.
 ./run.py status 005                    # nodo corrente, batch, pausa, log live
 tail -f docs/<repo>/metrics/pipeline.log      # tempo reale
 tail -f docs/<repo>/metrics/raw/005-impl-b1-glm-*.log   # output grezzo di un agente
-python3 scripts/metrics-report.py 005  # tempi per step
+./run.py metrics 005  # tempi per step, fallimenti, retry, escalation
 ```
 
 `status` legge il **journal su file**, non quello checkpointato: lo stato del

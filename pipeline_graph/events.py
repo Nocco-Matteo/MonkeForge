@@ -182,6 +182,27 @@ def read_events(task: str, kinds: set[str] | None = None) -> list[dict]:
     return out
 
 
+def read_all_events(kinds: set[str] | None = None) -> list[dict]:
+    """Structured events for every task, oldest first — the basis of `metrics`.
+
+    Same JSONL-parse-with-skip-on-ValueError pattern as `read_events`, but with
+    no task filter: returns every record in the log. Used by `./run.py metrics
+    --all` to aggregate across tasks.
+    """
+    if not EVENTS_LOG.exists():
+        return []
+    out = []
+    for line in EVENTS_LOG.read_text().splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if kinds and rec.get("kind") not in kinds:
+            continue
+        out.append(rec)
+    return out
+
+
 # --- open-escalation marker ------------------------------------------------
 # A node that interrupts re-executes from the top when the run is resumed, so a
 # naive notify() inside `escalate` fires the same urgent push twice: once when

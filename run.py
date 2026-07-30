@@ -460,6 +460,61 @@ def _liveness_warning() -> str | None:
     return None
 
 
+def _metrics(args) -> int:
+    """`./run.py metrics <ID> | --all`: aggregate events.jsonl into a report.
+
+    Reads events via `events.read_events` / `events.read_all_events`, renders
+    with `pipeline_graph.metrics`, prints to stdout, then writes the rendered
+    text to `C.METRICS / "report-<id>.md"` (or `summary.md` for `--all`). A
+    write failure prints the failing path to stderr and returns 1 — but only
+    AFTER the report has already been printed, so the user always sees it.
+    """
+    from pipeline_graph import metrics as M
+
+    # Validate arguments before touching the log: a fresh checkout has no
+    # events.jsonl, so checking "empty log" first would mask the usage error
+    # (FINAL-001 ruling 4).
+    if not args.all and args.task_id is None:
+        print("usage: ./run.py metrics <task_id> | --all")
+        print("error: provide a task id or --all")
+        return 2
+
+    if args.all:
+        events = ev.read_all_events()
+        if not events:
+            print("no metrics recorded yet")
+            return 0
+        by_task = M.group_by_task(events)
+        metrics_by_task = {tid: M.aggregate_task(evts, task_id=tid)
+                           for tid, evts in by_task.items()}
+        rendered = M.render_summary(metrics_by_task)
+        print(rendered)
+        out_path = C.METRICS / "summary.md"
+        try:
+            C.METRICS.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(rendered)
+        except OSError as exc:
+            print(f"error: could not write {out_path}: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    events = ev.read_events(args.task_id)
+    if not events:
+        print("no metrics recorded yet")
+        return 0
+    m = M.aggregate_task(events, task_id=args.task_id)
+    rendered = M.render_task_report(m)
+    print(rendered)
+    out_path = C.METRICS / f"report-{args.task_id}.md"
+    try:
+        C.METRICS.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered)
+    except OSError as exc:
+        print(f"error: could not write {out_path}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -494,6 +549,12 @@ def main() -> int:
                                       "(priority queue + rate limiter)")
     nd.add_argument("--status", action="store_true", help="check daemon heartbeat + queue")
     nd.add_argument("--stop", action="store_true", help="send SIGTERM for clean shutdown")
+    mt = sub.add_parser("metrics", help="aggregate events.jsonl into a metrics report "
+                                        "(durations, failures, retries, escalations)")
+    mt.add_argument("task_id", nargs="?", default=None,
+                    help="task id to report on; omit with --all for a cross-task summary")
+    mt.add_argument("--all", dest="all", action="store_true",
+                    help="aggregate every task into a single summary")
     args = p.parse_args()
 
     if args.cmd == "notify-daemon":
@@ -503,6 +564,9 @@ def main() -> int:
         if args.status:
             return nd_mod.status()
         return nd_mod.run_daemon()
+
+    if args.cmd == "metrics":
+        return _metrics(args)
 
     problems = C.preflight()
     if problems and args.cmd in ("start", "resume"):
