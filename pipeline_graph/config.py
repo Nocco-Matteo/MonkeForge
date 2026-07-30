@@ -1,6 +1,6 @@
 """Configuration: roles -> agent CLIs, paths, timeouts. Single source of truth."""
 from __future__ import annotations
-import os, shlex, shutil, subprocess
+import os, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 REPO = Path(
@@ -187,6 +187,25 @@ def role_cmd(role: str, prompt_file: Path, prompt: str) -> list[str]:
     subs = {"model": cfg["model"], "prompt": prompt, "prompt_file": str(prompt_file), "docs_dir": str(DOCS)}
     return [tok.format(**subs) if "{" in tok else tok for tok in tokens]
 
+
+def token_budget(role: str) -> int | None:
+    """Per-role token budget for the debate condenser, or None if unset.
+
+    ``PIPELINE_TOKEN_BUDGET_<ROLE>`` unset/blank -> None (condenser is a no-op
+    for that role, the default backward-compatible state). A non-integer value
+    is treated as unset with a stderr warning rather than raising — a config
+    typo must not kill the whole pipeline process (P4).
+    """
+    raw = os.environ.get(f"PIPELINE_TOKEN_BUDGET_{role}")
+    if not raw or not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"PIPELINE_TOKEN_BUDGET_{role}={raw!r} not an int; treating as unset",
+              file=sys.stderr)
+        return None
+
 # No timeout by default: this is the whole point of leaving the Bash-tool ceiling behind.
 AGENT_TIMEOUT = int(os.environ.get("PIPELINE_AGENT_TIMEOUT", "0")) or None
 
@@ -198,6 +217,25 @@ MAX_INTAKE_ROUNDS = int(os.environ.get("PIPELINE_MAX_INTAKE_ROUNDS", "4"))
 # 4→4→2 blockers and escalated with real issues still open). Override per-run
 # with PIPELINE_MAX_UX_RENDER_CYCLES for simpler UI (down) or stuck ones (up).
 MAX_UX_RENDER_CYCLES = int(os.environ.get("PIPELINE_MAX_UX_RENDER_CYCLES", "3"))
+
+# Condenser: how many trailing debate rounds to keep verbatim when a role's
+# token budget is exceeded. Older rounds collapse to one-line markers. Validated
+# parse: a non-integer falls back to the default (3) with a stderr warning, and a
+# negative value clamps to 0 (an unclamped negative inverts `rounds[:-keep_recent]`
+# slice semantics — a silent-corruption class of bug). Read once at import time;
+# tests that need a different value use `monkeypatch.setattr(C, ...)` rather than
+# `setenv` (which would silently leave the import-time default).
+_raw_keep_recent = os.environ.get("PIPELINE_CONDENSER_KEEP_RECENT", "3")
+try:
+    CONDENSER_KEEP_RECENT = int(_raw_keep_recent)
+except ValueError:
+    print(f"PIPELINE_CONDENSER_KEEP_RECENT={_raw_keep_recent!r} not an int; using default 3",
+          file=sys.stderr)
+    CONDENSER_KEEP_RECENT = 3
+if CONDENSER_KEEP_RECENT < 0:
+    print(f"PIPELINE_CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT} negative; clamping to 0",
+          file=sys.stderr)
+    CONDENSER_KEEP_RECENT = 0
 
 # Consecutive non-improving cycles before the visual/render gates escalate early
 # (plateau detection — the fix loop is oscillating, not converging).

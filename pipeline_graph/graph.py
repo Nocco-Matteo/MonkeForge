@@ -103,7 +103,11 @@ def route_next_batch(state):
         return "implement"
     # All batches built. A UI task earns the visual gate first; then (or, for a
     # non-UI task, directly) the render gate if this is a perf task; else final.
-    if state.get("has_ui"):
+    # An empty UX_RENDER_CMD disables the whole visual phase (a repo with no
+    # frontend, e.g. MonkeForge itself): honour it here so has_ui defaulting True
+    # can't drag a backend task into ux_render → visual review → an oscillating
+    # fix loop that renders nothing and escalates on phantom blockers.
+    if state.get("has_ui") and C.UX_RENDER_CMD.strip():
         return "ux_render"
     return _after_ui_gate(state)
 
@@ -183,7 +187,8 @@ def route_escalation_return(state):
     # the final gate (the bug that silently dropped the visual review).
     visual_passed = state.get("visual_verdict") == "APPROVE" and not state.get("visual_blockers", 0)
     if (state.get("has_ui") and not visual_passed
-            and not state.get("visual_shipped_blocked")):
+            and not state.get("visual_shipped_blocked")
+            and C.UX_RENDER_CMD.strip()):          # disabled gate → never re-enter it
         return "ux_render"
     # Perf task whose render gate has not passed: a resolved escalation re-profiles
     # (never silently skip the gate — the same fix the visual gate got).

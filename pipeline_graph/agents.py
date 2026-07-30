@@ -117,6 +117,32 @@ def run_agent(role: str, task_id: str, step: str, prompt: str,
     prompt_file = C.PROMPTS / f"{task_id}-{step}.md"
     prompt_file.write_text(prompt)
 
+    # Token-budget condenser: collapse older debate rounds in-place when this
+    # role's estimate-tokens budget is exceeded. No-op unless a budget is set
+    # for the role (default backward-compatible). Function-local import per
+    # D2: condenser.py does `from .agents import ...` at top, so a top-level
+    # import here would create an import-time cycle.
+    from .condenser import condense, estimate_tokens
+    budget = C.token_budget(role)
+    if budget is not None:
+        debate_path = C.DEBATES / f"DEBATE-{task_id}.md"
+        if debate_path.exists():
+            original = debate_path.read_text()
+            if estimate_tokens(original) > budget:
+                condensed = condense(original, C.CONDENSER_KEEP_RECENT)
+                # Guard against the steady-state where the file has already
+                # stabilised (cannot be collapsed further without losing the
+                # verbatim guarantee): skip the write+emit so we don't churn
+                # identical bytes or spam duplicate `degraded` records.
+                if condensed != original:
+                    debate_path.write_text(condensed)
+                    ev.emit("degraded", task_id, step,
+                            f"condensed DEBATE-{task_id}.md for {role}: "
+                            f"{estimate_tokens(original)} -> {estimate_tokens(condensed)} "
+                            f"est-tokens (budget {budget})",
+                            original_size=len(original), condensed_size=len(condensed),
+                            role=role)
+
     out_file = C.RAW / f"{task_id}-{step}-{binary}-{int(time.time())}.log"
     started = datetime.now(timezone.utc).isoformat()
     t0 = time.time()

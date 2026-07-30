@@ -209,7 +209,16 @@ class TestRoutingFunctions:
 
     def test_route_next_batch_done_with_ui(self):
         state = _dry_state(batches=[{"n": 1}], batch_idx=1, has_ui=True)
-        assert self.G.route_next_batch(state) == "ux_render"
+        # Visual gate enabled (non-empty render cmd) → a UI task enters it.
+        with patch.object(C, "UX_RENDER_CMD", "npx playwright test"):
+            assert self.G.route_next_batch(state) == "ux_render"
+
+    def test_route_next_batch_ui_but_visual_gate_disabled(self):
+        # A repo with no frontend (empty UX_RENDER_CMD) disables the whole visual
+        # phase: has_ui defaulting True must NOT drag it into ux_render.
+        state = _dry_state(batches=[{"n": 1}], batch_idx=1, has_ui=True, has_perf=False)
+        with patch.object(C, "UX_RENDER_CMD", ""):
+            assert self.G.route_next_batch(state) == "final_check"
 
     def test_route_visual_clean(self):
         state = _dry_state(visual_blockers=0, has_perf=False)

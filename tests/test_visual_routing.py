@@ -43,7 +43,16 @@ class VisualEscalationReturn(unittest.TestCase):
         # Resolved with "ok" (not shipped): re-enter the render, do NOT skip to final.
         st = _batches_built(visual_verdict="", visual_blockers=0,
                             visual_shipped_blocked=False)
-        self.assertEqual(G.route_escalation_return(st), "ux_render")
+        with patch.object(G.C, "UX_RENDER_CMD", "npx playwright test"):
+            self.assertEqual(G.route_escalation_return(st), "ux_render")
+
+    def test_disabled_gate_skips_to_final(self):
+        # A repo with no frontend (empty UX_RENDER_CMD): resolving a visual
+        # escalation must NOT re-enter ux_render (the oscillating loop) — go final.
+        st = _batches_built(visual_verdict="", visual_blockers=2,
+                            visual_shipped_blocked=False, has_perf=False)
+        with patch.object(G.C, "UX_RENDER_CMD", ""):
+            self.assertEqual(G.route_escalation_return(st), "final_check")
 
     def test_shipped_goes_to_final(self):
         # Human accepted/gave up: visual_shipped_blocked set → final check.

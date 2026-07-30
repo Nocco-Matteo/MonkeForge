@@ -340,6 +340,8 @@ Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
 | `PIPELINE_UX_RENDER_TIMEOUT` | `720` | secondi per il render (cold path fixture) |
 | `PIPELINE_AGENT_TRANSIENT_RETRIES` | `1` | retry automatici su fallimenti agente transitori |
 | `PIPELINE_REPO` | da `git rev-parse` | root del repo |
+| `PIPELINE_CONDENSER_KEEP_RECENT` | `3` | round verbatim nel condenser (negativo → 0; non-intero → default con warning) |
+| `PIPELINE_TOKEN_BUDGET_<ROLE>` | — | budget token per ruolo; assente = condenser no-op; non-intero = trattato come assente |
 
 ## Lo stack e2e
 
