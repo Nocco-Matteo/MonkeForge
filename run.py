@@ -4,6 +4,7 @@
   ./run.py start 004 "add CSV export to the orders dashboard" [--auto]
   ./run.py start 004 --file task.txt [--auto]
   ./run.py resume 004 [--answer "ok"]
+  ./run.py reset 004        # delete checkpoint state so the task can start fresh
   ./run.py status 004
   ./run.py graph            # print the graph as mermaid
 """
@@ -471,6 +472,9 @@ def main() -> int:
                     help="debate: reuse brief+plan, redo the debate. "
                          "plan: reuse brief, redo plan then debate. "
                          "visual: reuse the built UI, redo the render+visual gate.")
+    rs = sub.add_parser("reset", help="delete the checkpoint state for a task "
+                                     "so it can be started fresh again")
+    rs.add_argument("task_id")
     st = sub.add_parser("status"); st.add_argument("task_id")
     dr = sub.add_parser("doctor", help="what went wrong: failures, degradations, "
                                        "unhealthy agents, notification & liveness")
@@ -501,6 +505,29 @@ def main() -> int:
         _warn_if_notifications_off()
         _ensure_notify_daemon()
         _ensure_bot()
+
+    if args.cmd == "reset":
+        import sqlite3 as _sqlite3
+        thread = f"task-{args.task_id}"
+        if not C.CHECKPOINT_DB.exists():
+            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}")
+            return 0
+        conn = _sqlite3.connect(str(C.CHECKPOINT_DB))
+        try:
+            cur = conn.execute(
+                "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (thread,))
+            count = cur.fetchone()[0]
+            if count == 0:
+                print(f"task {args.task_id}: no checkpoint state found")
+                return 0
+            conn.execute("DELETE FROM writes WHERE thread_id = ?", (thread,))
+            conn.execute("DELETE FROM checkpoints WHERE thread_id = ?", (thread,))
+            conn.commit()
+            print(f"task {args.task_id}: deleted {count} checkpoint(s) — "
+                  "ready for a fresh start")
+        finally:
+            conn.close()
+        return 0
 
     if args.cmd == "graph":
         print(build_graph().get_graph().draw_mermaid())
