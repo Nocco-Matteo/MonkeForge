@@ -1,5 +1,5 @@
-"""Bot configuration, from lg/.env (same file the pipeline uses) or the
-environment. Keeps the bot self-contained and lg standalone.
+"""Bot configuration, from .env (same file the pipeline uses) or the
+environment. Keeps the bot self-contained and standalone.
 """
 from __future__ import annotations
 
@@ -8,11 +8,14 @@ from pathlib import Path
 
 # MonkeForge root: bot/config.py -> bot/ -> MonkeForge/
 MF_ROOT = Path(__file__).resolve().parents[1]
-# Pipeline repo: where docs/ and run.py live (may differ from MonkeForge).
+# Pipeline repo: where the target codebase lives (may differ from MonkeForge).
 REPO = Path(os.environ.get("PIPELINE_REPO") or MF_ROOT).resolve()
 RUN_PY = MF_ROOT / "run.py"
-EVENTS_LOG = REPO / "docs" / "metrics" / "events.jsonl"
-STATE_FILE = REPO / "docs" / "metrics" / ".discord-bot-offset"
+# Per-repo docs: MonkeForge/docs/<repo-name>/metrics/...
+_repo_slug = REPO.name
+DOCS = Path(os.environ.get("PIPELINE_DOCS_DIR") or (MF_ROOT / "docs" / _repo_slug))
+EVENTS_LOG = DOCS / "metrics" / "events.jsonl"
+STATE_FILE = DOCS / "metrics" / ".discord-bot-offset"
 
 # Load .env from MonkeForge root, without overriding a real environment.
 _env = MF_ROOT / ".env"

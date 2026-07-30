@@ -80,7 +80,7 @@ def debate_tech(state):
     tid = state["task_id"]
     rnd = state.get("debate_round", 0) + 1
     is_verification = rnd > C.MAX_DEBATE_ROUNDS
-    prompt = render_prompt("debate_review", task_id=tid, round=rnd, docs_dir=str(C.DOCS))
+    prompt = render_prompt("debate_review", task_id=tid, round=rnd, docs_dir=C.DOCS_REL)
     _, out = run_agent("PLAN_REVIEWER", tid, f"debate-r{rnd}-tech", prompt)
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
     text = _file_or_stdout(
@@ -125,7 +125,7 @@ def debate_ux(state):
         task_id=tid,
         round=rnd,
         tech_limits="; ".join(state.get("tech_limits", [])) or "none",
-        docs_dir=str(C.DOCS),
+        docs_dir=C.DOCS_REL,
     )
 
     # The UX reviewer is print-only (gemini): it prints the review, WE file it.
@@ -267,7 +267,7 @@ def debate_reply(state):
         task_id=tid,
         round=rnd,
         tech_limits="; ".join(state.get("tech_limits", [])) or "none",
-        docs_dir=str(C.DOCS),
+        docs_dir=C.DOCS_REL,
     )
     _, out = run_agent("PROPOSER", tid, f"debate-r{rnd}-reply", prompt)
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"

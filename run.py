@@ -12,10 +12,50 @@ import argparse, contextlib, json, os, shutil, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Load .env into os.environ so CLI runs match LangGraph Studio behaviour.
-_env_file = Path(__file__).parent / ".env"
+# Load monkeforge.yaml (or .env as fallback) into os.environ.
+# Priority: real env vars > yaml > .env > defaults in config.py.
 _MF_ROOT = Path(__file__).resolve().parent
-if _env_file.exists():
+_yaml_file = _MF_ROOT / "monkeforge.yaml"
+_env_file = _MF_ROOT / ".env"
+
+def _load_yaml_to_env(path: Path) -> None:
+    import yaml as _yaml
+    data = _yaml.safe_load(path.read_text()) or {}
+
+    # pipeline: -> PIPELINE_*
+    for key, val in (data.get("pipeline") or {}).items():
+        if key == "arch_docs":
+            val = ";".join(val) if isinstance(val, list) else str(val)
+        elif key == "dry_run":
+            val = "1" if val else ""
+        os.environ.setdefault(f"PIPELINE_{key.upper()}", str(val))
+
+    # agents: -> PIPELINE_MODEL_<ROLE>, PIPELINE_CMD_<ROLE>
+    for role, cfg in (data.get("agents") or {}).items():
+        if "model" in cfg:
+            os.environ.setdefault(f"PIPELINE_MODEL_{role}", str(cfg["model"]))
+        if "cmd" in cfg:
+            os.environ.setdefault(f"PIPELINE_CMD_{role}", str(cfg["cmd"]))
+
+    # tools: -> direct env var names (with explicit mapping)
+    _tool_keys = {"gemini_trust_workspace": "GEMINI_CLI_TRUST_WORKSPACE"}
+    for key, val in (data.get("tools") or {}).items():
+        env_key = _tool_keys.get(key, key.upper())
+        os.environ.setdefault(env_key, str(val))
+
+    # notifications: -> PIPELINE_NOTIFY_*
+    for key, val in (data.get("notifications") or {}).items():
+        os.environ.setdefault(f"PIPELINE_NOTIFY_{key.upper()}", str(val))
+
+    # discord: -> DISCORD_* (with special cases)
+    _discord_keys = {"bot_autostart": "PIPELINE_BOT_AUTOSTART"}
+    for key, val in (data.get("discord") or {}).items():
+        env_key = _discord_keys.get(key, f"DISCORD_{key.upper()}")
+        os.environ.setdefault(env_key, str(val))
+
+if _yaml_file.exists():
+    _load_yaml_to_env(_yaml_file)
+elif _env_file.exists():
     for _line in _env_file.read_text().splitlines():
         _line = _line.strip()
         if _line and not _line.startswith("#") and "=" in _line:
@@ -59,7 +99,7 @@ def _extract_debate_blockers(task_id: str) -> str:
     Returns a compact string for the Discord card, or "" if no debate file
     or no blockers found.
     """
-    debate = C.REPO / "docs" / "debates" / f"DEBATE-{task_id}.md"
+    debate = C.DEBATES / f"DEBATE-{task_id}.md"
     if not debate.exists():
         return ""
     lines = debate.read_text().splitlines()
@@ -149,7 +189,7 @@ def _drive(graph, task_id, payload):
                 str(data.get("reason", "waiting for a human")),
                 answers=data.get("answers", {}), context=data.get("context", ""),
                 blockers=blockers,
-                screens=f"docs/reviews/screens/task-{task_id}"
+                screens=str(C.SCREENS / f"task-{task_id}")
                         if "screenshot" in str(data.get("reason", "")).lower()
                         or "visual" in str(data.get("reason", "")).lower() else "")
         _mark_idle(task_id, "paused")
@@ -284,7 +324,8 @@ def _ensure_bot() -> None:
     log = (C.METRICS / "bot.log").open("a")
     proc = subprocess.Popen([sys.executable, str(bot_py)], cwd=str(_MF_ROOT),
                             stdout=log, stderr=log, start_new_session=True)
-    print(f"  bot: launched detached (pid {proc.pid}, log docs/metrics/bot.log)")
+    pidfile.write_text(str(proc.pid))
+    print(f"  bot: launched detached (pid {proc.pid}, log {C.METRICS / 'bot.log'}")
 
 
 def _ensure_notify_daemon() -> None:
@@ -321,24 +362,22 @@ def _ensure_notify_daemon() -> None:
         stdout=log, stderr=log,
         start_new_session=True,
     )
-    print(f"  notify-daemon: launched detached (pid {proc.pid}, log docs/metrics/notify.log)")
+    print(f"  notify-daemon: launched detached (pid {proc.pid}, log {C.METRICS / 'notify.log'}")
 
 
 def _warn_if_notifications_off() -> None:
     """Say so at startup when a run would push nothing — the failure that let a
-    whole run go by with no phone alerts because lg/.env (the webhook) was gone.
+    whole run go by with no phone alerts because .env (the webhook) was gone.
 
-    lg/.env is already loaded into os.environ by the time this runs.
+    .env is already loaded into os.environ by the time this runs.
     """
     level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "all").lower()
     if level == "silent":
         return
     has_webhook = bool(os.environ.get("DISCORD_WEBHOOK")) \
         or (C.REPO / ".discord-webhook").exists()
-    if not C.NOTIFY_SCRIPT.exists():
-        print(f"  ⚠ notifications OFF: {C.NOTIFY_SCRIPT} not found. Logs still written.")
-    elif not has_webhook:
-        print("  ⚠ notifications OFF: no DISCORD_WEBHOOK (lg/.env missing?) and no "
+    if not has_webhook:
+        print("  ⚠ notifications OFF: no DISCORD_WEBHOOK (.env missing?) and no "
               ".discord-webhook file. This run will push nothing; logs still written.")
 
 
@@ -493,7 +532,7 @@ def main() -> int:
             # journal shows the step before this one.
             live = ev.read_journal(args.task_id, 15)
             if live:
-                print("  live log (docs/metrics/pipeline.log):")
+                print(f"  live log ({ev.PIPELINE_LOG}):")
                 for line in live:
                     print("   ", line)
             else:

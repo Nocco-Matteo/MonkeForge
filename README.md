@@ -138,8 +138,8 @@ PIPELINE_DRY_RUN=1 ./run.py start 999 "prova" --auto
 
 Nessun agente viene invocato e **git non viene toccato** (niente branch nuovi,
 niente commit WIP). Serve a verificare cablaggio, routing e scrittura dei file.
-Ricordati di ripulire dopo: `docs/tasks/TASK-999-*`, `docs/prompts/999-*`,
-`docs/metrics/journal-999.log`.
+Ricordati di ripulire dopo: `docs/<repo>/tasks/TASK-999-*`, `docs/<repo>/prompts/999-*`,
+`docs/<repo>/metrics/journal-999.log`.
 
 ## Struttura
 
@@ -156,16 +156,20 @@ pipeline_graph/
   prompts/*.md             i prompt di ogni ruolo
 ```
 
-Artefatti su disco:
+Artefatti su disco (sotto `MonkeForge/docs/<repo-name>/`):
 
 ```
-docs/tasks/TASK-<ID>-brief.md     il contratto del task (sempre scritto)
-docs/tasks/TASK-<ID>-intake.md    domande e risposte dell'intervista
-docs/tasks/TASK-<ID>-refs/        riferimenti passati con --ref
-docs/plans/    docs/debates/    docs/reviews/
-docs/final/    FINAL-<ID>.md, BATCHES-<ID>.json, PROGRESS-<ID>.md, REPORT-<ID>.md
-docs/metrics/  pipeline.log, events.jsonl, journal-<ID>.log, runs.jsonl, raw/
+docs/<repo>/tasks/TASK-<ID>-brief.md     il contratto del task (sempre scritto)
+docs/<repo>/tasks/TASK-<ID>-intake.md    domande e risposte dell'intervista
+docs/<repo>/tasks/TASK-<ID>-refs/        riferimenti passati con --ref
+docs/<repo>/plans/    docs/<repo>/debates/    docs/<repo>/reviews/
+docs/<repo>/final/    FINAL-<ID>.md, BATCHES-<ID>.json, PROGRESS-<ID>.md, REPORT-<ID>.md
+docs/<repo>/metrics/  pipeline.log, events.jsonl, journal-<ID>.log, runs.jsonl, raw/
 ```
+
+Ogni repo gestito ha la sua directory `docs/<repo-name>/`, indipendente e
+isolata. Override con `PIPELINE_DOCS_DIR` (es. per rimettere i docs dentro il
+repo target: `PIPELINE_DOCS_DIR=$REPO/docs`).
 
 ## Dove si mette mano
 
@@ -279,7 +283,7 @@ source .venv-pipeline/bin/activate
 Terminale B (monitor live):
 
 ```bash
-tail -f docs/metrics/pipeline.log
+tail -f docs/<repo>/metrics/pipeline.log
 ```
 
 Poi te ne vai.
@@ -300,8 +304,8 @@ chiuso, domande dell'intervista, fine run, e stallo del run.
 
 ```bash
 ./run.py status 005                    # nodo corrente, batch, pausa, log live
-tail -f docs/metrics/pipeline.log      # tempo reale
-tail -f docs/metrics/raw/005-impl-b1-glm-*.log   # output grezzo di un agente
+tail -f docs/<repo>/metrics/pipeline.log      # tempo reale
+tail -f docs/<repo>/metrics/raw/005-impl-b1-glm-*.log   # output grezzo di un agente
 python3 scripts/metrics-report.py 005  # tempi per step
 ```
 

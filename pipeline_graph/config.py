@@ -10,7 +10,12 @@ REPO = Path(
     or "."
 ).resolve()
 
-DOCS      = Path(os.environ.get("PIPELINE_DOCS_DIR") or (REPO / "docs"))
+# MonkeForge root: pipeline_graph/config.py -> pipeline_graph/ -> MonkeForge/
+MF_ROOT = Path(__file__).resolve().parents[1]
+
+# Per-repo docs: MonkeForge/docs/<repo-name>/...  Override with PIPELINE_DOCS_DIR.
+_repo_slug = REPO.name
+DOCS      = Path(os.environ.get("PIPELINE_DOCS_DIR") or (MF_ROOT / "docs" / _repo_slug))
 PLANS     = DOCS / "plans"
 DEBATES   = DOCS / "debates"
 FINAL     = DOCS / "final"
@@ -23,35 +28,70 @@ RAW       = METRICS / "raw"
 RUNS_LOG  = METRICS / "runs.jsonl"
 CHECKPOINT_DB = METRICS / "graph-checkpoints.sqlite"
 
+# Repo-relative path to docs for agent prompts.  When docs live inside the
+# repo this is just the relative path.  When they live outside (the default),
+# we copy them into .pipeline-docs/ inside the repo and repoint DOCS there so
+# all agents (including claude, which blocks symlinks) can read/write within
+# their working directory.  The original DOCS is kept for sync-back.
+if DOCS.is_relative_to(REPO):
+    DOCS_REL = str(DOCS.relative_to(REPO))
+    DOCS_ORIG = None
+else:
+    import shutil as _sh
+    _local = REPO / ".pipeline-docs"
+    if _local.exists() and not _local.is_dir():
+        _local.unlink()
+    if not _local.exists():
+        _local.mkdir(parents=True)
+    for _sub in _local.iterdir():
+        if _sub.is_dir():
+            _sh.rmtree(_sub)
+        else:
+            _sub.unlink()
+    for _item in DOCS.iterdir():
+        if _item.is_dir():
+            _sh.copytree(_item, _local / _item.name, dirs_exist_ok=True,
+                         ignore=_sh.ignore_patterns('*.sock', 'notify.spool*'))
+        elif _item.is_socket() or not _item.is_file():
+            continue
+        else:
+            _sh.copy2(_item, _local / _item.name)
+    DOCS_ORIG = DOCS
+    DOCS = _local
+    DOCS_REL = ".pipeline-docs"
+    # Re-derive sub-paths from the repointed DOCS
+    PLANS     = DOCS / "plans"
+    DEBATES   = DOCS / "debates"
+    FINAL     = DOCS / "final"
+    REVIEWS   = DOCS / "reviews"
+    PROMPTS   = DOCS / "prompts"
+    QUEUE     = DOCS / "queue" / "pending"
+    TASKS     = DOCS / "tasks"
+    METRICS   = DOCS / "metrics"
+    RAW       = METRICS / "raw"
+    RUNS_LOG  = METRICS / "runs.jsonl"
+    CHECKPOINT_DB = METRICS / "graph-checkpoints.sqlite"
+
 # Dirty paths that do not block `init` in interactive mode (pipeline/task docs only).
-# Uses the configured DOCS dir, so it works regardless of where DOCS points.
+# When docs live inside the repo (PIPELINE_DOCS_DIR=REPO/docs), pipeline artifacts
+# must not block init. When docs live outside the repo (the default), this is empty
+# and nothing extra is ignored — the repo's own docs/ (if any) is not ours.
 _docs_rel = str(DOCS.relative_to(REPO)) + "/" if DOCS.is_relative_to(REPO) else ""
 INIT_DIRTY_OK_PREFIXES = tuple(
     _docs_rel + sub for sub in ("tasks/", "metrics/", "prompts/", "queue/")
-) + (
-    "lg/",  # legacy path — kept for backward compat when pipeline runs in-tree
-)
+) if _docs_rel else ()
 
 TEMPLATES = Path(__file__).parent / "prompts"
 
-# Architecture docs the agents must read (the relevant ones for what they touch).
-# Env-overridable so adding a doc — e.g. backend/ARCHITECTURE.md — is a one-line
-# change in lg/.env (PIPELINE_ARCH_DOCS, ';'-separated), not a prompt edit.
-# CLAUDE.md holds the "which doc governs which area" index; this is just the list.
-_DEFAULT_ARCH_DOCS = (
-    "frontend/ARCHITECTURE.md;frontend/AGENTS.md;backend/ARCHITECTURE.md;"
-    "docs/database_schema.md;docs/network_protocol.md;docs/combat_engine.md;"
-    "docs/render_pipeline.md;docs/character_ingestion.md;docs/fog_of_war.md;"
-    "docs/UX-MANIFESTO.md"
-)
-
-
+# Architecture docs the agents must read (repo-relative, ";"-separated).
+# Configured per-repo in monkeforge.yaml (pipeline.arch_docs) or PIPELINE_ARCH_DOCS.
+# No hardcoded defaults — MonkeForge is standalone and doesn't assume any repo.
 def arch_docs_block() -> str:
     """The architecture docs that actually exist, as a bullet list for prompts.
 
     Filters to existing files so a doc listed-but-not-yet-created is skipped and
     appears automatically once you add it."""
-    raw = os.environ.get("PIPELINE_ARCH_DOCS", _DEFAULT_ARCH_DOCS)
+    raw = os.environ.get("PIPELINE_ARCH_DOCS", "")
     paths = [p.strip() for p in raw.replace("\n", ";").split(";") if p.strip()]
     present = [p for p in paths if (REPO / p).exists()]
     return "\n".join(f"- {p}" for p in present) or "- (none configured)"
@@ -68,19 +108,19 @@ _DEFAULT_ROLE_CONFIG = {
     },
     "PROPOSER": {
         "model": "glm-5.2",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous",
+        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
     },
     "PLAN_REVIEWER": {
         "model": "codex",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous",
+        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
     },
     "IMPLEMENTER": {
         "model": "glm-5.2",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous",
+        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
     },
     "CODE_REVIEWER": {
         "model": "codex",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous",
+        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
     },
     # gemini-3.6-flash, not 3.1-pro-preview: pro failed in-band on the file-read
     # tool call (malformed tool call) on 008/009; flash passed two smoke tests
@@ -95,22 +135,22 @@ _DEFAULT_ROLE_CONFIG = {
     # pipeline's only gate that looks at pixels, not text.
     "VISUAL_REVIEWER": {
         "model": "sonnet",
-        "cmd":   "claude -p {prompt} --model {model}",
+        "cmd":   "claude -p {prompt} --model {model} --add-dir {docs_dir}",
     },
     # FIXES visual blockers — and must SEE the screenshots to do it, or it plays
     # whack-a-mole (fix combat, break explore, blind to its own result). claude
     # both reads the PNGs and edits the frontend, so the fixer finally has eyes.
     "VISUAL_FIXER": {
         "model": "sonnet",
-        "cmd":   "claude -p {prompt} --model {model}",
+        "cmd":   "claude -p {prompt} --model {model} --add-dir {docs_dir}",
     },
     "SUMMARIZER": {
         "model": "glm-5.2",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous",
+        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
     },
     "JUDGE": {
         "model": "sonnet",
-        "cmd":   "claude -p {prompt} --model {model}",
+        "cmd":   "claude -p {prompt} --model {model} --add-dir {docs_dir}",
     },
 }
 
@@ -173,7 +213,7 @@ def role_cmd(role: str, prompt_file: Path, prompt: str) -> list[str]:
             f"unknown role: {role} "
             f"(add it to _DEFAULT_ROLE_CONFIG or set PIPELINE_CMD_{role})")
     tokens = shlex.split(cfg["cmd"])
-    subs = {"model": cfg["model"], "prompt": prompt, "prompt_file": str(prompt_file)}
+    subs = {"model": cfg["model"], "prompt": prompt, "prompt_file": str(prompt_file), "docs_dir": str(DOCS)}
     return [tok.format(**subs) if "{" in tok else tok for tok in tokens]
 
 # No timeout by default: this is the whole point of leaving the Bash-tool ceiling behind.
@@ -239,11 +279,7 @@ E2E_DATABASE_URL = os.environ.get(
     "postgresql://postgres:postgrespassword@localhost:5433/nexusvtt?schema=public",
 )
 
-# External notification script. If the path does not exist, notifications are
-# silently skipped (logs still written).
-NOTIFY_SCRIPT = Path(os.environ.get("PIPELINE_NOTIFY_SCRIPT") or (REPO / "scripts" / "notify.sh"))
-
-# Notify daemon (replaces notify.sh subprocess with a persistent rate-limited daemon).
+# Notify daemon (persistent rate-limited notification dispatcher).
 NOTIFY_RATE = int(os.environ.get("PIPELINE_NOTIFY_RATE", "30"))
 NOTIFY_WINDOW = int(os.environ.get("PIPELINE_NOTIFY_WINDOW", "60"))
 NOTIFY_SOCKET = Path(os.environ.get("PIPELINE_NOTIFY_SOCKET")
@@ -317,3 +353,19 @@ def preflight() -> list[str]:
 def ensure_dirs() -> None:
     for d in (PLANS, DEBATES, FINAL, REVIEWS, PROMPTS, QUEUE, TASKS, METRICS, RAW):
         d.mkdir(parents=True, exist_ok=True)
+
+def sync_back_docs() -> None:
+    """Copy .pipeline-docs/ back to the original DOCS location after a run."""
+    if not DOCS_ORIG:
+        return
+    import shutil as _sh
+    DOCS_ORIG.mkdir(parents=True, exist_ok=True)
+    for _item in DOCS.iterdir():
+        _dest = DOCS_ORIG / _item.name
+        if _item.is_dir():
+            _sh.copytree(_item, _dest, dirs_exist_ok=True,
+                         ignore=_sh.ignore_patterns('*.sock', 'notify.spool*'))
+        elif _item.is_socket() or not _item.is_file():
+            continue
+        else:
+            _sh.copy2(_item, _dest)

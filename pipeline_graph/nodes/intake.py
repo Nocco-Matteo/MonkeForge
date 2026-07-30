@@ -127,8 +127,8 @@ def init(state):
         hint = blocking[0] if blocking else dirty_paths[0]
         return {
             "escalation": "working tree is not clean; commit or stash first "
-            "(docs/tasks, docs/metrics, docs/prompts, docs/queue, "
-            "lg/ may stay dirty in interactive mode)",
+            "(docs/tasks, docs/metrics, docs/prompts, docs/queue "
+            "may stay dirty in interactive mode)",
             "journal": [f"init: dirty tree ({hint}), escalating"],
         }
     if dirty_paths:

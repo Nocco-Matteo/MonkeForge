@@ -58,17 +58,17 @@ def _file_or_stdout(
 
 
 def _recover_artifact(tid: str, filename: str, expected_path: Path) -> bool:
-    """Safety net: if the expected file is missing, search REPO/docs/** for
+    """Safety net: if the expected file is missing, search C.DOCS/** for
     ``filename`` and move it to ``expected_path``.
 
     Catches an agent that disobeyed the "print to stdout" instruction and wrote
-    the file to the target repo's docs tree instead of the pipeline's.  The
+    the file somewhere in the docs tree instead of the expected path.  The
     recovery is logged as a degradation (``notify=False`` — it is self-correcting,
     not worth a push).
     """
     if expected_path.exists():
         return False
-    search_root = C.REPO / "docs"
+    search_root = C.DOCS
     if not search_root.is_dir():
         return False
     for candidate in search_root.rglob(filename):
@@ -184,6 +184,7 @@ def instrument(name: str, fn):
 
     @functools.wraps(fn)
     def wrapper(state):
+        C.ensure_dirs()
         tid = state.get("task_id", "?")
         ctx = _context(state, name)
         ev.emit("step_start", tid, name, ctx or "starting")
@@ -476,7 +477,7 @@ def escalate(state):
         if visual_blocked:
             delta["visual_shipped_blocked"] = True
             delta["degradations"] = [
-                "shipped with unresolved RENDERED-UI blockers (see docs/reviews/screens)"
+                "shipped with unresolved RENDERED-UI blockers (see reviews/screens)"
             ]
             note = "proceeding with RENDERED-UI blockers — see screenshots"
         elif forced:

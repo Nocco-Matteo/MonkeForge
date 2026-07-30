@@ -14,7 +14,7 @@ METHOD (do this before writing):
    invent structure. CLAUDE.md and its index, then the docs relevant to what you
    touch (plus any the brief names), from the project's architecture docs:
    {arch_docs}
-3. If the work touches user-facing UI, read docs/UX-MANIFESTO.md and design the
+3. If the work touches user-facing UI, read {docs_dir}/UX-MANIFESTO.md and design the
    flows to satisfy it — it is a hard constraint, not advice.
 
 OUTPUT -> print the plan to stdout (the pipeline files it automatically), with these sections exactly:

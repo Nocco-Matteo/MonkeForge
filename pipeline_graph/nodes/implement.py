@@ -93,7 +93,7 @@ def implement(state):
         db_note=db_note,
         arch_docs=C.arch_docs_block(),
         checklist_items=", ".join(map(str, b.get("checklist", []))),
-        docs_dir=str(C.DOCS),
+        docs_dir=C.DOCS_REL,
     )
     step = f"impl-b{b['n']}"
     if attempt:

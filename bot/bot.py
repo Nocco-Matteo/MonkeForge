@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Discord control plane for the pipeline — manage escalations from a phone.
 
-Run:  python lg/bot/bot.py     (needs discord.py; see requirements.txt / README)
+Run:  python bot/bot.py     (needs discord.py; see requirements.txt / README)
 
 It connects OUT to Discord (no open ports, no VPN), tails events.jsonl, and:
   - posts each escalation as a card with one BUTTON per valid answer (from the
@@ -25,7 +25,7 @@ try:
     import discord
     from discord import app_commands
 except ImportError:
-    sys.exit("discord.py not installed — pip install -r lg/bot/requirements.txt")
+    sys.exit("discord.py not installed — pip install -r bot/requirements.txt")
 
 
 intents = discord.Intents.default()

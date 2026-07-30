@@ -78,8 +78,8 @@ exactly:
        this brief is ground truth for intent.
     4b. Architecture docs to follow — name the specific docs the implementer MUST
        read for this task (from CLAUDE.md's index): frontend/ARCHITECTURE.md +
-       frontend/AGENTS.md for UI, the matching docs/<subsystem>.md for a backend
-       domain, docs/UX-MANIFESTO.md for UI behaviour. List only the relevant
+       frontend/AGENTS.md for UI, the matching {docs_dir}/<subsystem>.md for a backend
+       domain, {docs_dir}/UX-MANIFESTO.md for UI behaviour. List only the relevant
        ones, so the implementer reads what governs this work, not all of them.
     5. Definition of done — observable, one line each.
     6. Scope: in / out — explicit non-goals, not silence.

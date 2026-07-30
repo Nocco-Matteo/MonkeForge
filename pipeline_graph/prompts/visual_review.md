@@ -12,7 +12,7 @@ DETERMINISTIC FACTS (measured during render — treat as ground truth, you do no
 need to re-verify them, only interpret them):
 {render_facts}
 
-Judge against docs/UX-MANIFESTO.md (read it) AND against what a competent
+Judge against {docs_dir}/UX-MANIFESTO.md (read it) AND against what a competent
 designer would ship. Concretely, for each screenshot ask:
 - Does the layout FILL its space, or is there a large empty/dead region while
   other columns are cramped? (proportion, density)

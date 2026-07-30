@@ -27,7 +27,7 @@ def code_review(state):
         diff_base=base,
         checklist_items=", ".join(map(str, b.get("checklist", []))),
         trusted_context=state.get("trusted_context", ""),
-        docs_dir=str(C.DOCS),
+        docs_dir=C.DOCS_REL,
     )
     _, out = run_agent("CODE_REVIEWER", tid, f"cr-b{b['n']}", prompt)
     review_path = C.REVIEWS / f"CODE-{tid}-b{b['n']}.md"
@@ -77,7 +77,7 @@ def code_fix(state):
     tid = state["task_id"]
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 0) + 1
-    prompt = render_prompt("code_fix", task_id=tid, batch_n=b["n"], docs_dir=str(C.DOCS))
+    prompt = render_prompt("code_fix", task_id=tid, batch_n=b["n"], docs_dir=C.DOCS_REL)
     _, out = run_agent("IMPLEMENTER", tid, f"cr-b{b['n']}-fix{cycle}", prompt)
     disputed = parse_disputed(out)
     if disputed:
@@ -96,7 +96,7 @@ def code_verify(state):
     tid = state["task_id"]
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 1)
-    prompt = render_prompt("code_verify", task_id=tid, batch_n=b["n"], docs_dir=str(C.DOCS))
+    prompt = render_prompt("code_verify", task_id=tid, batch_n=b["n"], docs_dir=C.DOCS_REL)
     _, out = run_agent("CODE_REVIEWER", tid, f"cr-b{b['n']}-verify{cycle}", prompt)
     if "NOT_FIXED" in out:
         if cycle >= C.MAX_FIX_CYCLES:

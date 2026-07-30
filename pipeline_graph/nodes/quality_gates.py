@@ -173,7 +173,7 @@ def ux_visual_fix(state):
         task_id=tid,
         screens_dir=str(shots.relative_to(C.REPO)) if shots.is_relative_to(C.REPO) else str(shots),
         render_facts=state.get("render_facts", "{}"),
-        docs_dir=str(C.DOCS),
+        docs_dir=C.DOCS_REL,
     )
     _N.run_agent("VISUAL_FIXER", tid, f"visual-fix-c{cyc}", prompt)
     _stage_all()

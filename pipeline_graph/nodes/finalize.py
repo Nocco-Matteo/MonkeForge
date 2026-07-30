@@ -27,7 +27,7 @@ from .common import (
 
 def summary(state):
     tid = state["task_id"]
-    prompt = render_prompt("summary", task_id=tid, docs_dir=str(C.DOCS))
+    prompt = render_prompt("summary", task_id=tid, docs_dir=C.DOCS_REL)
     _, out = _N.run_agent("SUMMARIZER", tid, "summary", prompt)
     summary_path = C.DEBATES / f"SUMMARY-{tid}.md"
     _file_or_stdout(summary_path, out)
@@ -41,7 +41,7 @@ def summary(state):
 
 def judge(state):
     tid = state["task_id"]
-    prompt = render_prompt("judge", task_id=tid, docs_dir=str(C.DOCS))
+    prompt = render_prompt("judge", task_id=tid, docs_dir=C.DOCS_REL)
     code, out = _N.run_agent("JUDGE", tid, "verdict", prompt)
 
     if out.strip().startswith("ESCALATE:") or "\nESCALATE:" in out:
@@ -238,7 +238,7 @@ def final_check(state):
             ]
         return delta
 
-    prompt = render_prompt("final_check", task_id=tid, db_note=db_note, docs_dir=str(C.DOCS))
+    prompt = render_prompt("final_check", task_id=tid, db_note=db_note, docs_dir=C.DOCS_REL)
     _, out = _N.run_agent("IMPLEMENTER", tid, "final-check", prompt)
     not_met = parse_not_met(out)
     suffix = "" if db_ok else " (DB-gated tests skipped: e2e Postgres unreachable)"
@@ -257,6 +257,7 @@ def final_check(state):
 
 def wrap_up(state):
     tid = state["task_id"]
+    C.ensure_dirs()
     # One source of truth: the degradation ledger. Every "shipped with a
     # compromise" appended to it during the run (DB skipped, tests waived, UX /
     # visual blockers shipped, red baseline, force-closed batch) surfaces here,
@@ -283,4 +284,5 @@ def wrap_up(state):
         degraded=bool(degradations),
         degradations=degradations,
     )
+    C.sync_back_docs()
     return {"finished": True, "journal": ["wrap up: report written"]}

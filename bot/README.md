@@ -7,7 +7,7 @@ visual block), and runs `run.py resume …` when you tap. It also answers
 `/status`, `/doctor`, `/resume`.
 
 It **cannot start a run** — by design it only manages runs already under way.
-lg stays standalone: the pipeline never imports this and runs fine without it.
+MonkeForge stays standalone: the pipeline never imports this and runs fine without it.
 
 ## Setup (once)
 
@@ -17,7 +17,7 @@ lg stays standalone: the pipeline never imports this and runs fine without it.
    permission to send messages in one channel.
 2. In Discord (Developer Mode on): right-click the target channel → **Copy ID**;
    right-click your user → **Copy ID**.
-3. Add to `lg/.env` (same file as the webhook):
+3. Add to `.env` (same file as the webhook):
    ```
    DISCORD_BOT_TOKEN=<the bot token>
    DISCORD_CHANNEL_ID=<channel id>
@@ -25,13 +25,13 @@ lg stays standalone: the pipeline never imports this and runs fine without it.
    ```
 4. Install the dep into the pipeline venv:
    ```
-   ./venv/bin/pip install -r lg/bot/requirements.txt
+   ./venv/bin/pip install -r bot/requirements.txt
    ```
 
 ## Run
 
 ```bash
-./venv/bin/python lg/bot/bot.py
+./venv/bin/python bot/bot.py
 ```
 
 Under systemd so it survives (and keep the machine awake for runs):
@@ -41,7 +41,7 @@ Under systemd so it survives (and keep the machine awake for runs):
 [Unit]
 Description=Nexus pipeline Discord bot
 [Service]
-ExecStart=%h/Documenti/progetti/dnn-vtt/nexus-vtt/venv/bin/python %h/Documenti/progetti/dnn-vtt/nexus-vtt/lg/bot/bot.py
+ExecStart=%h/Documenti/progetti/MonkeForge/venv/bin/python %h/Documenti/progetti/MonkeForge/bot/bot.py
 Restart=always
 [Install]
 WantedBy=default.target

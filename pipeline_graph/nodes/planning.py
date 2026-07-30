@@ -22,7 +22,7 @@ def plan(state):
         request=state["request"],
         brief_path=str(_rel(brief)),
         arch_docs=C.arch_docs_block(),
-        docs_dir=str(C.DOCS),
+        docs_dir=C.DOCS_REL,
     )
     code, out = run_agent("PROPOSER", tid, "plan", prompt)
     if code != 0:

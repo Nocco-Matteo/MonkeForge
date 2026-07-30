@@ -13,7 +13,7 @@ Four sinks:
                                materialises when a node returns and is
                                therefore blind for the whole duration of a
                                40-minute step
-  ntfy                         push, via the notify daemon (socket) or notify.sh fallback
+  ntfy                         push, via the notify daemon (socket) or spool fallback
 
 The journal file is the answer to "I resume an escalation and cannot see what
 it is doing": checkpointed state updates at node boundaries, this does not.
@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -98,9 +97,8 @@ def _should_notify(kind: str, override: bool | None) -> bool:
 
 
 def _push(title: str, msg: str, prio: str, role: str = "") -> None:
-    """Send a notification: try the daemon socket, fall back to spool, then
-    to the legacy notify.sh script. A failed push must never take the pipeline
-    down."""
+    """Send a notification: try the daemon socket, fall back to spool.
+    A failed push must never take the pipeline down."""
     payload = json.dumps({"title": title, "msg": msg, "prio": prio, "role": role})
     # 1. Try the notify daemon via unix socket.
     try:
@@ -124,15 +122,9 @@ def _push(title: str, msg: str, prio: str, role: str = "") -> None:
     except OSError:
         pass
 
-    # 3. Legacy: invoke notify.sh directly (subprocess, fire-and-forget).
-    script = C.NOTIFY_SCRIPT
-    if not script.exists():
-        return
-    try:
-        subprocess.run([str(script), title, msg, prio], cwd=C.REPO,
-                       capture_output=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    # 3. Nothing more we can do — the daemon is down and spool failed.
+    # The event is already in events.jsonl; the daemon will pick up the spool
+    # on next startup.
 
 
 def emit(kind: str, task: str = "?", step: str = "", msg: str = "",
