@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config as C
+from .event_types import Event
 
 EVENTS_LOG = C.METRICS / "events.jsonl"
 PIPELINE_LOG = C.METRICS / "pipeline.log"
@@ -130,6 +131,12 @@ def _push(title: str, msg: str, prio: str, role: str = "") -> None:
 def emit(kind: str, task: str = "?", step: str = "", msg: str = "",
          notify: bool | None = None, prio: str | None = None, **extra) -> None:
     """Record one event to every sink. Never raises."""
+    if isinstance(kind, Event):
+        ev = kind
+        kind, task, step, msg = ev.KIND, ev.task, ev.step, ev.msg
+        notify, prio = ev.notify, ev.prio
+        extra = {k: v for k, v in ev.to_record().items()
+                 if k not in ("kind", "task", "step", "msg")}
     now = datetime.now(timezone.utc)
     record = {"ts": now.isoformat(), "kind": kind, "task": task,
               "step": step, "msg": msg, **extra}
