@@ -1,0 +1,2 @@
+{"ts": "2026-07-30T11:45:02.585983+00:00", "kind": "run_start", "task": "001", "step": "start", "msg": "interactive: Ripgrep is not available. Falling back to GrepTool.\nError executing tool read_file: Path not in workspace: Attempted path \"/home/nocco/Documenti/progetti/MonkeF"}
+{"ts": "2026-07-30T11:45:02.604542+00:00", "kind": "step_start", "task": "001", "step": "init", "msg": "starting"}
