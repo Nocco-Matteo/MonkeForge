@@ -334,6 +334,24 @@ def effort_levels() -> dict:
     """Snapshot of the effort presets (for the effort checkpoint prompt)."""
     return EFFORT_LEVELS
 
+_EFFORT_DESCRIPTIONS = {
+    "scout-monke": "leggero: implementazione + review, senza dibattito né gate",
+    "troop-monke": "medio: implementazione + review + dibattito standard",
+    "barrel-monke": "pesante: dibattito esteso, fix extra e gate completi",
+}
+
+
+def effort_choices() -> dict[str, str]:
+    """Human-readable choices for CLI/Discord effort checkpoints."""
+    choices = {}
+    for name, preset in EFFORT_LEVELS.items():
+        description = _EFFORT_DESCRIPTIONS.get(name, "configurato dall'utente")
+        choices[name] = (
+            f"{description} (dibattito {preset['debate_rounds']} round, "
+            f"gate {preset['gates']}, fix {preset['fix_cycles']})"
+        )
+    return choices
+
 # 3, not 2: a complex board needs more than two auto-fix passes (task-009 went
 # 4→4→2 blockers and escalated with real issues still open). Override per-run
 # with PIPELINE_MAX_UX_RENDER_CYCLES for simpler UI (down) or stuck ones (up).

@@ -110,6 +110,44 @@ def _sleep_inhibitor():
             proc.terminate()
 
 
+def _pause_reason(data: dict) -> str:
+    """Return an actionable human summary for a LangGraph interrupt."""
+    reason = str(data.get("reason", "")).strip()
+    if reason:
+        return reason
+    if data.get("stage") == "effort level":
+        hint = data.get("hint", "troop-monke")
+        return f"choose an effort level (recommended: {hint})"
+    return "waiting for a human"
+
+
+def _pause_answers(data: dict) -> dict:
+    """Normalize interrupt choices for logs and the Discord control bot."""
+    answers = data.get("answers")
+    if isinstance(answers, dict) and answers:
+        return answers
+    levels = data.get("levels")
+    if isinstance(levels, list):
+        return {str(level): "select this effort level" for level in levels}
+    return {}
+
+
+def _print_pause(data: dict, task_id: str) -> None:
+    """Print a pause as instructions instead of an opaque JSON blob."""
+    stage = str(data.get("stage", "?"))
+    print(f"\n=== PAUSED: {stage} ===")
+    print(f"  what to do: {_pause_reason(data)}")
+    if data.get("context"):
+        print(f"  context: {data['context']}")
+    answers = _pause_answers(data)
+    if answers:
+        print("  choices:")
+        for key, meaning in answers.items():
+            marker = "  (recommended)" if key == data.get("hint") else ""
+            print(f"    {key}{marker} — {meaning}")
+    print(f"  action: ./run.py resume {task_id} --answer \"<choice>\"")
+
+
 def _extract_debate_blockers(task_id: str) -> str:
     """Pull the [BLOCKER] lines from the latest round of the debate file.
 
@@ -193,22 +231,21 @@ def _drive(graph, task_id, payload):
         print(f"  (resuming — next node: {snap.next[0]})")
     if snap.interrupts:
         data = snap.interrupts[0].value
-        print("\n=== PAUSED ===")
-        print(json.dumps(data, indent=2, ensure_ascii=False))
-        print(f"\nresume with:  ./run.py resume {task_id} --answer \"<your answer>\"")
+        _print_pause(data, task_id)
         # Carry the answer menu (and, for a visual escalation, where the
         # screenshots are) in the event so the optional Discord bot can build
         # one button per valid answer without querying the graph internals.
+        reason = _pause_reason(data)
+        answers = _pause_answers(data)
         blockers = ""
-        if "debate" in str(data.get("reason", "")).lower():
+        if "debate" in reason.lower():
             blockers = _extract_debate_blockers(task_id)
-        ev.emit("run_paused", task_id, str(data.get("stage", "?")),
-                str(data.get("reason", "waiting for a human")),
-                answers=data.get("answers", {}), context=data.get("context", ""),
-                blockers=blockers,
+        ev.emit("run_paused", task_id, str(data.get("stage", "?")), reason,
+                answers=answers, hint=data.get("hint", ""),
+                context=data.get("context", ""), blockers=blockers,
                 screens=str(C.SCREENS / f"task-{task_id}")
-                        if "screenshot" in str(data.get("reason", "")).lower()
-                        or "visual" in str(data.get("reason", "")).lower() else "")
+                        if "screenshot" in reason.lower()
+                        or "visual" in reason.lower() else "")
         _mark_idle(task_id, "paused")
     elif snap.next:
         # Neither finished nor waiting for anyone: this is a stall, and it used

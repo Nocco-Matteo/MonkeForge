@@ -59,10 +59,13 @@ def _answer_for(key: str) -> str:
 
 
 class AnswerButton(discord.ui.Button):
-    def __init__(self, task_id: str, key: str, meaning: str):
+    def __init__(self, task_id: str, key: str, meaning: str, recommended: str = ""):
+        answer = _answer_for(key)
         super().__init__(label=key.split("/")[0].strip()[:80] or "ok",
-                         style=discord.ButtonStyle.primary)
-        self.task_id, self.answer, self.meaning = task_id, _answer_for(key), meaning
+                         style=(discord.ButtonStyle.success
+                                if answer == recommended else discord.ButtonStyle.primary),
+                         custom_id=f"resume:{task_id}:{answer}")
+        self.task_id, self.answer, self.meaning = task_id, answer, meaning
 
     async def callback(self, interaction: discord.Interaction):
         if not _allowed(interaction.user.id):
@@ -82,19 +85,25 @@ class AnswerButton(discord.ui.Button):
 
 
 class AnswerView(discord.ui.View):
-    def __init__(self, task_id: str, answers: dict):
+    def __init__(self, task_id: str, answers: dict, recommended: str = ""):
         super().__init__(timeout=None)
         for key, meaning in list(answers.items())[:5]:   # Discord: 5 buttons/row
-            self.add_item(AnswerButton(task_id, key, str(meaning)))
+            self.add_item(AnswerButton(task_id, key, str(meaning), recommended))
 
 
 async def _post_escalation(channel, rec: dict):
     tid = rec.get("task", "?")
-    reason = rec.get("msg", "")
+    stage = str(rec.get("step", ""))
+    reason = rec.get("msg") or "waiting for a human"
     answers = rec.get("answers") or {"ok": "continue", "skip": "force-close"}
     blockers = rec.get("blockers") or ""
-    embed = discord.Embed(title=f"⛔ TASK-{tid} needs you",
-                          description=reason, color=0xE74C3C)
+    if stage == "effort level":
+        title = f"⏱ TASK-{tid}: choose effort"
+    else:
+        title = f"⛔ TASK-{tid} needs you"
+    embed = discord.Embed(title=title, description=reason, color=0xE74C3C)
+    if rec.get("hint"):
+        embed.add_field(name="recommended", value=str(rec["hint"]), inline=False)
     if rec.get("context"):
         embed.add_field(name="where", value=str(rec["context"])[:1024], inline=False)
     if blockers:
@@ -108,7 +117,7 @@ async def _post_escalation(channel, rec: dict):
         d = C.REPO / screens
         if d.is_dir():
             files = [discord.File(p) for p in sorted(d.glob("*.png"))[:4]]
-    await channel.send(embed=embed, view=AnswerView(tid, answers), files=files)
+    await channel.send(embed=embed, view=AnswerView(tid, answers, str(rec.get("hint", ""))), files=files)
 
 
 async def _post_end(channel, rec: dict):

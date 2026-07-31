@@ -82,6 +82,7 @@ class RunEnd(Event):
 class RunPaused(Event):
     KIND: ClassVar[str] = "run_paused"
     answers: dict | None = _UNSET
+    hint: str | None = _UNSET
     context: str | None = _UNSET
     blockers: str | None = _UNSET
     screens: str | None = _UNSET

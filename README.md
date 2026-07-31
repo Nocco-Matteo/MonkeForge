@@ -33,6 +33,20 @@ Verifica che i CLI siano raggiungibili (`devin`, `cursor-agent`, `gemini`,
 `--auto` salta i checkpoint umani (approvazione del piano, intervista); le
 escalation restano sempre. Senza `--auto` il grafo ti aspetta.
 
+Dopo il piano, una run interattiva si ferma sul checkpoint **effort** e mostra
+la raccomandazione più i tre pulsanti `scout-monke`, `troop-monke` e
+`barrel-monke`. Nel terminale scegli con, per esempio:
+
+```bash
+./run.py resume 005 --answer troop-monke
+```
+
+Per saltare il checkpoint e fissare il livello in anticipo:
+
+```bash
+./run.py start 005 "richiesta" --effort troop-monke
+```
+
 `redo` riposiziona il grafo a inizio fase riusando ciò che c'è: `--from debate`
 riusa brief+piano e rifà il dibattito; `--from visual` riusa la UI costruita e
 rifà solo render + cancello visivo (utile dopo aver sistemato un agente o gli

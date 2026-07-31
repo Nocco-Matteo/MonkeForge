@@ -417,6 +417,18 @@ class TestCheckpointEffort(unittest.TestCase):
         # An empty re-extraction has unknown surface → conservative troop-monke.
         self.assertEqual(delta["effort"], "troop-monke")
 
+    def test_interactive_payload_has_actionable_effort_choices(self):
+        signals = _signals(file_count=1, plan_chars=100)
+        with patch.object(P, "interrupt", return_value="ok") as pause:
+            N.checkpoint_effort({
+                "task_id": "t", "auto": False, "effort_hint_signals": signals,
+            })
+        payload = pause.call_args.args[0]
+        self.assertEqual(payload["stage"], "effort level")
+        self.assertIn("recommended: scout-monke", payload["reason"])
+        self.assertEqual(set(payload["answers"]), set(C.EFFORT_LEVELS))
+        self.assertTrue(all(payload["answers"].values()))
+
 
 # --- checkpoint_plan suppression -------------------------------------------
 

@@ -225,9 +225,11 @@ def checkpoint_effort(state):
         {
             "stage": "effort level",
             "task": state["task_id"],
+            "reason": f"choose an effort level (recommended: {hint})",
             "hint": hint,
             "signals": signals,
             "levels": list(C.EFFORT_LEVELS),
+            "answers": C.effort_choices(),
         }
     )
     answer = str(decision).strip().lower()

@@ -3,6 +3,28 @@ import unittest
 import run
 
 
+class PauseInstructions(unittest.TestCase):
+    def test_effort_pause_answers_use_levels(self):
+        import run
+        data = {
+            "stage": "effort level",
+            "hint": "troop-monke",
+            "levels": ["scout-monke", "troop-monke", "barrel-monke"],
+        }
+        self.assertEqual(run._pause_reason(data),
+                         "choose an effort level (recommended: troop-monke)")
+        self.assertEqual(run._pause_answers(data), {
+            "scout-monke": "select this effort level",
+            "troop-monke": "select this effort level",
+            "barrel-monke": "select this effort level",
+        })
+
+    def test_pause_answers_preserve_descriptions(self):
+        import run
+        answers = {"ok": "continue"}
+        self.assertEqual(run._pause_answers({"answers": answers}), answers)
+
+
 class EnvStr(unittest.TestCase):
     """YAML booleans must reach env vars as lowercase 'true'/'false'.
 

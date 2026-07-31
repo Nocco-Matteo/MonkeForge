@@ -52,9 +52,11 @@ systemctl --user enable --now pipeline-bot
 
 ## What you get on the phone
 
-- **Escalation** → an embed with the reason, where the run is, the answer menu,
-  and (for a visual block) the screenshots. Tap a button → the bot resumes with
-  that answer and replies with the outcome (the next escalation card, or done).
+- **Escalation/checkpoint** → an embed with the reason, where the run is, the
+  valid answer menu, and (for an effort checkpoint) one button per effort level
+  with the recommended level highlighted. Visual blocks also include screenshots.
+  Tap a button → the bot resumes with that answer and replies with the outcome
+  (the next escalation card, or done).
 - **`/status <id>`**, **`/doctor <id>`** — read state / what went wrong.
 - **`/resume <id> [answer]`** — the fallback if the buttons are gone (e.g. the
   bot restarted after the card was posted).
