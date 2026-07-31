@@ -99,7 +99,7 @@ def debate_tech(state):
     """
     tid = state["task_id"]
     rnd = state.get("debate_round", 0) + 1
-    is_verification = rnd > C.MAX_DEBATE_ROUNDS
+    is_verification = rnd > C.resolved_debate_rounds(state)
     conv = Conversation.from_state(state)
     _, out = run_agent(
         "PLAN_REVIEWER",
@@ -236,7 +236,7 @@ def debate_ux(state):
         "ux_blockers": blockers,
         "journal": [f"debate r{rnd} ux: {verdict}, {blockers} blockers{delta_note}"],
     }
-    is_verification = rnd > C.MAX_DEBATE_ROUNDS
+    is_verification = rnd > C.resolved_debate_rounds(state)
     delta.update(_debate_decision({**state, **delta}, is_verification=is_verification))
     return delta
 
@@ -279,7 +279,7 @@ def _debate_decision(state, is_verification: bool = False) -> dict:
         )
         return {
             "debate_next": "summary",
-            "escalation": f"debate exhausted {C.MAX_DEBATE_ROUNDS} rounds + "
+            "escalation": f"debate exhausted {C.resolved_debate_rounds(state)} rounds + "
             f"verification: {n} {who} blocker(s) confirmed by the "
             f"critics after the proposer's final reply",
             "journal": [f"debate verification: {n} {who} blocker(s) confirmed"],

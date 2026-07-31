@@ -84,6 +84,12 @@ class PipelineState(TypedDict, total=False):
     not_met: list[str]
     disputed: list[str]
 
+    # --- adaptive effort (TASK-011)
+    effort: str                    # "scout-monke" | "troop-monke" | "barrel-monke"
+    effort_forced: bool            # effort set via --effort (skip the effort checkpoint)
+    effort_hint_signals: dict      # signals _extract_effort_signals produced (for the hint)
+    effort_checkpoint_shown: bool  # the effort checkpoint already ran (suppress re-show)
+
     # --- control
     db_degraded: bool              # last test run had the e2e DB unreachable
     escalation: str                # non-empty -> escalate node

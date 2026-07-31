@@ -90,9 +90,21 @@ def judge(state):
 
 
 def checkpoint_plan(state):
-    """Human gate after the verdict (skipped in AUTO)."""
+    """Human gate after the verdict (skipped in AUTO).
+
+    Suppression has two independent conditions, checked in order (C6):
+      1. ``auto`` is true  → skip (the original behaviour).
+      2. ``effort_checkpoint_shown`` is true AND ``effort_forced`` is false
+         → skip: the human already chose an effort level at the effort
+         checkpoint, so a second confirmation back-to-back is noise.
+    When ``effort_forced`` is true (--effort flag) the effort checkpoint was
+    short-circuited (no interrupt), so this gate is the human's only chance to
+    approve the plan — it still fires.
+    """
     if state.get("auto"):
         return {"journal": ["checkpoint plan: auto, skipped"]}
+    if state.get("effort_checkpoint_shown") and not state.get("effort_forced"):
+        return {"journal": ["checkpoint plan: effort checkpoint already shown, skipped"]}
     decision = interrupt(
         {
             "stage": "plan approved?",

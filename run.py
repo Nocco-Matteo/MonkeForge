@@ -41,6 +41,12 @@ def _load_yaml_to_env(path: Path) -> None:
             val = "1" if val else ""
         os.environ.setdefault(f"PIPELINE_{key.upper()}", _envstr(val))
 
+    # effort: -> PIPELINE_EFFORT_JSON (a top-level dict is JSON-serialised; the
+    # config module reads it at import time to override the effort presets).
+    effort = data.get("effort")
+    if isinstance(effort, dict):
+        os.environ.setdefault("PIPELINE_EFFORT_JSON", json.dumps(effort))
+
     # agents: -> PIPELINE_MODEL_<ROLE>, PIPELINE_CMD_<ROLE>
     for role, cfg in (data.get("agents") or {}).items():
         if "model" in cfg:
@@ -528,6 +534,9 @@ def main() -> int:
     s.add_argument("--ref", dest="refs", action="append", default=[],
                    metavar="PATH",
                    help="reference document for the interviewer (repeatable)")
+    s.add_argument("--effort", dest="effort", default=None,
+                   choices=["scout-monke", "troop-monke", "barrel-monke"],
+                   help="force an effort level (skips the effort checkpoint)")
     r = sub.add_parser("resume"); r.add_argument("task_id"); r.add_argument("--answer", default="ok")
     rd = sub.add_parser("redo", help="re-run a phase reusing existing artifacts "
                                      "(e.g. redo the debate after fixing an agent)")
@@ -537,6 +546,9 @@ def main() -> int:
                     help="debate: reuse brief+plan, redo the debate. "
                          "plan: reuse brief, redo plan then debate. "
                          "visual: reuse the built UI, redo the render+visual gate.")
+    rd.add_argument("--effort", dest="effort", default=None,
+                    choices=["scout-monke", "troop-monke", "barrel-monke"],
+                    help="force an effort level for the redo (plan/debate only)")
     rs = sub.add_parser("reset", help="delete the checkpoint state for a task "
                                      "so it can be started fresh again")
     rs.add_argument("task_id")
@@ -681,6 +693,12 @@ def main() -> int:
                     as_node, nxt, reuse = "init", "plan", "the brief"
                 else:
                     as_node, nxt, reuse = "plan", "debate_tech", "the brief and plan"
+                # --effort forces a level for the redo (plan/debate only); the
+                # visual redo reuses the already-built UI and must not touch
+                # effort state (C28).
+                if args.effort:
+                    reset["effort"] = args.effort
+                    reset["effort_forced"] = True
                 # Clear debate artifacts so the fresh debate does not read the
                 # rounds of the run being redone (the plan is preserved).
                 for path in (C.DEBATES / f"DEBATE-{args.task_id}.md",
@@ -707,6 +725,9 @@ def main() -> int:
             payload = {"task_id": args.task_id, "request": request,
                        "auto": args.auto, "interview": args.interview,
                        "journal": []}
+            if args.effort:
+                payload["effort"] = args.effort
+                payload["effort_forced"] = True
             mode = "auto" if args.auto else "interactive"
             if args.interview:
                 mode += "+interview"

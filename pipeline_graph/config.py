@@ -1,6 +1,6 @@
 """Configuration: roles -> agent CLIs, paths, timeouts. Single source of truth."""
 from __future__ import annotations
-import os, shlex, shutil, subprocess, sys
+import json, os, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 REPO = Path(
@@ -213,6 +213,100 @@ MAX_DEBATE_ROUNDS = int(os.environ.get("PIPELINE_MAX_DEBATE_ROUNDS", "2"))
 MAX_FIX_CYCLES    = int(os.environ.get("PIPELINE_MAX_FIX_CYCLES", "2"))
 MAX_TEST_FIXES    = int(os.environ.get("PIPELINE_MAX_TEST_FIXES", "2"))
 MAX_INTAKE_ROUNDS = int(os.environ.get("PIPELINE_MAX_INTAKE_ROUNDS", "4"))
+
+# --- Adaptive effort presets (TASK-011) -----------------------------------
+# Three effort levels. `troop-monke` is byte-equivalent to the pre-existing
+# MAX_DEBATE_ROUNDS / MAX_FIX_CYCLES (C10): the default behaviour is unchanged
+# when no effort is selected. `scout-monke` skips the debate (route straight to
+# summary) and disables the visual/render gates; `barrel-monke` runs more
+# debate rounds and fix cycles on changes that touch critical paths.
+_EFFORT_LEVELS_HARDCODED: dict[str, dict] = {
+    "scout-monke":  {"debate_rounds": 1, "gates": False, "fix_cycles": 1},
+    "troop-monke":  {"debate_rounds": MAX_DEBATE_ROUNDS, "gates": True,
+                     "fix_cycles": MAX_FIX_CYCLES},
+    "barrel-monke": {"debate_rounds": max(MAX_DEBATE_ROUNDS, 3), "gates": True,
+                     "fix_cycles": max(MAX_FIX_CYCLES, 3)},
+}
+
+# PIPELINE_EFFORT_JSON (set by the YAML `effort:` key, or by hand) overrides the
+# hardcoded presets. A parse failure or a structurally invalid shape degrades
+# silently to the hardcoded default so a malformed env var never breaks an
+# existing run that never opted in.
+_EFFORT_REQUIRED_KEYS = ("debate_rounds", "gates", "fix_cycles")
+
+
+def _is_valid_effort_levels(obj) -> bool:
+    """True iff ``obj`` is a non-empty dict of level→{debate_rounds,gates,fix_cycles}."""
+    if not isinstance(obj, dict) or not obj:
+        return False
+    for name, cfg in obj.items():
+        if not isinstance(name, str) or not isinstance(cfg, dict):
+            return False
+        if not all(k in cfg for k in _EFFORT_REQUIRED_KEYS):
+            return False
+        if not isinstance(cfg["debate_rounds"], int) or cfg["debate_rounds"] < 0:
+            return False
+        if not isinstance(cfg["fix_cycles"], int) or cfg["fix_cycles"] < 0:
+            return False
+        if not isinstance(cfg["gates"], bool):
+            return False
+    return True
+
+
+_effort_json_raw = os.environ.get("PIPELINE_EFFORT_JSON")
+if _effort_json_raw:
+    try:
+        _parsed = json.loads(_effort_json_raw)
+    except (json.JSONDecodeError, ValueError):
+        _parsed = None
+    EFFORT_LEVELS = _parsed if _is_valid_effort_levels(_parsed) else _EFFORT_LEVELS_HARDCODED
+else:
+    EFFORT_LEVELS = _EFFORT_LEVELS_HARDCODED
+
+# Validate the env-chosen default; an unknown value would otherwise crash every
+# resolver that indexes EFFORT_LEVELS via _effort_for. Fall back to the
+# hardcoded default so a bad env var can't break routing/resume.
+_effort_default_raw = os.environ.get("PIPELINE_EFFORT_DEFAULT", "troop-monke")
+EFFORT_DEFAULT = _effort_default_raw if _effort_default_raw in EFFORT_LEVELS else "troop-monke"
+
+# Paths whose modification marks a change as critical (→ barrel-monke hint).
+_DEFAULT_CRITICAL_PATHS = "config.py;graph.py;state.py;run.py"
+EFFORT_CRITICAL_PATHS = tuple(
+    p.strip() for p in
+    os.environ.get("PIPELINE_EFFORT_CRITICAL_PATHS", _DEFAULT_CRITICAL_PATHS).split(";")
+    if p.strip()
+)
+
+
+def _effort_for(state) -> str:
+    """The effective effort level for a state, with a safe fallback.
+
+    Pre-feature checkpoints replay state as-is, so an in-flight run that
+    predates this feature has no ``effort`` key — indexing ``EFFORT_LEVELS``
+    directly would raise ``KeyError``. This returns the default instead of
+    crashing, and every resolver/router funnels through it so the fallback
+    lives in one place (C11).
+    """
+    effort = state.get("effort") if isinstance(state, dict) else None
+    return effort if effort in EFFORT_LEVELS else EFFORT_DEFAULT
+
+
+def resolved_debate_rounds(state) -> int:
+    return EFFORT_LEVELS[_effort_for(state)]["debate_rounds"]
+
+
+def resolved_fix_cycles(state) -> int:
+    return EFFORT_LEVELS[_effort_for(state)]["fix_cycles"]
+
+
+def resolved_gates_enabled(state) -> bool:
+    return EFFORT_LEVELS[_effort_for(state)]["gates"]
+
+
+def effort_levels() -> dict:
+    """Snapshot of the effort presets (for the effort checkpoint prompt)."""
+    return EFFORT_LEVELS
+
 # 3, not 2: a complex board needs more than two auto-fix passes (task-009 went
 # 4→4→2 blockers and escalated with real issues still open). Override per-run
 # with PIPELINE_MAX_UX_RENDER_CYCLES for simpler UI (down) or stuck ones (up).

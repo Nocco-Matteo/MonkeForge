@@ -112,10 +112,10 @@ def code_verify(state):
         batch_n=b["n"],
     )
     if "NOT_FIXED" in out:
-        if cycle >= C.MAX_FIX_CYCLES:
+        if cycle >= C.resolved_fix_cycles(state):
             return {
                 "escalation": f"batch {b['n']}: blockers still unfixed after "
-                f"{C.MAX_FIX_CYCLES} cycles",
+                f"{C.resolved_fix_cycles(state)} cycles",
                 "journal": [f"cr b{b['n']} verify{cycle}: NOT_FIXED, giving up"],
             }
         return {"journal": [f"cr b{b['n']} verify{cycle}: NOT_FIXED, another cycle"]}

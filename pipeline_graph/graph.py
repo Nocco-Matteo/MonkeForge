@@ -59,6 +59,18 @@ def route_debate(state):
     return state.get("debate_next", "reply")
 
 
+def route_after_checkpoint_effort(state):
+    """After the effort checkpoint: scout skips the debate, troop/barrel enter it.
+
+    Returns ``summary`` only when the effective effort is ``scout-monke`` (C20).
+    """
+    if state.get("escalation"):
+        return "escalate"
+    if C._effort_for(state) == "scout-monke":
+        return "summary"
+    return "debate_tech"
+
+
 def route_implement(state):
     if state.get("escalation"):
         return "escalate"
@@ -101,6 +113,11 @@ def route_next_batch(state):
         return "escalate"
     if state["batch_idx"] < len(state.get("batches", [])):
         return "implement"
+    # Gates disabled (e.g. scout-monke): skip the visual/render gates straight
+    # to the final check. Placed before the has_ui check so a scout-monke UI task
+    # does not enter the visual phase (C21).
+    if not C.resolved_gates_enabled(state):
+        return "final_check"
     # All batches built. A UI task earns the visual gate first; then (or, for a
     # non-UI task, directly) the render gate if this is a perf task; else final.
     # An empty UX_RENDER_CMD disables the whole visual phase (a repo with no
@@ -188,11 +205,12 @@ def route_escalation_return(state):
     visual_passed = state.get("visual_verdict") == "APPROVE" and not state.get("visual_blockers", 0)
     if (state.get("has_ui") and not visual_passed
             and not state.get("visual_shipped_blocked")
-            and C.UX_RENDER_CMD.strip()):          # disabled gate → never re-enter it
+            and C.UX_RENDER_CMD.strip()           # disabled gate → never re-enter it
+            and C.resolved_gates_enabled(state)):  # scout-monke → no gates
         return "ux_render"
     # Perf task whose render gate has not passed: a resolved escalation re-profiles
     # (never silently skip the gate — the same fix the visual gate got).
-    if state.get("has_perf") and not _render_passed(state):
+    if state.get("has_perf") and not _render_passed(state) and C.resolved_gates_enabled(state):
         return "render_measure"
     return "final_check"
 
@@ -210,6 +228,7 @@ def build_graph(checkpointer=None):
     add("intake_ask", N.intake_ask)
     add("intake_wait", N.intake_wait)
     add("plan", N.plan)
+    add("checkpoint_effort", N.checkpoint_effort)  # effort checkpoint (TASK-011)
     add("debate_tech", N.debate_tech)      # technical critic + TECH-LIMIT certification
     add("debate_ux", N.debate_ux)          # the designer — authority on UX
     add("debate_reply", N.debate_reply)
@@ -242,7 +261,12 @@ def build_graph(checkpointer=None):
     g.add_conditional_edges("intake_wait", route_intake_wait,
                             {"plan": "plan", "ask": "intake_ask",
                              "wait": "intake_wait", "escalate": "escalate"})
-    g.add_conditional_edges("plan", after(), {"continue": "debate_tech", "escalate": "escalate"})
+    g.add_conditional_edges("plan", after(),
+                            {"continue": "checkpoint_effort", "escalate": "escalate"})
+    # The effort checkpoint routes to summary (scout) or debate_tech (troop/barrel).
+    g.add_conditional_edges("checkpoint_effort", route_after_checkpoint_effort,
+                            {"summary": "summary", "debate_tech": "debate_tech",
+                             "escalate": "escalate"})
 
     # A round: technical critic → (UX critic, if the task has a surface) →
     # decide. debate_reply loops back to debate_tech, so a round always ends on a

@@ -90,6 +90,9 @@ from .planning import (
     UI_SURFACE_RE,
     _detect_has_perf,
     _detect_has_ui,
+    _extract_effort_signals,
+    _recommend_effort,
+    checkpoint_effort,
     plan,
 )
 from .quality_gates import (
@@ -158,10 +161,13 @@ __all__ = [
     "intake_wait",
     # planning
     "plan",
+    "checkpoint_effort",
     "UI_SURFACE_RE",
     "PERF_SURFACE_RE",
     "_detect_has_ui",
     "_detect_has_perf",
+    "_extract_effort_signals",
+    "_recommend_effort",
     # debate
     "TECH_LIMIT_RE",
     "_SECTION_HEADER_RE",
