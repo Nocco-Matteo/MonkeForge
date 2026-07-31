@@ -8,7 +8,7 @@ from pathlib import Path
 from .. import config as C
 from ..agents import read_if_exists, run_agent
 from ..state import Conversation
-from .common import _file_or_stdout, _recover_artifact, _rel
+from .common import _file_or_stdout, _recover_artifact
 from .intake import _seed_brief
 
 
@@ -27,7 +27,6 @@ def plan(state):
         "plan",
         template="plan",
         request=state["request"],
-        brief_path=str(_rel(brief)),
         arch_docs=C.arch_docs_block(),
         docs_dir=C.DOCS_REL,
     )

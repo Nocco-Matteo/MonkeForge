@@ -30,7 +30,6 @@ def code_review(state):
         diff_base=base,
         checklist_items=", ".join(map(str, b.get("checklist", []))),
         trusted_context=state.get("trusted_context", ""),
-        docs_dir=C.DOCS_REL,
     )
     review_path = C.REVIEWS / f"CODE-{tid}-b{b['n']}.md"
     review = _file_or_stdout(review_path, out)
@@ -86,7 +85,6 @@ def code_fix(state):
         f"cr-b{b['n']}-fix{cycle}",
         template="code_fix",
         batch_n=b["n"],
-        docs_dir=C.DOCS_REL,
     )
     disputed = parse_disputed(out)
     if disputed:
@@ -112,7 +110,6 @@ def code_verify(state):
         f"cr-b{b['n']}-verify{cycle}",
         template="code_verify",
         batch_n=b["n"],
-        docs_dir=C.DOCS_REL,
     )
     if "NOT_FIXED" in out:
         if cycle >= C.MAX_FIX_CYCLES:

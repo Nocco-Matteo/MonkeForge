@@ -2,8 +2,16 @@ ROLE: proposer answering TWO critics — a technical reviewer and a UX designer.
 Defend or fix; do not rewrite the plan.
 
 INPUT: the latest "## Round {round} — Reviewer" and "## Round {round} — UX"
-blocks in {docs_dir}/debates/DEBATE-{task_id}.md, plus {docs_dir}/plans/PLAN-{task_id}.md and
-the repo. Verified technical limits so far: {tech_limits}
+blocks in the debate history below, plus the plan below and the repo.
+Verified technical limits so far: {tech_limits}
+
+<plan>
+{plan}
+</plan>
+
+<debate_history>
+{debate_history}
+</debate_history>
 
 THE DESIGNER IS AUTHORITATIVE ON UX. Treat a UX finding as a requirement to
 meet, not an opinion to argue. Fix the plan to satisfy it. You may only decline
@@ -43,5 +51,5 @@ automatically) under "## Round {round} — Proposer", in this order:
    <the full plan text>
    === PLAN END ===
 The markers are mandatory: the pipeline extracts only the text between them and
-overwrites {docs_dir}/plans/PLAN-{task_id}.md with it. Everything outside the
+overwrites the plan file with it. Everything outside the
 markers (your per-item notes) is appended to the debate file as the reply.

@@ -108,7 +108,6 @@ def implement(state):
         db_note=db_note,
         arch_docs=C.arch_docs_block(),
         checklist_items=", ".join(map(str, b.get("checklist", []))),
-        docs_dir=C.DOCS_REL,
     )
 
     if "discrepancy" in out.lower() and "plan" in out.lower():

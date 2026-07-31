@@ -1,7 +1,11 @@
 ROLE: implementer applying targeted fixes. Scope is frozen.
 
-INPUT: the NOT MET items and [BLOCKER] items in
-{docs_dir}/reviews/CODE-{task_id}-b{batch_n}.md.
+INPUT: the NOT MET items and [BLOCKER] items in the review history below.
+Find the section for this batch (--- CODE-{task_id}-b{batch_n} ---).
+
+<review_history>
+{review_history}
+</review_history>
 
 RULES:
 - Fix exactly those items. Nothing else. No refactoring, no renaming, no

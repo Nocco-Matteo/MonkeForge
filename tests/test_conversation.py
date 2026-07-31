@@ -38,6 +38,10 @@ def _conv(**overrides) -> Conversation:
         debate_history="",
         batch_context="{}",
         review_history="",
+        final="",
+        progress="",
+        summary="",
+        visual_review="",
         journal=(),
     )
     defaults.update(overrides)
@@ -99,6 +103,50 @@ class TestFromStateMapping:
         (tmp_path / "DEBATE-t1.md").write_text("the debate body")
         conv = Conversation.from_state({"task_id": "t1", "request": ""})
         assert conv.debate_history == "the debate body"
+
+    def test_final_read_from_disk(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "FINAL", tmp_path)
+        (tmp_path / "FINAL-t1.md").write_text("the final spec")
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.final == "the final spec"
+
+    def test_final_missing_is_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "FINAL", tmp_path)
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.final == ""
+
+    def test_progress_read_from_disk(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "FINAL", tmp_path)
+        (tmp_path / "PROGRESS-t1.md").write_text("the progress log")
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.progress == "the progress log"
+
+    def test_progress_missing_is_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "FINAL", tmp_path)
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.progress == ""
+
+    def test_summary_read_from_disk(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "DEBATES", tmp_path)
+        (tmp_path / "SUMMARY-t1.md").write_text("the summary body")
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.summary == "the summary body"
+
+    def test_summary_missing_is_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "DEBATES", tmp_path)
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.summary == ""
+
+    def test_visual_review_read_from_disk(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "REVIEWS", tmp_path)
+        (tmp_path / "VISUAL-t1.md").write_text("visual blockers here")
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.visual_review == "visual blockers here"
+
+    def test_visual_review_missing_is_empty(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "REVIEWS", tmp_path)
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        assert conv.visual_review == ""
 
     def test_batch_context_is_json(self):
         conv = Conversation.from_state({"batch_idx": 2, "batches": [{"n": 1}]})

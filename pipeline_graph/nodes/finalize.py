@@ -29,7 +29,7 @@ from .common import (
 def summary(state):
     tid = state["task_id"]
     conv = Conversation.from_state(state)
-    _, out = _N.run_agent("SUMMARIZER", conv, "summary", template="summary", docs_dir=C.DOCS_REL)
+    _, out = _N.run_agent("SUMMARIZER", conv, "summary", template="summary")
     summary_path = C.DEBATES / f"SUMMARY-{tid}.md"
     _file_or_stdout(summary_path, out)
     if not summary_path.exists():
@@ -248,7 +248,6 @@ def final_check(state):
         "final-check",
         template="final_check",
         db_note=db_note,
-        docs_dir=C.DOCS_REL,
     )
     not_met = parse_not_met(out)
     suffix = "" if db_ok else " (DB-gated tests skipped: e2e Postgres unreachable)"

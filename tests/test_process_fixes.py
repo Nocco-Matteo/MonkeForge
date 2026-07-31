@@ -25,6 +25,10 @@ def _conv(tid):
         debate_history="",
         batch_context="{}",
         review_history="",
+        final="",
+        progress="",
+        summary="",
+        visual_review="",
         journal=(),
     )
 

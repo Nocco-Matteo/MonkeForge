@@ -113,9 +113,9 @@ def render_prompt(template: str, conversation: "Conversation", **kw) -> str:
 
     The substitution map is `dataclasses.asdict(conversation)` flat-mapped
     alongside `kw` (per-node dynamic vars like `round`, `batch_n`...); `kw`
-    wins on key collision (none currently collide). This keeps the existing
-    `{task_id}`, `{request}`, `{docs_dir}` etc. placeholders working without
-    rewriting the 16 templates.
+    wins on key collision (e.g. the condenser overrides `debate_history` with
+    the condensed version). This keeps the existing `{task_id}`, `{request}`,
+    `{docs_dir}` etc. placeholders working without rewriting the 16 templates.
     """
     text = (C.TEMPLATES / f"{template}.md").read_text()
     subs = dataclasses.asdict(conversation)
@@ -140,6 +140,39 @@ def run_agent(role: str, conversation: "Conversation", step: str,
     """
     task_id = conversation.task_id
     tpl = template or step
+
+    # Token-budget condenser: collapse older debate rounds BEFORE rendering
+    # the prompt, so the agent receives the condensed debate inline. The
+    # Conversation is frozen, so the condensed string is passed as an
+    # extra_kw override to render_prompt (kw wins over conversation fields).
+    # No-op unless a budget is set for the role (default backward-compatible).
+    # Function-local import per D2: condenser.py does `from .agents import
+    # ...` at top, so a top-level import here would create an import-time cycle.
+    from .condenser import condense, estimate_tokens
+    budget = C.token_budget(role)
+    debate_history = conversation.debate_history
+    if budget is not None and debate_history:
+        if estimate_tokens(debate_history) > budget:
+            condensed = condense(debate_history, C.CONDENSER_KEEP_RECENT)
+            # Guard against the steady-state where the debate has already
+            # stabilised (cannot be collapsed further without losing the
+            # verbatim guarantee): skip the write+emit so we don't churn
+            # identical bytes or spam duplicate `degraded` records.
+            if condensed != debate_history:
+                debate_history = condensed
+                extra_kw["debate_history"] = condensed
+                # Write back so future from_state reads the condensed version.
+                debate_path = C.DEBATES / f"DEBATE-{task_id}.md"
+                if debate_path.exists():
+                    debate_path.write_text(condensed)
+                ev.emit("degraded", task_id, step,
+                        f"condensed debate_history for {role}: "
+                        f"{estimate_tokens(conversation.debate_history)} -> "
+                        f"{estimate_tokens(condensed)} est-tokens (budget {budget})",
+                        original_size=len(conversation.debate_history),
+                        condensed_size=len(condensed),
+                        role=role)
+
     prompt = render_prompt(tpl, conversation, **extra_kw)
 
     # One debug snapshot per agent invocation (D6): the single choke point
@@ -152,8 +185,12 @@ def run_agent(role: str, conversation: "Conversation", step: str,
         "conversation built",
         brief_len=len(conversation.brief),
         plan_len=len(conversation.plan),
-        debate_len=len(conversation.debate_history),
+        debate_len=len(debate_history),
         review_len=len(conversation.review_history),
+        final_len=len(conversation.final),
+        progress_len=len(conversation.progress),
+        summary_len=len(conversation.summary),
+        visual_review_len=len(conversation.visual_review),
         journal_entries=len(conversation.journal),
     )
 
@@ -165,32 +202,6 @@ def run_agent(role: str, conversation: "Conversation", step: str,
 
     prompt_file = C.PROMPTS / f"{task_id}-{step}.md"
     prompt_file.write_text(prompt)
-
-    # Token-budget condenser: collapse older debate rounds in-place when this
-    # role's estimate-tokens budget is exceeded. No-op unless a budget is set
-    # for the role (default backward-compatible). Function-local import per
-    # D2: condenser.py does `from .agents import ...` at top, so a top-level
-    # import here would create an import-time cycle.
-    from .condenser import condense, estimate_tokens
-    budget = C.token_budget(role)
-    if budget is not None:
-        debate_path = C.DEBATES / f"DEBATE-{task_id}.md"
-        if debate_path.exists():
-            original = debate_path.read_text()
-            if estimate_tokens(original) > budget:
-                condensed = condense(original, C.CONDENSER_KEEP_RECENT)
-                # Guard against the steady-state where the file has already
-                # stabilised (cannot be collapsed further without losing the
-                # verbatim guarantee): skip the write+emit so we don't churn
-                # identical bytes or spam duplicate `degraded` records.
-                if condensed != original:
-                    debate_path.write_text(condensed)
-                    ev.emit("degraded", task_id, step,
-                            f"condensed DEBATE-{task_id}.md for {role}: "
-                            f"{estimate_tokens(original)} -> {estimate_tokens(condensed)} "
-                            f"est-tokens (budget {budget})",
-                            original_size=len(original), condensed_size=len(condensed),
-                            role=role)
 
     out_file = C.RAW / f"{task_id}-{step}-{binary}-{int(time.time())}.log"
     started = datetime.now(timezone.utc).isoformat()

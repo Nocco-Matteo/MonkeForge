@@ -179,7 +179,6 @@ def ux_visual_fix(state):
         template="visual_fix",
         screens_dir=str(shots.relative_to(C.REPO)) if shots.is_relative_to(C.REPO) else str(shots),
         render_facts=state.get("render_facts", "{}"),
-        docs_dir=C.DOCS_REL,
     )
     _stage_all()
     return {

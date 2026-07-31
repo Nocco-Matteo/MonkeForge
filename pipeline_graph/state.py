@@ -114,6 +114,10 @@ class Conversation:
     debate_history: str
     batch_context: str
     review_history: str
+    final: str
+    progress: str
+    summary: str
+    visual_review: str
     journal: tuple[str, ...]
 
     @classmethod
@@ -147,6 +151,10 @@ class Conversation:
             if body:
                 review_parts.append(f"--- {path.stem} ---\n\n{body}")
         review_history = "\n\n".join(review_parts)
+        final = read_if_exists(C.FINAL / f"FINAL-{task_id}.md")
+        progress = read_if_exists(C.FINAL / f"PROGRESS-{task_id}.md")
+        summary = read_if_exists(C.DEBATES / f"SUMMARY-{task_id}.md")
+        visual_review = read_if_exists(C.REVIEWS / f"VISUAL-{task_id}.md")
         # Copy + freeze: tuple(state.get(...)) so neither reassignment nor
         # in-place mutation can corrupt the snapshot.
         journal = tuple(state.get("journal", []))
@@ -158,5 +166,9 @@ class Conversation:
             debate_history=debate_history,
             batch_context=batch_context,
             review_history=review_history,
+            final=final,
+            progress=progress,
+            summary=summary,
+            visual_review=visual_review,
             journal=journal,
         )

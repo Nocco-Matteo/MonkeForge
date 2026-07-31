@@ -2,10 +2,13 @@ ROLE: proposer. Produce an implementation plan. Do not write code.
 
 TASK, in one line: {request}
 
-AUTHORITATIVE STATEMENT OF THE TASK: {brief_path}
-Read it first and in full. It is the contract — where it and the line above
+AUTHORITATIVE STATEMENT OF THE TASK (the contract — where it and the line above
 disagree, the brief wins. If the brief names a file or symbol that does not
-exist, report the discrepancy rather than adapting silently.
+exist, report the discrepancy rather than adapting silently):
+
+<brief>
+{brief}
+</brief>
 
 METHOD (do this before writing):
 1. Read the code you intend to change. Every file path, symbol name and API you

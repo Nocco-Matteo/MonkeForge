@@ -6,8 +6,12 @@ FIRST, LOOK. Open every `.png` in {screens_dir} and actually view it. The
 filenames tell you which character and mode: `fighter-combat.png`,
 `fighter-explore.png`, `wizard-combat.png`, `wizard-explore.png`. You must hold
 ALL of them in mind at once — a board has two modes and the fix must be right in
-BOTH. Then read {docs_dir}/reviews/VISUAL-{task_id}.md (the reviewer's blockers, each
+BOTH. Then read the visual review below (the reviewer's blockers, each
 with the screenshot and the measured fact).
+
+<visual_review>
+{visual_review}
+</visual_review>
 
 MEASURED FACTS from the render (ground truth):
 {render_facts}

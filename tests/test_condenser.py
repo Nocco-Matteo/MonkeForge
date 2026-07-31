@@ -22,11 +22,11 @@ from pipeline_graph import events as ev
 from pipeline_graph.state import Conversation
 
 
-def _conv(tid):
+def _conv(tid, **overrides):
     """Minimal Conversation for condenser-block tests: only `task_id` matters
     (the condenser keys off it + the debate file on disk); prompt content is
     irrelevant. `journal=()` matches the new tuple field type."""
-    return Conversation(
+    defaults = dict(
         task_id=tid,
         request="",
         brief="",
@@ -34,8 +34,14 @@ def _conv(tid):
         debate_history="",
         batch_context="{}",
         review_history="",
+        final="",
+        progress="",
+        summary="",
+        visual_review="",
         journal=(),
     )
+    defaults.update(overrides)
+    return Conversation(**defaults)
 
 # --- estimate_tokens --------------------------------------------------------
 
@@ -325,7 +331,7 @@ class TestRunAgentIntegration:
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t3.md").write_text(text)
 
-        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
+        A.run_agent("PLAN_REVIEWER", _conv("t3", debate_history=text), "step", template="debate_review")
 
         rewritten = (debates / "DEBATE-t3.md").read_text()
         assert rewritten != text
@@ -343,13 +349,41 @@ class TestRunAgentIntegration:
         assert rec["condensed_size"] == len(rewritten)
         assert rec["condensed_size"] < rec["original_size"]
 
+    def test_over_budget_prompt_receives_condensed_debate(self, monkeypatch, tmp_path):
+        """The prompt file must contain the CONDENSED debate, not the full one.
+        This is the integration test that was missing: the old condenser
+        rewrote the file after render_prompt, so the agent still got the full
+        debate inline."""
+        debates = self._setup_env(monkeypatch, tmp_path)
+        # Need a template that inlines {debate_history}.
+        templates = tmp_path / "templates"
+        templates.mkdir()
+        monkeypatch.setattr(C, "TEMPLATES", templates)
+        (templates / "debate_review.md").write_text("<debate>{debate_history}</debate>")
+        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
+        text = "".join("\n\n" + _round(n) for n in range(1, 6))
+        (debates / "DEBATE-t3.md").write_text(text)
+
+        A.run_agent("PLAN_REVIEWER", _conv("t3", debate_history=text), "step", template="debate_review")
+
+        # The prompt file is written by run_agent.
+        prompt_files = list(tmp_path.glob("prompts/*.md"))
+        assert prompt_files, "prompt file was not written"
+        prompt_text = prompt_files[0].read_text()
+        # Condensed: old rounds collapsed, PAD-1 gone from prompt.
+        assert "PAD-1-" not in prompt_text
+        # Last 2 rounds still present in prompt.
+        assert "PAD-4-" + "x" * 1800 in prompt_text
+        assert "PAD-5-" + "x" * 1800 in prompt_text
+
     def test_no_budget_is_noop(self, monkeypatch, tmp_path):
         debates = self._setup_env(monkeypatch, tmp_path)
         monkeypatch.delenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", raising=False)
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t3.md").write_text(text)
 
-        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
+        A.run_agent("PLAN_REVIEWER", _conv("t3", debate_history=text), "step", template="debate_review")
 
         assert (debates / "DEBATE-t3.md").read_text() == text
         assert self._degraded_events() == []
@@ -362,16 +396,16 @@ class TestRunAgentIntegration:
         text = "".join("\n\n" + _round(n) for n in range(1, 3))
         (debates / "DEBATE-t3.md").write_text(text)
 
-        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
+        A.run_agent("PLAN_REVIEWER", _conv("t3", debate_history=text), "step", template="debate_review")
 
         assert (debates / "DEBATE-t3.md").read_text() == text
         assert self._degraded_events() == []
 
-    def test_missing_file_is_noop(self, monkeypatch, tmp_path):
+    def test_missing_debate_is_noop(self, monkeypatch, tmp_path):
         debates = self._setup_env(monkeypatch, tmp_path)
         monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
-        # No debate file written.
+        # No debate file written, no debate_history in conversation.
         assert not (debates / "DEBATE-t3.md").exists()
 
         A.run_agent("PLAN_REVIEWER", _conv("t3"), "step", template="debate_review")
@@ -393,8 +427,8 @@ class TestRunAgentIntegration:
 
         before_mtime = os.stat(debates / "DEBATE-t3.md").st_mtime_ns
 
-        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step1", template="debate_review")
-        A.run_agent("PLAN_REVIEWER", _conv("t3"), "step2", template="debate_review")
+        A.run_agent("PLAN_REVIEWER", _conv("t3", debate_history=stabilized), "step1", template="debate_review")
+        A.run_agent("PLAN_REVIEWER", _conv("t3", debate_history=stabilized), "step2", template="debate_review")
 
         after = (debates / "DEBATE-t3.md").read_text()
         assert after == stabilized

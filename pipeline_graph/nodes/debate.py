@@ -107,7 +107,6 @@ def debate_tech(state):
         f"debate-r{rnd}-tech",
         template="debate_review",
         round=rnd,
-        docs_dir=C.DOCS_REL,
     )
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
     text = _file_or_stdout(
@@ -299,7 +298,6 @@ def debate_reply(state):
         template="debate_reply",
         round=rnd,
         tech_limits="; ".join(state.get("tech_limits", [])) or "none",
-        docs_dir=C.DOCS_REL,
     )
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
     # Extract the updated plan from between the markers; the per-item notes
