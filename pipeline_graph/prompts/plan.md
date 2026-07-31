@@ -28,7 +28,16 @@ OUTPUT -> print the plan to stdout (the pipeline files it automatically), with t
      batches; each batch must be independently reviewable and leave the repo
      green. If one batch suffices, say "single batch" and explain why.
      No batch may depend on an artifact produced by a later batch.
-  5. File-by-file changes (path -> what changes; new files marked NEW)
+  5. File-by-file changes. Use exactly one declaration per file, with one of these
+     prefixes at the start of the line:
+       MODIFY: path -> what changes
+       NEW: path -> what is added
+       DELETE: path -> what is removed
+       RENAME: path -> destination path and rationale
+       READ: path -> why it is consulted but not changed
+     Include every file the implementation changes, creates, deletes, or renames.
+     Put files that are only read or cited under READ; prose mentions elsewhere
+     are not a substitute for these declarations. New files must use NEW.
   6. Edge cases considered (and how each is handled)
   7. Test strategy (what proves this works)
   8. Out of scope (explicit non-goals)

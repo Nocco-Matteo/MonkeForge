@@ -220,11 +220,12 @@ MAX_INTAKE_ROUNDS = int(os.environ.get("PIPELINE_MAX_INTAKE_ROUNDS", "4"))
 # when no effort is selected. `scout-monke` skips the debate (route straight to
 # summary) and disables the visual/render gates; `barrel-monke` runs more
 # debate rounds and fix cycles on changes that touch critical paths.
+_EFFORT_GATE_MODES = frozenset(("off", "standard", "full"))
 _EFFORT_LEVELS_HARDCODED: dict[str, dict] = {
-    "scout-monke":  {"debate_rounds": 1, "gates": False, "fix_cycles": 1},
-    "troop-monke":  {"debate_rounds": MAX_DEBATE_ROUNDS, "gates": True,
+    "scout-monke":  {"debate_rounds": 0, "gates": "off", "fix_cycles": 1},
+    "troop-monke":  {"debate_rounds": MAX_DEBATE_ROUNDS, "gates": "standard",
                      "fix_cycles": MAX_FIX_CYCLES},
-    "barrel-monke": {"debate_rounds": max(MAX_DEBATE_ROUNDS, 3), "gates": True,
+    "barrel-monke": {"debate_rounds": max(MAX_DEBATE_ROUNDS, 3), "gates": "full",
                      "fix_cycles": max(MAX_FIX_CYCLES, 3)},
 }
 
@@ -235,22 +236,42 @@ _EFFORT_LEVELS_HARDCODED: dict[str, dict] = {
 _EFFORT_REQUIRED_KEYS = ("debate_rounds", "gates", "fix_cycles")
 
 
-def _is_valid_effort_levels(obj) -> bool:
-    """True iff ``obj`` is a non-empty dict of level→{debate_rounds,gates,fix_cycles}."""
+def _normalize_effort_levels(obj) -> dict | None:
+    """Validate and normalize effort levels, including the old bool gate form.
+
+    ``false`` maps to ``off`` and ``true`` maps to ``standard`` so an existing
+    YAML does not silently lose its custom effort values during this migration.
+    ``full`` currently shares the enabled routing behavior with ``standard``;
+    keeping the mode explicit leaves room for stricter full-gate policy later.
+    """
     if not isinstance(obj, dict) or not obj:
-        return False
+        return None
+    normalized: dict[str, dict] = {}
     for name, cfg in obj.items():
         if not isinstance(name, str) or not isinstance(cfg, dict):
-            return False
+            return None
         if not all(k in cfg for k in _EFFORT_REQUIRED_KEYS):
-            return False
+            return None
         if not isinstance(cfg["debate_rounds"], int) or cfg["debate_rounds"] < 0:
-            return False
+            return None
         if not isinstance(cfg["fix_cycles"], int) or cfg["fix_cycles"] < 0:
-            return False
-        if not isinstance(cfg["gates"], bool):
-            return False
-    return True
+            return None
+        gates = cfg["gates"]
+        if isinstance(gates, bool):
+            gates = "standard" if gates else "off"
+        if gates not in _EFFORT_GATE_MODES:
+            return None
+        normalized[name] = {
+            "debate_rounds": cfg["debate_rounds"],
+            "gates": gates,
+            "fix_cycles": cfg["fix_cycles"],
+        }
+    return normalized
+
+
+def _is_valid_effort_levels(obj) -> bool:
+    """True iff ``obj`` is a valid effort-level mapping."""
+    return _normalize_effort_levels(obj) is not None
 
 
 _effort_json_raw = os.environ.get("PIPELINE_EFFORT_JSON")
@@ -259,7 +280,7 @@ if _effort_json_raw:
         _parsed = json.loads(_effort_json_raw)
     except (json.JSONDecodeError, ValueError):
         _parsed = None
-    EFFORT_LEVELS = _parsed if _is_valid_effort_levels(_parsed) else _EFFORT_LEVELS_HARDCODED
+    EFFORT_LEVELS = _normalize_effort_levels(_parsed) or _EFFORT_LEVELS_HARDCODED
 else:
     EFFORT_LEVELS = _EFFORT_LEVELS_HARDCODED
 
@@ -299,8 +320,14 @@ def resolved_fix_cycles(state) -> int:
     return EFFORT_LEVELS[_effort_for(state)]["fix_cycles"]
 
 
-def resolved_gates_enabled(state) -> bool:
+def resolved_gate_mode(state) -> str:
+    """Return ``off``, ``standard`` or ``full`` for the effective effort."""
     return EFFORT_LEVELS[_effort_for(state)]["gates"]
+
+
+def resolved_gates_enabled(state) -> bool:
+    """Backward-compatible boolean view of the gate mode."""
+    return resolved_gate_mode(state) != "off"
 
 
 def effort_levels() -> dict:

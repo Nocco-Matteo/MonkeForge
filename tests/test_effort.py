@@ -81,7 +81,7 @@ class TestExtractEffortSignals(unittest.TestCase):
     def test_returns_all_required_keys(self):
         sig = P._extract_effort_signals("plan", "brief", True, False)
         for key in ("files", "file_count", "critical_path_hits",
-                    "cross_layer", "plan_chars", "has_ui", "has_perf"):
+                    "cross_layer", "surface_known", "plan_chars", "has_ui", "has_perf"):
             self.assertIn(key, sig)
 
     def test_plan_chars_is_len_of_plan_text(self):
@@ -93,20 +93,79 @@ class TestExtractEffortSignals(unittest.TestCase):
         self.assertTrue(sig["has_ui"])
         self.assertTrue(sig["has_perf"])
 
-    def test_detects_config_py_as_critical_path(self):
-        plan = "Edit `pipeline_graph/config.py` to add a flag."
+    def test_detects_modified_config_py_as_critical_path(self):
+        plan = "MODIFY: pipeline_graph/config.py -> add a flag."
         sig = P._extract_effort_signals(plan, "", False, False)
         self.assertGreater(sig["critical_path_hits"], 0)
 
+    def test_read_critical_path_is_not_counted(self):
+        plan = "READ: pipeline_graph/config.py -> inspect existing settings."
+        sig = P._extract_effort_signals(plan, "", False, False)
+        self.assertEqual(sig["files"], [])
+        self.assertEqual(sig["critical_path_hits"], 0)
+
+    def test_prose_and_negative_mentions_are_not_counted(self):
+        plan = (
+            "Do not modify `pipeline_graph/config.py`. It is only an anchor.\n"
+            "The implementation changes one small helper."
+        )
+        sig = P._extract_effort_signals(plan, "", False, False)
+        self.assertEqual(sig["files"], [])
+        self.assertEqual(sig["critical_path_hits"], 0)
+        self.assertFalse(sig["surface_known"])
+
+    def test_read_anchor_does_not_inflate_file_count(self):
+        plan = (
+            "MODIFY: backend/main.py -> add endpoint.\n"
+            "READ: frontend/src/App.tsx -> understand the caller.\n"
+            "READ: pipeline_graph/config.py -> inspect configuration."
+        )
+        sig = P._extract_effort_signals(plan, "", False, False)
+        self.assertEqual(sig["files"], ["backend/main.py"])
+        self.assertEqual(sig["file_count"], 1)
+        self.assertFalse(sig["cross_layer"])
+
+    def test_cross_layer_uses_changed_files_only(self):
+        plan = (
+            "MODIFY: frontend/src/App.tsx -> update the UI.\n"
+            "READ: backend/main.py -> inspect the API."
+        )
+        sig = P._extract_effort_signals(plan, "", False, False)
+        self.assertFalse(sig["cross_layer"])
+
     def test_cross_layer_detected(self):
-        plan = "Edit `frontend/src/App.tsx` and `backend/main.py`."
+        plan = (
+            "MODIFY: frontend/src/App.tsx -> update the UI.\n"
+            "NEW: backend/main.py -> add the API."
+        )
         sig = P._extract_effort_signals(plan, "", False, False)
         self.assertTrue(sig["cross_layer"])
 
     def test_single_layer_not_cross(self):
-        plan = "Edit `pipeline_graph/config.py` and `pipeline_graph/state.py`."
+        plan = (
+            "MODIFY: pipeline_graph/config.py -> add a flag.\n"
+            "MODIFY: pipeline_graph/state.py -> store it."
+        )
         sig = P._extract_effort_signals(plan, "", False, False)
         self.assertFalse(sig["cross_layer"])
+
+    def test_brief_paths_do_not_become_change_surface(self):
+        sig = P._extract_effort_signals(
+            "MODIFY: small.py -> make the change.",
+            "The brief references pipeline_graph/config.py and frontend/App.tsx.",
+            False,
+            False,
+        )
+        self.assertEqual(sig["files"], ["small.py"])
+        self.assertEqual(sig["critical_path_hits"], 0)
+        self.assertFalse(sig["cross_layer"])
+
+    def test_unstructured_plan_defaults_to_troop(self):
+        sig = P._extract_effort_signals(
+            "Edit `small.py`; config.py is an anchor.", "", False, False
+        )
+        self.assertFalse(sig["surface_known"])
+        self.assertEqual(P._recommend_effort(sig), "troop-monke")
 
 
 # --- resolver fallbacks ----------------------------------------------------
@@ -133,16 +192,20 @@ class TestResolvers(unittest.TestCase):
     def test_resolved_fix_cycles_default(self):
         self.assertEqual(C.resolved_fix_cycles({}), C.MAX_FIX_CYCLES)
 
-    def test_resolved_gates_enabled_default(self):
+    def test_resolved_gate_mode_default(self):
+        self.assertEqual(C.resolved_gate_mode({}), "standard")
         self.assertTrue(C.resolved_gates_enabled({}))
 
-    def test_scout_disables_gates(self):
+    def test_scout_has_off_gates(self):
+        self.assertEqual(C.resolved_gate_mode({"effort": "scout-monke"}), "off")
         self.assertFalse(C.resolved_gates_enabled({"effort": "scout-monke"}))
 
-    def test_troop_gates_enabled(self):
+    def test_troop_has_standard_gates(self):
+        self.assertEqual(C.resolved_gate_mode({"effort": "troop-monke"}), "standard")
         self.assertTrue(C.resolved_gates_enabled({"effort": "troop-monke"}))
 
-    def test_barrel_gates_enabled(self):
+    def test_barrel_has_full_gates(self):
+        self.assertEqual(C.resolved_gate_mode({"effort": "barrel-monke"}), "full")
         self.assertTrue(C.resolved_gates_enabled({"effort": "barrel-monke"}))
 
     def test_troop_byte_equivalent(self):
@@ -154,11 +217,33 @@ class TestResolvers(unittest.TestCase):
         # An unknown effort → default (troop) → troop's values.
         self.assertEqual(C.resolved_debate_rounds({"effort": "???"}), C.MAX_DEBATE_ROUNDS)
 
+    def test_gate_mode_validation_accepts_new_values(self):
+        levels = {
+            "scout": {"debate_rounds": 0, "gates": "off", "fix_cycles": 1},
+            "troop": {"debate_rounds": 1, "gates": "standard", "fix_cycles": 2},
+            "barrel": {"debate_rounds": 3, "gates": "full", "fix_cycles": 3},
+        }
+        self.assertTrue(C._is_valid_effort_levels(levels))
+        self.assertEqual(C._normalize_effort_levels(levels), levels)
+
+    def test_legacy_boolean_gate_modes_are_normalized(self):
+        levels = {
+            "old-off": {"debate_rounds": 0, "gates": False, "fix_cycles": 1},
+            "old-on": {"debate_rounds": 1, "gates": True, "fix_cycles": 2},
+        }
+        normalized = C._normalize_effort_levels(levels)
+        self.assertEqual(normalized["old-off"]["gates"], "off")
+        self.assertEqual(normalized["old-on"]["gates"], "standard")
+
+    def test_invalid_gate_mode_is_rejected(self):
+        levels = {"custom": {"debate_rounds": 1, "gates": "sometimes", "fix_cycles": 1}}
+        self.assertFalse(C._is_valid_effort_levels(levels))
+
 
 class TestResolverWithMonkeypatchedLevels(unittest.TestCase):
     def test_monkeypatched_levels_take_effect(self):
         fake = {
-            "custom": {"debate_rounds": 7, "gates": False, "fix_cycles": 9},
+            "custom": {"debate_rounds": 7, "gates": "off", "fix_cycles": 9},
         }
         with patch.object(C, "EFFORT_LEVELS", fake), \
              patch.object(C, "EFFORT_DEFAULT", "custom"):
@@ -168,7 +253,7 @@ class TestResolverWithMonkeypatchedLevels(unittest.TestCase):
             self.assertFalse(C.resolved_gates_enabled({}))
 
     def test_monkeypatched_levels_unknown_still_falls_back(self):
-        fake = {"custom": {"debate_rounds": 7, "gates": True, "fix_cycles": 9}}
+        fake = {"custom": {"debate_rounds": 7, "gates": "standard", "fix_cycles": 9}}
         with patch.object(C, "EFFORT_LEVELS", fake), \
              patch.object(C, "EFFORT_DEFAULT", "custom"):
             # An effort not in the patched levels → default.
@@ -329,8 +414,8 @@ class TestCheckpointEffort(unittest.TestCase):
         # A pre-feature checkpoint resume: no signals stored → re-extract (empty).
         with patch.object(P, "interrupt", return_value="ok"):
             delta = N.checkpoint_effort({"task_id": "t", "auto": False})
-        # Empty plan → scout-monke (0 files, 0 chars, no UI/perf).
-        self.assertEqual(delta["effort"], "scout-monke")
+        # An empty re-extraction has unknown surface → conservative troop-monke.
+        self.assertEqual(delta["effort"], "troop-monke")
 
 
 # --- checkpoint_plan suppression -------------------------------------------
