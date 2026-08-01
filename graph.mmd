@@ -1,0 +1,174 @@
+---
+config:
+  theme: base
+  themeVariables:
+    primaryColor: "#dbeafe"
+    primaryTextColor: "#0f172a"
+    primaryBorderColor: "#1d4ed8"
+    lineColor: "#334155"
+    secondaryColor: "#fef3c7"
+    tertiaryColor: "#dcfce7"
+    fontFamily: "Arial, Helvetica, sans-serif"
+    fontSize: "14px"
+  flowchart:
+    curve: linear
+    htmlLabels: true
+    nodeSpacing: 35
+    rankSpacing: 45
+---
+flowchart TD
+
+  subgraph lifecycle["1. Avvio e intake"]
+    direction TB
+    start([START])
+    init["Init"]
+    intake_ask{"Intake:<br/>fai domanda"}
+    intake_wait["Intake:<br/>attendi risposta"]
+    plan["Pianificazione"]
+    checkpoint_effort{"Checkpoint:<br/>seleziona effort"}
+  end
+
+  subgraph deliberation["2. Dibattito e approvazione piano"]
+    direction TB
+    debate_tech["Debate tecnico"]
+    debate_ux["Debate UX"]
+    debate_reply["Risposta al debate"]
+    summary["Sintesi"]
+    judge{"Judge:<br/>valuta piano"}
+    checkpoint_plan{"Checkpoint:<br/>approva piano"}
+  end
+
+  subgraph implementation["3. Implementazione e verifica codice"]
+    direction TB
+    implement["Implementazione"]
+    code_review{"Code review"}
+    code_fix["Correzione codice"]
+    code_verify{"Verifica test"}
+    close_batch{"Chiudi batch"}
+  end
+
+  subgraph visual["4. Rendering e verifica visuale"]
+    direction TB
+    ux_render["Render UX"]
+    ux_visual_review{"Review visuale UX"}
+    ux_visual_fix["Correzione visuale UX"]
+    render_measure["Misura render"]
+    render_review{"Review render"}
+    render_fix["Correzione render"]
+  end
+
+  subgraph completion["5. Finalizzazione"]
+    direction TB
+    final_check{"Gate finale"}
+    wrap_up["Wrap-up"]
+    escalate[[Escalation / pausa]]
+    end_node([END])
+  end
+
+  start --> init
+  init -.->|errore| escalate
+  init -->|intake| intake_ask
+  init -->|salta intake| plan
+
+  intake_ask -.->|errore| escalate
+  intake_ask -->|attendi risposta| intake_wait
+  intake_ask -->|continua| plan
+  intake_wait -.->|errore| escalate
+  intake_wait -->|fai nuova domanda| intake_ask
+  intake_wait -.->|attendi| intake_wait
+  intake_wait -->|risposta completa| plan
+
+  plan -->|continua| checkpoint_effort
+  plan -.->|errore| escalate
+  checkpoint_effort -.->|debate| debate_tech
+  checkpoint_effort -.->|salta debate| summary
+  checkpoint_effort -.->|stop| escalate
+
+  debate_tech -->|reply| debate_reply
+  debate_tech -->|UX| debate_ux
+  debate_tech -->|chiudi| summary
+  debate_tech -.->|errore| escalate
+  debate_ux -->|reply| debate_reply
+  debate_ux -->|chiudi| summary
+  debate_ux -.->|errore| escalate
+  debate_reply -->|continua| debate_tech
+  debate_reply -.->|errore| escalate
+  summary -->|continua| judge
+  summary -.->|errore| escalate
+  judge -->|continua| checkpoint_plan
+  judge -.->|errore| escalate
+  checkpoint_plan -->|continua| implement
+  checkpoint_plan -.->|errore| escalate
+
+  implement -->|review| code_review
+  implement -.->|retry| implement
+  implement -.->|errore| escalate
+  code_review -->|batch completato| close_batch
+  code_review -->|richiede fix| code_fix
+  code_review -.->|errore| escalate
+  code_fix -->|continua| code_verify
+  code_fix -.->|errore| escalate
+  code_verify -->|test superati| close_batch
+  code_verify -->|test falliti| code_fix
+  code_verify -.->|errore| escalate
+  close_batch -->|altro batch| implement
+  close_batch -->|render visuale| ux_render
+  close_batch -->|misura render| render_measure
+  close_batch -->|finalizza| final_check
+  close_batch -.->|errore| escalate
+
+  ux_render -->|continua| ux_visual_review
+  ux_render -.->|errore| escalate
+  ux_visual_review -->|fix UX| ux_visual_fix
+  ux_visual_review -->|misura render| render_measure
+  ux_visual_review -->|finalizza| final_check
+  ux_visual_review -.->|errore| escalate
+  ux_visual_fix -->|continua| ux_render
+  ux_visual_fix -.->|errore| escalate
+  render_measure -->|continua| render_review
+  render_measure -.->|errore| escalate
+  render_review -->|fix render| render_fix
+  render_review -->|finalizza| final_check
+  render_review -.->|errore| escalate
+  render_fix -->|continua| render_measure
+  render_fix -.->|errore| escalate
+
+  final_check -->|continua| wrap_up
+  final_check -.->|errore| escalate
+  wrap_up --> end_node
+
+  escalate -.->|stop| end_node
+  escalate -.->|riprendi| close_batch
+  escalate -.->|riprendi| init
+  escalate -.->|riprendi| intake_ask
+  escalate -.->|riprendi| intake_wait
+  escalate -.->|riprendi| plan
+  escalate -.->|riprendi| debate_tech
+  escalate -.->|riprendi| summary
+  escalate -.->|riprendi| implement
+  escalate -.->|riprendi| code_review
+  escalate -.->|riprendi| ux_render
+  escalate -.->|riprendi| render_measure
+  escalate -.->|riprendi| final_check
+
+  classDef start fill:#111827,color:#ffffff,stroke:#000000,stroke-width:3px
+  classDef intake fill:#dbeafe,color:#0f172a,stroke:#1d4ed8,stroke-width:2px
+  classDef decision fill:#fef3c7,color:#0f172a,stroke:#b45309,stroke-width:2px
+  classDef debate fill:#ede9fe,color:#0f172a,stroke:#6d28d9,stroke-width:2px
+  classDef implementation fill:#dcfce7,color:#0f172a,stroke:#15803d,stroke-width:2px
+  classDef visual fill:#ffedd5,color:#0f172a,stroke:#c2410c,stroke-width:2px
+  classDef final fill:#fce7f3,color:#0f172a,stroke:#be185d,stroke-width:2px
+  classDef escalation fill:#fee2e2,color:#7f1d1d,stroke:#b91c1c,stroke-width:3px
+  classDef terminal fill:#111827,color:#ffffff,stroke:#000000,stroke-width:3px
+
+  class start start
+  class init,intake_ask,intake_wait,plan intake
+  class checkpoint_effort,judge,checkpoint_plan,code_review,code_verify,close_batch,ux_visual_review,render_review,final_check decision
+  class debate_tech,debate_ux,debate_reply,summary debate
+  class implement,code_fix implementation
+  class ux_render,ux_visual_fix,render_measure,render_fix visual
+  class wrap_up final
+  class escalate escalation
+  class end_node terminal
+
+  linkStyle default stroke:#334155,stroke-width:1.5px
