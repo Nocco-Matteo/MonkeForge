@@ -47,7 +47,10 @@ def route_after_tech(state):
     """After the technical critic: get the UX critique too (if any), else decide."""
     if state.get("escalation"):
         return "escalate"
-    if state.get("has_ui"):
+    # A UI task with no render command configured has its visual review disabled
+    # — skip the UX critic the same way a non-UI task does, so has_ui defaulting
+    # True can't drag a backend repo into a designer critique that renders nothing.
+    if state.get("has_ui") and C.UX_RENDER_CMD.strip():
         return "ux"
     return state.get("debate_next", "reply")   # no UX critic: tech node already decided
 

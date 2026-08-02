@@ -140,9 +140,22 @@ def debate_tech(state):
             f"{len(limits)} tech-limit(s) verified"
         ],
     }
-    if not state.get("has_ui"):
-        # No UX critic on this task: decide the round here.
-        delta.update(_debate_decision({**state, **delta}, is_verification=is_verification))
+    if not state.get("has_ui") or not C.UX_RENDER_CMD.strip():
+        # No UX critic on this task: decide the round here. This also covers a
+        # UI task whose repo has no render command configured (UX_RENDER_CMD
+        # empty) — the visual review is disabled, so the designer never weighs
+        # in and the round is decided on the technical critique alone.
+        bypass_note = None
+        if state.get("has_ui") and not C.UX_RENDER_CMD.strip():
+            bypass_note = "visual review disabled — no render command configured for this repo"
+            delta.setdefault("journal", []).append(bypass_note)
+        # _debate_decision can return its own journal on verification paths
+        # (zero-blocker convergence or blocker-confirmed escalation); merge
+        # instead of letting delta.update drop the bypass note (item 28).
+        decision = _debate_decision({**state, **delta}, is_verification=is_verification)
+        if bypass_note and "journal" in decision:
+            decision["journal"] = [bypass_note, *decision["journal"]]
+        delta.update(decision)
     return delta
 
 
@@ -275,7 +288,11 @@ def _debate_decision(state, is_verification: bool = False) -> dict:
     this round's critiques, not the stale pre-reply numbers.
     """
     tech_ok = state.get("reviewer_verdict") == "APPROVE" and not state.get("open_blockers", 0)
-    ux_ok = (not state.get("has_ui")) or (
+    # A UI task with no render command configured has its visual review
+    # disabled (debate_tech skips the UX critic in that case), so treat the UX
+    # gate as satisfied — same as a non-UI task — instead of stalling on a
+    # verdict that will never arrive.
+    ux_ok = (not state.get("has_ui") or not C.UX_RENDER_CMD.strip()) or (
         state.get("ux_verdict") == "APPROVE" and not state.get("ux_blockers", 0)
     )
     if tech_ok and ux_ok:
