@@ -367,6 +367,26 @@ def _write_progress(task_id: str, batches: list[dict]) -> None:
 # --- escalation -------------------------------------------------------------
 
 
+# Routers fail into escalation via ``_safe_router`` (graph.py). A router is a
+# pure function of state that returns the next node name; it cannot set
+# ``state["escalation"]`` (it only returns a string the graph maps to a node),
+# so the plain-language reason is stashed here, keyed by task_id, for
+# ``escalate()`` to pick up. Peek, not pop: a resume re-runs ``escalate()`` and
+# the reason must still be present for the ``open_escalation`` marker check.
+# Cross-process resume (fresh process, empty dict) falls back to the
+# plain-language string below plus the ``step_error`` journal event.
+_router_errors: dict[str, str] = {}
+
+
+def _set_router_error(tid: str, reason: str) -> None:
+    _router_errors[tid] = reason
+
+
+def _get_router_error(tid: str) -> str:
+    """Non-destructive peek — never pops the stored entry. ``''`` if none."""
+    return _router_errors.get(tid, "")
+
+
 def _escalation_options(reason: str) -> dict:
     """What the valid answers mean for THIS escalation — the payload's menu.
 
@@ -428,6 +448,14 @@ def _escalation_options(reason: str) -> dict:
             "ok": "retry the step (the crash was infrastructure — OOM, signal, daemon death)",
             "stop": "stop the run — fix the environment, then resume",
         }
+    # A router crash is infrastructure, not a code fault — the only sane options
+    # are retry or stop. Force-closing a batch on a routing failure would
+    # rubber-stamp work the router never got to adjudicate.
+    if "routing failed" in r:
+        return {
+            "ok": "retry the routing (the failure was infrastructure — see journal)",
+            "stop": "stop the run — fix the issue, then resume",
+        }
     return {
         "ok": "retry / continue from here",
         "skip / close / force": "force-close the current batch (approve, clear blockers)",
@@ -436,7 +464,16 @@ def _escalation_options(reason: str) -> dict:
 
 def escalate(state):
     tid = state.get("task_id", "?")
-    reason = state.get("escalation", "unknown")
+    # A router crash reaches escalate() with state["escalation"] empty (the
+    # router cannot set state — it only returns "escalate"); the plain-language
+    # reason is stashed by _safe_router via _set_router_error. Cross-process
+    # resume (fresh process, empty bridge) falls back to the generic string.
+    # Never "unknown": that gave the human a menu with no context.
+    reason = (
+        state.get("escalation")
+        or _get_router_error(tid)
+        or "routing failed — pipeline could not choose the next step (see journal for the exception)"
+    )
 
     # This node re-executes from the top when the run is resumed: interrupt()
     # replays. Without the marker every resume re-sends the same urgent push,
@@ -480,6 +517,25 @@ def escalate(state):
         or "cannot render" in r_low
     )
     visual_blocked = "visual issues remain" in r_low or "visual reviewer produced no" in r_low
+    # A router crash is the only path into escalate() with state["escalation"]
+    # empty (the router cannot set state — it returns "escalate" and the graph
+    # routes here). Checked first so the plain-language router reason (which may
+    # contain a router name like "route_intake") is not mis-routed into the
+    # intake / debate / render branches below on a substring collision.
+    router_error = not state.get("escalation")
+
+    if router_error:
+        # A routing failure is infrastructure. A stop-like answer ends the run;
+        # any other answer clears the escalation only and lets the graph retry
+        # the router. No batch-semantics keys are set — the router never got to
+        # adjudicate a batch, so force-closing one would rubber-stamp nothing.
+        if ans in ("stop", "no", "abort", "cancel"):
+            delta["finished"] = True
+            delta["journal"] = [f"escalation resolved: {answer} (run stopped after routing failure)"]
+        else:
+            delta["journal"] = [f"escalation resolved: {answer} (retrying after routing failure)"]
+        ev.emit("escalation_resolved", tid, "escalate", f"answered {answer!r}; was: {reason}")
+        return delta
 
     if ans == "redo" and debate_escalation:
         # Reset debate state so the fresh debate starts from round 1, reusing

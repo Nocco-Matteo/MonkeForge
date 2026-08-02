@@ -39,6 +39,8 @@ from .common import (
     _step_outcome,
     _trust_output,
     _write_progress,
+    _set_router_error,
+    _get_router_error,
     escalate,
     instrument,
 )
@@ -146,6 +148,8 @@ __all__ = [
     "_db_note",
     "_write_progress",
     "_escalation_options",
+    "_set_router_error",
+    "_get_router_error",
     "escalate",
     # intake
     "brief_file",
