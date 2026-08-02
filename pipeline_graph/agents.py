@@ -118,6 +118,23 @@ def _fmt(value) -> str:
     return str(value)
 
 
+def _ensure_progress_archive_pointer(task_id: str, archive_path: Path) -> None:
+    """Append the verbatim-archive pointer to PROGRESS-{task_id}.md if missing.
+
+    Called at archive-creation time (inside the condensation block) so a crash
+    between condensation and the next ``_write_progress`` call still leaves the
+    pointer in place. ``_write_progress`` is the backstop for a full rewrite.
+    """
+    progress_path = C.FINAL / f"PROGRESS-{task_id}.md"
+    if not progress_path.exists():
+        return
+    pointer = f"Verbatim debate archive: DEBATE-{task_id}-full.md"
+    existing = progress_path.read_text()
+    if pointer not in existing:
+        with progress_path.open("a") as f:
+            f.write(pointer + "\n")
+
+
 def render_prompt(template: str, conversation: "Conversation", **kw) -> str:
     """Load prompts/<template>.md and substitute {placeholders}.
 
@@ -169,16 +186,40 @@ def run_agent(role: str, conversation: "Conversation", step: str,
             # verbatim guarantee): skip the write+emit so we don't churn
             # identical bytes or spam duplicate `degraded` records.
             if condensed != debate_history:
+                debate_path = C.DEBATES / f"DEBATE-{task_id}.md"
+                archive_path = C.DEBATES / f"DEBATE-{task_id}-full.md"
+                # Snapshot the verbatim pre-condensation working file into an
+                # accumulating archive BEFORE overwriting it, so a late or
+                # failed condensation never loses the original debate text.
+                # First condensation writes the archive verbatim; later ones
+                # append with a UTC-timestamped snapshot header.
+                pre_condensation = (
+                    debate_path.read_text() if debate_path.exists()
+                    else conversation.debate_history
+                )
+                if archive_path.exists():
+                    snapshot_header = (
+                        f"\n\n=== pre-condensation snapshot at "
+                        f"{datetime.now(timezone.utc).isoformat()} UTC ===\n\n"
+                    )
+                    with archive_path.open("a") as af:
+                        af.write(snapshot_header + pre_condensation)
+                else:
+                    archive_path.write_text(pre_condensation)
+                # Refresh the PROGRESS pointer at archive-creation time, so a
+                # crash between here and the next _write_progress call still
+                # leaves the pointer in place.
+                _ensure_progress_archive_pointer(task_id, archive_path)
                 debate_history = condensed
                 extra_kw["debate_history"] = condensed
                 # Write back so future from_state reads the condensed version.
-                debate_path = C.DEBATES / f"DEBATE-{task_id}.md"
                 if debate_path.exists():
                     debate_path.write_text(condensed)
                 ev.emit("degraded", task_id, step,
                         f"condensed debate_history for {role}: "
                         f"{estimate_tokens(conversation.debate_history)} -> "
-                        f"{estimate_tokens(condensed)} est-tokens (budget {budget})",
+                        f"{estimate_tokens(condensed)} est-tokens (budget {budget}); "
+                        f"verbatim archive at DEBATE-{task_id}-full.md",
                         original_size=len(conversation.debate_history),
                         condensed_size=len(condensed),
                         role=role)

@@ -32,6 +32,10 @@ rewriting the dependency.
 
 TEST INFRASTRUCTURE: {db_note}
 
+IF THIS IS A RETRY, the failing tests from your previous attempt are below — fix them. If empty, this is your first attempt.
+FAILING TESTS: {failures}
+TEST SUMMARY: {summary}
+
 DO NOT COMMIT. Leave every change UNCOMMITTED in the working tree (staged is
 fine). The pipeline commits the batch itself AFTER the review passes. If you run
 `git commit`, the reviewer's diff comes back empty and REJECTS your correct work

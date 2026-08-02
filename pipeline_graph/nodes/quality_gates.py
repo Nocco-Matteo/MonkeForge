@@ -12,9 +12,9 @@ from pathlib import Path
 import pipeline_graph.nodes as _N
 
 from .. import config as C
-from ..agents import count_blockers, parse_verdict, read_if_exists
+from ..agents import classify_output, count_blockers, parse_verdict, read_if_exists
 from ..state import Conversation
-from .common import _db_note, _stage_all
+from .common import _db_note, _stage_all, _trust_output
 
 
 def _screens_dir(tid: str) -> Path:
@@ -105,7 +105,7 @@ def ux_visual_review(state):
     review, verdict = "", "UNKNOWN"
     for attempt in range(2):
         step = f"visual-c{cyc}" + (f"-retry{attempt}" if attempt else "")
-        _, out = _N.run_agent(
+        code, out = _N.run_agent(
             "VISUAL_REVIEWER",
             conv,
             step,
@@ -115,6 +115,17 @@ def ux_visual_review(state):
         )
         verdict = parse_verdict(out)
         if verdict != "UNKNOWN":
+            health, _signal = classify_output(code, out)
+            if not _trust_output(code, out, health):
+                return {
+                    "visual_verdict": "UNKNOWN",
+                    "visual_blockers": 0,
+                    "escalation": f"visual review cycle {cyc} produced untrustworthy output despite a parseable verdict — refusing to act on it (see journal for diagnostics)",
+                    "journal": [
+                        f"visual c{cyc}: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                        f"{len(out)} bytes"
+                    ],
+                }
             review = out
             break
 

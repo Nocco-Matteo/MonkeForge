@@ -12,7 +12,7 @@ import pipeline_graph.nodes as _N
 from .. import config as C
 from .. import events as ev
 from .. import test_runner as tr
-from ..agents import parse_not_met
+from ..agents import classify_output, parse_not_met
 from ..state import Conversation
 from .common import (
     _db_note,
@@ -20,6 +20,7 @@ from .common import (
     _file_or_stdout,
     _recover_artifact,
     _save,
+    _trust_output,
     _write_progress,
 )
 
@@ -29,7 +30,16 @@ from .common import (
 def summary(state):
     tid = state["task_id"]
     conv = Conversation.from_state(state)
-    _, out = _N.run_agent("SUMMARIZER", conv, "summary", template="summary")
+    code, out = _N.run_agent("SUMMARIZER", conv, "summary", template="summary")
+    health, _signal = classify_output(code, out)
+    if not _trust_output(code, out, health):
+        return {
+            "escalation": f"summary produced untrustworthy output — refusing to write it (see journal for diagnostics)",
+            "journal": [
+                f"summary: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                f"{len(out)} bytes"
+            ],
+        }
     summary_path = C.DEBATES / f"SUMMARY-{tid}.md"
     _file_or_stdout(summary_path, out)
     if not summary_path.exists():
@@ -48,6 +58,16 @@ def judge(state):
     if out.strip().startswith("ESCALATE:") or "\nESCALATE:" in out:
         reason = out.split("ESCALATE:", 1)[1].strip().splitlines()[0]
         return {"escalation": f"judge escalated: {reason}", "journal": ["judge: escalated"]}
+
+    health, _signal = classify_output(code, out)
+    if not _trust_output(code, out, health):
+        return {
+            "escalation": f"judge produced untrustworthy output — refusing to parse it (see journal for diagnostics)",
+            "journal": [
+                f"judge: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                f"{len(out)} bytes"
+            ],
+        }
 
     batches_file = C.FINAL / f"BATCHES-{tid}.json"
     # Try to parse BATCHES json from agent stdout first
@@ -262,13 +282,22 @@ def final_check(state):
             ]
         return delta
 
-    _, out = _N.run_agent(
+    code, out = _N.run_agent(
         "IMPLEMENTER",
         conv,
         "final-check",
         template="final_check",
         db_note=db_note,
     )
+    health, _signal = classify_output(code, out)
+    if not _trust_output(code, out, health):
+        return {
+            "escalation": f"final check produced untrustworthy output — refusing to parse it (see journal for diagnostics)",
+            "journal": [
+                f"final check: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                f"{len(out)} bytes"
+            ],
+        }
     not_met = parse_not_met(out)
     suffix = "" if db_ok else " (DB-gated tests skipped: e2e Postgres unreachable)"
     delta = {

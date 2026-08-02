@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from .. import config as C
 from ..agents import (
+    classify_output,
     count_blockers,
     parse_disputed,
     parse_not_met,
@@ -12,7 +13,7 @@ from ..agents import (
     run_agent,
 )
 from ..state import Conversation
-from .common import _current_batch, _file_or_stdout, _git, _recover_artifact, _stage_all
+from .common import _current_batch, _file_or_stdout, _git, _recover_artifact, _stage_all, _trust_output
 
 
 def code_review(state):
@@ -20,7 +21,7 @@ def code_review(state):
     b = _current_batch(state)
     base = state.get("batch_base_ref") or "HEAD"
     conv = Conversation.from_state(state)
-    _, out = run_agent(
+    code, out = run_agent(
         "CODE_REVIEWER",
         conv,
         f"cr-b{b['n']}",
@@ -31,6 +32,15 @@ def code_review(state):
         checklist_items=", ".join(map(str, b.get("checklist", []))),
         trusted_context=state.get("trusted_context", ""),
     )
+    health, _signal = classify_output(code, out)
+    if not _trust_output(code, out, health):
+        return {
+            "escalation": f"code review for batch {b['n']} produced untrustworthy output — refusing to act on it (see journal for diagnostics)",
+            "journal": [
+                f"cr b{b['n']}: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                f"{len(out)} bytes"
+            ],
+        }
     review_path = C.REVIEWS / f"CODE-{tid}-b{b['n']}.md"
     review = _file_or_stdout(review_path, out)
     if not review.strip():
@@ -104,13 +114,22 @@ def code_verify(state):
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 1)
     conv = Conversation.from_state(state)
-    _, out = run_agent(
+    code, out = run_agent(
         "CODE_REVIEWER",
         conv,
         f"cr-b{b['n']}-verify{cycle}",
         template="code_verify",
         batch_n=b["n"],
     )
+    health, _signal = classify_output(code, out)
+    if not _trust_output(code, out, health):
+        return {
+            "escalation": f"code verify for batch {b['n']} produced untrustworthy output — refusing to act on it (see journal for diagnostics)",
+            "journal": [
+                f"cr b{b['n']} verify{cycle}: UNTRUSTWORTHY output — health={health}, "
+                f"exit={code}, {len(out)} bytes"
+            ],
+        }
     if "NOT_FIXED" in out:
         if cycle >= C.resolved_fix_cycles(state):
             return {

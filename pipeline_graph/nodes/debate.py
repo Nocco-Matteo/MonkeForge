@@ -8,9 +8,9 @@ import time
 
 from .. import config as C
 from .. import events as ev
-from ..agents import count_blockers, parse_verdict, read_if_exists, run_agent
+from ..agents import classify_output, count_blockers, parse_verdict, read_if_exists, run_agent
 from ..state import Conversation
-from .common import _file_or_stdout, _recover_artifact, _save
+from .common import _file_or_stdout, _recover_artifact, _save, _trust_output
 
 TECH_LIMIT_RE = re.compile(
     r"^\s*TECH-LIMIT\s+VERIFIED\s*:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE
@@ -101,13 +101,23 @@ def debate_tech(state):
     rnd = state.get("debate_round", 0) + 1
     is_verification = rnd > C.resolved_debate_rounds(state)
     conv = Conversation.from_state(state)
-    _, out = run_agent(
+    code, out = run_agent(
         "PLAN_REVIEWER",
         conv,
         f"debate-r{rnd}-tech",
         template="debate_review",
         round=rnd,
     )
+    health, _signal = classify_output(code, out)
+    if not _trust_output(code, out, health):
+        return {
+            "debate_round": rnd,
+            "escalation": f"debate tech round {rnd} produced untrustworthy output — refusing to act on it (see journal for diagnostics)",
+            "journal": [
+                f"debate r{rnd} tech: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                f"{len(out)} bytes"
+            ],
+        }
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
     text = _file_or_stdout(
         debate_path, out, content=f"\n\n## Round {rnd} — Reviewer\n\n{out.strip()}\n", append=True
@@ -130,9 +140,22 @@ def debate_tech(state):
             f"{len(limits)} tech-limit(s) verified"
         ],
     }
-    if not state.get("has_ui"):
-        # No UX critic on this task: decide the round here.
-        delta.update(_debate_decision({**state, **delta}, is_verification=is_verification))
+    if not state.get("has_ui") or not C.UX_RENDER_CMD.strip():
+        # No UX critic on this task: decide the round here. This also covers a
+        # UI task whose repo has no render command configured (UX_RENDER_CMD
+        # empty) — the visual review is disabled, so the designer never weighs
+        # in and the round is decided on the technical critique alone.
+        bypass_note = None
+        if state.get("has_ui") and not C.UX_RENDER_CMD.strip():
+            bypass_note = "visual review disabled — no render command configured for this repo"
+            delta.setdefault("journal", []).append(bypass_note)
+        # _debate_decision can return its own journal on verification paths
+        # (zero-blocker convergence or blocker-confirmed escalation); merge
+        # instead of letting delta.update drop the bypass note (item 28).
+        decision = _debate_decision({**state, **delta}, is_verification=is_verification)
+        if bypass_note and "journal" in decision:
+            decision["journal"] = [bypass_note, *decision["journal"]]
+        delta.update(decision)
     return delta
 
 
@@ -161,7 +184,7 @@ def debate_ux(state):
     review, verdict = "", "UNKNOWN"
     for attempt in range(UX_REVIEW_RETRIES):
         step = f"debate-r{rnd}-ux" + (f"-retry{attempt}" if attempt else "")
-        _, out = run_agent(
+        code, out = run_agent(
             "UX_REVIEWER",
             conv,
             step,
@@ -172,6 +195,21 @@ def debate_ux(state):
         )
         verdict = parse_verdict(out)
         if verdict != "UNKNOWN":
+            health, _signal = classify_output(code, out)
+            if not _trust_output(code, out, health):
+                return {
+                    "ux_verdict": "UNKNOWN",
+                    "ux_blockers": 0,
+                    "ux_shipped_blocked": True,
+                    "escalation": f"debate UX round {rnd} produced untrustworthy output despite a parseable verdict — refusing to act on it (see journal for diagnostics)",
+                    "degradations": [
+                        "UX critic produced untrustworthy output — shipped without a designer critique"
+                    ],
+                    "journal": [
+                        f"debate r{rnd} ux: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                        f"{len(out)} bytes"
+                    ],
+                }
             review = out
             break
         if attempt < UX_REVIEW_RETRIES - 1:
@@ -250,7 +288,11 @@ def _debate_decision(state, is_verification: bool = False) -> dict:
     this round's critiques, not the stale pre-reply numbers.
     """
     tech_ok = state.get("reviewer_verdict") == "APPROVE" and not state.get("open_blockers", 0)
-    ux_ok = (not state.get("has_ui")) or (
+    # A UI task with no render command configured has its visual review
+    # disabled (debate_tech skips the UX critic in that case), so treat the UX
+    # gate as satisfied — same as a non-UI task — instead of stalling on a
+    # verdict that will never arrive.
+    ux_ok = (not state.get("has_ui") or not C.UX_RENDER_CMD.strip()) or (
         state.get("ux_verdict") == "APPROVE" and not state.get("ux_blockers", 0)
     )
     if tech_ok and ux_ok:

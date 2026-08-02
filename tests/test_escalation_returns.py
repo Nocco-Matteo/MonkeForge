@@ -38,7 +38,11 @@ class EscalationReturns(unittest.TestCase):
 
     def test_no_dead_declarations(self):
         literals = _returned_string_literals(G.route_escalation_return)
-        dead = set(G.ESCALATION_RETURNS) - literals
+        # "escalate" is the self-loop target: route_escalation_return is itself
+        # wrapped in _safe_router, so a crash inside it returns "escalate" — the
+        # escalate node needs an edge to itself, but the function never returns
+        # it as a literal on the happy path. Exclude it from the dead-diff.
+        dead = set(G.ESCALATION_RETURNS) - literals - {"escalate"}
         self.assertFalse(
             dead, f"ESCALATION_RETURNS lists {sorted(dead)} the function never returns.")
 

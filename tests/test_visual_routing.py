@@ -9,7 +9,7 @@ from pipeline_graph import graph as G
 from pipeline_graph import nodes as N
 
 
-_REVIEW_2 = "VERDICT: REJECT\n[BLOCKER] a\n[BLOCKER] b"
+_REVIEW_2 = "VERDICT: REJECT\n[BLOCKER] a is broken\n[BLOCKER] b is broken\n"
 
 
 def _review(state):

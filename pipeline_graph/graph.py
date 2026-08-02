@@ -1,21 +1,65 @@
 """Graph wiring: nodes, conditional edges, checkpointing."""
 from __future__ import annotations
+
+import functools
+import traceback
+
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.sqlite import SqliteSaver
+from langgraph.errors import GraphBubbleUp
 
-from . import config as C, nodes as N
+from . import config as C, events as ev, nodes as N
+from .nodes.common import _set_router_error
 from .state import PipelineState
 
 
 # --- routers ---------------------------------------------------------------
 
+def _safe_router(fn):
+    """Wrap a router so a crash fails into escalation instead of killing the run.
+
+    A router is a pure function of state that returns the next node name. If it
+    raises, langgraph has no edge for the exception and the whole run dies with
+    a traceback on stdout that nothing pushes to a human. Instead, stash a
+    plain-language reason (no exception class name — that stays in the journal
+    and the ``step_error`` event) via ``_set_router_error`` and return
+    ``"escalate"`` so the run pauses for a human with a resumable stop path.
+    ``GraphBubbleUp`` (interrupt/Command control flow) is re-raised untouched.
+    """
+    @functools.wraps(fn)
+    def wrapper(state):
+        try:
+            return fn(state)
+        except GraphBubbleUp:
+            raise
+        except Exception as exc:
+            tid = state.get("task_id", "?")
+            name = fn.__name__
+            reason = (
+                f"routing failed in {name} — the pipeline could not choose "
+                "the next step (see journal for the exception)"
+            )
+            _set_router_error(tid, reason)
+            ev.emit(
+                "step_error",
+                tid,
+                name,
+                f"{type(exc).__name__}: {exc}",
+                traceback=traceback.format_exc()[-2000:],
+            )
+            return "escalate"
+    return wrapper
+
+
 def after(node_result_key: str = "escalation"):
     """Any node may set `escalation`; that always wins."""
+    @_safe_router
     def router(state):
         return "escalate" if state.get("escalation") else "continue"
     return router
 
 
+@_safe_router
 def route_after_init(state):
     if state.get("escalation"):
         return "escalate"
@@ -23,6 +67,7 @@ def route_after_init(state):
         else "plan"
 
 
+@_safe_router
 def route_intake(state):
     """After the interviewer ran: done, or go wait for the human."""
     if state.get("escalation"):
@@ -30,6 +75,7 @@ def route_intake(state):
     return "plan" if state.get("intake_done") else "wait"
 
 
+@_safe_router
 def route_intake_wait(state):
     """After the human answered: done, ask again, or wait once more.
 
@@ -43,15 +89,20 @@ def route_intake_wait(state):
     return "wait" if state.get("intake_unanswered") else "ask"
 
 
+@_safe_router
 def route_after_tech(state):
     """After the technical critic: get the UX critique too (if any), else decide."""
     if state.get("escalation"):
         return "escalate"
-    if state.get("has_ui"):
+    # A UI task with no render command configured has its visual review disabled
+    # — skip the UX critic the same way a non-UI task does, so has_ui defaulting
+    # True can't drag a backend repo into a designer critique that renders nothing.
+    if state.get("has_ui") and C.UX_RENDER_CMD.strip():
         return "ux"
     return state.get("debate_next", "reply")   # no UX critic: tech node already decided
 
 
+@_safe_router
 def route_debate(state):
     """After both critiques are in (set by _debate_decision in the last critic)."""
     if state.get("escalation"):
@@ -59,6 +110,7 @@ def route_debate(state):
     return state.get("debate_next", "reply")
 
 
+@_safe_router
 def route_after_checkpoint_effort(state):
     """After the effort checkpoint: scout skips the debate, troop/barrel enter it.
 
@@ -71,6 +123,7 @@ def route_after_checkpoint_effort(state):
     return "debate_tech"
 
 
+@_safe_router
 def route_implement(state):
     if state.get("escalation"):
         return "escalate"
@@ -79,6 +132,7 @@ def route_implement(state):
     return "code_review"
 
 
+@_safe_router
 def route_code_review(state):
     if state.get("escalation"):
         return "escalate"
@@ -87,6 +141,7 @@ def route_code_review(state):
     return "close_batch"
 
 
+@_safe_router
 def route_code_verify(state):
     if state.get("escalation"):
         return "escalate"
@@ -108,6 +163,7 @@ def _after_ui_gate(state):
     return "final_check"
 
 
+@_safe_router
 def route_next_batch(state):
     if state.get("escalation"):
         return "escalate"
@@ -129,6 +185,7 @@ def route_next_batch(state):
     return _after_ui_gate(state)
 
 
+@_safe_router
 def route_visual(state):
     """After the vision reviewer: clean → render gate or final; blockers → re-render."""
     if state.get("escalation"):
@@ -136,6 +193,7 @@ def route_visual(state):
     return "ux_visual_fix" if state.get("visual_blockers", 0) else _after_ui_gate(state)
 
 
+@_safe_router
 def route_render_review(state):
     """After the deterministic render review: regressions → fix and re-profile;
     clean → final gate."""
@@ -153,9 +211,13 @@ ESCALATION_RETURNS = frozenset({
     "init", "plan", "intake_ask", "intake_wait", "summary",
     "implement", "code_review", "close_batch", "ux_render", "render_measure",
     "final_check", "debate_tech",
+    # Self-loop: route_escalation_return is itself a _safe_router, so a crash
+    # inside it returns "escalate" and the escalate node needs an edge to itself.
+    "escalate",
 })
 
 
+@_safe_router
 def route_escalation_return(state):
     """After a human resolves an escalation, resume where it makes sense.
 

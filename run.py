@@ -677,6 +677,11 @@ def main() -> int:
             dead = _liveness_warning()
             if dead:
                 print(f"  ⚠ {dead}")
+            # Standing pointer to the verbatim debate archive, if one exists
+            # (created by the condenser when a debate was over budget).
+            archive = C.DEBATES / f"DEBATE-{args.task_id}-full.md"
+            if archive.exists():
+                print(f"  verbatim debate archive: DEBATE-{args.task_id}-full.md")
             # The live journal, not the checkpointed one: state only updates
             # when a node returns, so during a 40-minute step the checkpointed
             # journal shows the step before this one.
@@ -724,7 +729,8 @@ def main() -> int:
                          # judged, and skips summary+judge straight to implement —
                          # running the new plan against the PREVIOUS run's FINAL.
                          "batches": [], "batch_idx": 0, "code_verdict": "",
-                         "fix_cycle": 0, "test_fix_attempt": 0}
+                         "fix_cycle": 0, "test_fix_attempt": 0,
+                         "test_fix_failures": [], "test_fix_summary": ""}
                 if args.from_phase == "plan":
                     reset["intake_done"] = True
                     as_node, nxt, reuse = "init", "plan", "the brief"
