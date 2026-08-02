@@ -147,8 +147,19 @@ def render_prompt(template: str, conversation: "Conversation", **kw) -> str:
     text = (C.TEMPLATES / f"{template}.md").read_text()
     subs = dataclasses.asdict(conversation)
     subs.update(kw)
+    # Substitute {plan} LAST: the plan text may contain literal {placeholder}
+    # tokens (e.g. a plan that discusses {debate_history} → {debate_ledger}
+    # migration, or cites {plan} in a blocker). If {plan} is substituted first,
+    # those literals get expanded recursively — a 32KB plan with 11 occurrences
+    # of {debate_history} becomes 208KB when the 16KB debate history is injected
+    # into each one. Doing {plan} last means its literal {tokens} are already
+    # gone from the template (replaced with empty or their real values), so the
+    # plan's literal {tokens} survive as plain text.
+    plan_value = subs.pop("plan", None)
     for key, value in subs.items():
         text = text.replace("{" + key + "}", _fmt(value))
+    if plan_value is not None:
+        text = text.replace("{plan}", _fmt(plan_value))
     return text
 
 

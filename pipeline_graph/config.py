@@ -357,7 +357,12 @@ def _effort_for(state) -> str:
 
 
 def resolved_debate_rounds(state) -> int:
-    return EFFORT_LEVELS[_effort_for(state)]["debate_rounds"]
+    base = EFFORT_LEVELS[_effort_for(state)]["debate_rounds"]
+    # A human "continue" answer on a debate-cap escalation extends the cap
+    # without losing the existing debate history (unlike "redo" which resets
+    # to round 1). The bonus is additive and persists in state across resumes.
+    bonus = (state.get("debate_round_bonus") if isinstance(state, dict) else None) or 0
+    return base + bonus
 
 
 def resolved_fix_cycles(state) -> int:

@@ -240,6 +240,11 @@ def route_escalation_return(state):
         # Human answered "redo" to a debate escalation: re-enter the debate
         # from round 1, reusing the existing plan.
         return "debate_tech"
+    if state.get("debate_round_bonus") and not state.get("batches"):
+        # Human answered "continue" to a debate-cap escalation: re-enter the
+        # debate at the next round, keeping the existing history. The bonus
+        # raised the cap so debate_tech won't immediately re-escalate.
+        return "debate_tech"
     if not state.get("batches"):
         # A debate-cap escalation resolved with "proceed": the plan and the whole
         # debate already exist, so continue to summary/judge — do not re-plan from

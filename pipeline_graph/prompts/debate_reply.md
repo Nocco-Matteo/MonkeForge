@@ -26,7 +26,11 @@ reading.
 METHOD, per item:
 1. Open the cited file/section and check the claim yourself. State what you
    found before deciding.
-2. Then answer exactly one of:
+2. Begin your answer with the reviewer's exact severity tag and claim text,
+   copied verbatim from the critic's block, so the pipeline can match your
+   reply to the raised item. Format:
+   [SEVERITY] <the claim text, exactly as the reviewer wrote it>
+   Then answer exactly one of:
    ACCEPTED  — the claim holds; apply the minimal fix to the plan.
    REJECTED  — the claim is factually wrong; quote the evidence that refutes it.
    PARTIAL   — part holds; state precisely which part and fix only that.
@@ -44,7 +48,9 @@ CONSTRAINTS:
 OUTPUT -> print the reply to stdout (the pipeline appends it to the debate file
 automatically) under "## Round {round} — Proposer", in this order:
 1. Technical items first, then UX items, then any TECH-LIMIT lines — one block
-   per item with ACCEPTED / REJECTED / PARTIAL and RESOLVED markers as before.
+   per item, each starting with the [SEVERITY] <claim> line (copied verbatim
+   from the critic's block), then ACCEPTED / REJECTED / PARTIAL and RESOLVED
+   markers as before.
 2. Then the COMPLETE updated plan (the full plan text with your fixes applied,
    not a diff), enclosed between these exact marker lines on their own:
    === PLAN START ===

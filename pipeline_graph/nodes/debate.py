@@ -109,7 +109,13 @@ def debate_tech(state):
         round=rnd,
     )
     health, _signal = classify_output(code, out)
-    if not _trust_output(code, out, health):
+    # A bare "VERDICT: APPROVE" (17 bytes) is the expected output format when
+    # the reviewer's false-positive filter deletes all items — the prompt
+    # explicitly says "If nothing survives the filter: VERDICT: APPROVE". The
+    # near-empty-output guard must not fire on a parseable verdict; only
+    # UNKNOWN (no verdict found) with bad health is untrustworthy.
+    verdict_pre = parse_verdict(out)
+    if verdict_pre == "UNKNOWN" and not _trust_output(code, out, health):
         return {
             "debate_round": rnd,
             "escalation": f"debate tech round {rnd} produced untrustworthy output — refusing to act on it (see journal for diagnostics)",
@@ -196,7 +202,12 @@ def debate_ux(state):
         verdict = parse_verdict(out)
         if verdict != "UNKNOWN":
             health, _signal = classify_output(code, out)
-            if not _trust_output(code, out, health):
+            # A bare "VERDICT: APPROVE" is valid when the UX filter deletes all
+            # items — same rationale as debate_tech. Only fire the guard when
+            # health is bad AND there's no parseable verdict (UNKNOWN case is
+            # handled by the retry loop above; a non-UNKNOWN verdict with bad
+            # health but >= MIN_OUTPUT_BYTES is caught here).
+            if not _trust_output(code, out, health) and len(out.strip()) < 40:
                 return {
                     "ux_verdict": "UNKNOWN",
                     "ux_blockers": 0,

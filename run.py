@@ -54,6 +54,17 @@ def _load_yaml_to_env(path: Path) -> None:
     # bridge, so a stale terminal session can't shadow the yaml with a
     # deprecated/expired model.
 
+    # condenser: -> PIPELINE_TOKEN_BUDGET_<ROLE> per-role token budgets,
+    # and PIPELINE_CONDENSER_KEEP_RECENT for the verbatim-round count.
+    condenser = data.get("condenser")
+    if isinstance(condenser, dict):
+        keep_recent = condenser.pop("keep_recent", None)
+        if keep_recent is not None:
+            os.environ.setdefault("PIPELINE_CONDENSER_KEEP_RECENT", str(keep_recent))
+        for role, budget in condenser.items():
+            if budget is not None:
+                os.environ.setdefault(f"PIPELINE_TOKEN_BUDGET_{role.upper()}", str(budget))
+
     # tools: -> direct env var names (with explicit mapping)
     _tool_keys = {"gemini_trust_workspace": "GEMINI_CLI_TRUST_WORKSPACE"}
     for key, val in (data.get("tools") or {}).items():

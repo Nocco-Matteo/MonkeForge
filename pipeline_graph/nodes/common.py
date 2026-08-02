@@ -425,10 +425,12 @@ def _escalation_options(reason: str) -> dict:
             "redo": "re-run the debate from round 1, reusing the existing plan "
             "(e.g. after fixing an agent or the UX reviewer prompt)",
         }
-    if "debate hit the round cap" in r:
+    if "debate hit the round cap" in r or "debate exhausted" in r:
         return {
             "ok": "proceed to the verdict with the plan as it stands",
             "skip": "same — proceed past the debate",
+            "continue": "extend the debate by 2 more rounds, keeping the existing "
+            "history (the proposer keeps iterating on the remaining blockers)",
             "redo": "re-run the debate from round 1, reusing the existing plan",
         }
     if "could not render" in r or "render command" in r or "render timed out" in r:
@@ -547,6 +549,27 @@ def escalate(state):
         else:
             delta["journal"] = [f"escalation resolved: {answer} (retrying after routing failure)"]
         ev.emit("escalation_resolved", tid, "escalate", f"answered {answer!r}; was: {reason}")
+        return delta
+
+    if ans == "continue" and debate_escalation:
+        # Extend the debate cap by 2 more rounds without losing the existing
+        # history. Unlike "redo" (which resets to round 1 and wipes the debate
+        # file), "continue" keeps all prior rounds so the proposer can iterate
+        # on the remaining blockers with full context. The bonus is additive
+        # and persists in state across resumes.
+        bonus = state.get("debate_round_bonus") or 0
+        delta["debate_round_bonus"] = bonus + 2
+        delta["escalation"] = ""
+        delta["journal"] = [
+            f"escalation resolved: {answer} "
+            f"(extending debate by 2 rounds, cap now {C.resolved_debate_rounds({**state, 'debate_round_bonus': bonus + 2})})"
+        ]
+        ev.emit(
+            "escalation_resolved",
+            tid,
+            "escalate",
+            f"answered {answer!r} — extending debate; was: {reason}",
+        )
         return delta
 
     if ans == "redo" and debate_escalation:

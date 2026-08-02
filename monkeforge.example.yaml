@@ -78,6 +78,16 @@ effort:
 #     model: codex
 #     cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
 
+# Optional condenser: per-role token budgets. When a role's debate history
+# exceeds its budget (in estimated tokens), older rounds are collapsed into
+# one-line markers before the prompt is sent. Unset = no condensing for that
+# role. keep_recent controls how many of the latest rounds stay verbatim.
+# condenser:
+#   keep_recent: 2          # keep last 2 rounds verbatim, collapse older ones
+#   PLAN_REVIEWER: 3000     # fires ~round 3-4, before signal-to-noise degrades
+#   PROPOSER: 3000
+#   UX_REVIEWER: 3000
+
 # Optional tool settings.
 # tools:
 #   gemini_trust_workspace: true
