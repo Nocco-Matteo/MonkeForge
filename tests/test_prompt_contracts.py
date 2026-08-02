@@ -73,8 +73,8 @@ PROMPT_PLACEHOLDERS = {
         "refs_list",
     },
     "plan": {"request", "brief", "arch_docs", "docs_dir"},
-    "debate_review": {"plan", "debate_history", "round"},
-    "debate_ux": {"plan", "debate_history", "round", "tech_limits", "docs_dir"},
+    "debate_review": {"plan", "debate_ledger", "round"},
+    "debate_ux": {"plan", "debate_ledger", "round", "tech_limits", "docs_dir"},
     "debate_reply": {"plan", "debate_history", "round", "tech_limits"},
     "summary": {"debate_history"},
     "judge": {"summary", "plan", "debate_history", "docs_dir"},
@@ -123,6 +123,23 @@ class TestPromptPlaceholders:
             f"{prompt_name}.md is missing placeholders: {missing}. "
             f"The node passes these to render_prompt(); a missing placeholder "
             f"means the literal {{{{name}}}} ends up in the agent prompt."
+        )
+        # Regression guard: the two critic templates must NOT still contain the
+        # old {debate_history} placeholder (catches a partial-swap regression).
+        if prompt_name in ("debate_review", "debate_ux"):
+            assert "{debate_history}" not in text, (
+                f"{prompt_name}.md still contains the old {{debate_history}} "
+                f"placeholder — the critic templates must use {{debate_ledger}}."
+            )
+
+    def test_debate_reply_has_severity_verbatim_prefix(self):
+        """debate_reply.md must instruct the proposer to begin each item with
+        the reviewer's exact [SEVERITY] <claim> tag — the producer-side anchor
+        for the tag-based ledger parser (§6 signal (b)(ii))."""
+        text = (PROMPTS_DIR / "debate_reply.md").read_text()
+        assert "[SEVERITY]" in text or "[BLOCKER]" in text, (
+            "debate_reply.md must reference the [SEVERITY]/[BLOCKER] verbatim "
+            "prefix instruction for the tag-based parser."
         )
 
 

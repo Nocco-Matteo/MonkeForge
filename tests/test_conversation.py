@@ -36,6 +36,7 @@ def _conv(**overrides) -> Conversation:
         brief="",
         plan="",
         debate_history="",
+        debate_ledger="",
         batch_context="{}",
         review_history="",
         final="",
@@ -103,6 +104,35 @@ class TestFromStateMapping:
         (tmp_path / "DEBATE-t1.md").write_text("the debate body")
         conv = Conversation.from_state({"task_id": "t1", "request": ""})
         assert conv.debate_history == "the debate body"
+
+    def test_debate_ledger_read_from_disk(self, monkeypatch, tmp_path):
+        """debate_ledger is populated from the same disk read as debate_history
+        (C5/C7 regression): non-empty, starts with the ledger header, contains
+        each raised item once; debate_history still equals the raw file body."""
+        monkeypatch.setattr(C, "DEBATES", tmp_path)
+        debate_body = (
+            "## Round 1 — Reviewer\n\n"
+            "VERDICT: REJECT\n"
+            "[BLOCKER] foo\n"
+            "Evidence: file:1\n\n"
+            "## Round 1 — Reply\n\n"
+            "[BLOCKER] foo\n"
+            "ACCEPTED  — the claim holds, fixing now\n"
+            "RESOLVED\n\n"
+            "## Round 2 — Reviewer\n\n"
+            "VERDICT: APPROVE\n"
+        )
+        (tmp_path / "DEBATE-t1.md").write_text(debate_body)
+        conv = Conversation.from_state({"task_id": "t1", "request": ""})
+        # debate_history is the raw file body, verbatim.
+        assert conv.debate_history == debate_body
+        # debate_ledger is non-empty, starts with the header, contains foo once.
+        assert conv.debate_ledger != ""
+        assert conv.debate_ledger.startswith(
+            "## Debate ledger (prior rounds, deduplicated)\n"
+        )
+        assert conv.debate_ledger.count("foo") == 1
+        assert "[R1 · REVIEWER · BLOCKER · RESOLVED] foo" in conv.debate_ledger
 
     def test_final_read_from_disk(self, monkeypatch, tmp_path):
         monkeypatch.setattr(C, "FINAL", tmp_path)

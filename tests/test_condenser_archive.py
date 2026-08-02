@@ -39,6 +39,7 @@ def _conv(tid, **overrides):
         brief="",
         plan="",
         debate_history="",
+        debate_ledger="",
         batch_context="{}",
         review_history="",
         final="",
