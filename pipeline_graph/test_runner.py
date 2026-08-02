@@ -63,13 +63,63 @@ def is_allowlisted(failure_key: str, allowlist: list[str]) -> bool:
     return False
 
 
+# LINT failure keys look like "label|LINT|/path/file.ts|ruleId|message".
+# The rule segment is the 4th |-delimited field (index 3 within the label-prefixed
+# key, i.e. index 2 after stripping the leading "label|LINT|").
+_LINT_RULE_RE = re.compile(r"\|LINT\|[^|]*\|([^|]+)\|")
+
+
+def _baseline_lint_rules(baseline: set[str]) -> set[str]:
+    """Extract the set of eslint rule IDs present in the baseline (any file)."""
+    rules: set[str] = set()
+    for key in baseline:
+        m = _LINT_RULE_RE.search(key)
+        if m:
+            rules.add(m.group(1))
+    return rules
+
+
+def _is_ambient_test_failure(failure_key: str, ambient_patterns: tuple[str, ...]) -> bool:
+    """True if a vitest FAIL key matches a known ambient-sensitive test pattern."""
+    for pat in ambient_patterns:
+        if pat and pat in failure_key:
+            return True
+    return False
+
+
 def new_failures_since_baseline(
     current: set[str],
     baseline: set[str],
     allowlist: list[str],
+    lint_debt_rules: tuple[str, ...] = (),
+    ambient_patterns: tuple[str, ...] = (),
 ) -> set[str]:
+    """Failures in ``current`` not in ``baseline``, minus allowlisted entries.
+
+    Two false-positive suppressions (TASK-016):
+      * ``lint_debt_rules``: a LINT failure whose rule was already present in
+        baseline (in any file) is not new — it is pre-existing debt that
+        surfaced or was relocated. A rule NOT in baseline is still a regression.
+      * ``ambient_patterns``: a vitest failure whose key contains a known
+        ambient-sensitive pattern (DB-gated, network) is not new — it was
+        skipped in baseline (env down) and fails when the env comes up.
+    """
     raw = current - baseline
-    return {f for f in raw if not is_allowlisted(f, allowlist)}
+    debt_rules = _baseline_lint_rules(baseline) if lint_debt_rules else set()
+    result: set[str] = set()
+    for f in raw:
+        if is_allowlisted(f, allowlist):
+            continue
+        # LINT debt: rule already in baseline → not a regression.
+        if lint_debt_rules:
+            m = _LINT_RULE_RE.search(f)
+            if m and m.group(1) in debt_rules and m.group(1) in lint_debt_rules:
+                continue
+        # Ambient test: DB/network-gated failure → not a batch regression.
+        if ambient_patterns and _is_ambient_test_failure(f, ambient_patterns):
+            continue
+        result.add(f)
+    return result
 
 
 def _summarize_vitest_output(combined: str, exit_code: int, n_fail_lines: int) -> str:

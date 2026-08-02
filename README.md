@@ -206,6 +206,18 @@ repo target: `PIPELINE_DOCS_DIR=$REPO/docs`).
   retry se il DB era giù al tentativo 0); dopo l'implementer passa solo se non
   ci sono **nuovi** FAIL rispetto alla baseline, meno sottostringhe in
   `test_failure_allowlist` nel JSON del giudice (schema in `prompts/judge.md`).
+- **Tuning del gate (falsi positivi su debito preesistente)**: su un branch
+  che parte RED, il confronto baseline-vs-current può scambiare debito
+  preesistente per una regressione del batch. Due manopole in `config.py`
+  (overridabili via env `PIPELINE_LINT_DEBT_RULES` / `PIPELINE_TEST_AMBIENT_PATTERNS`
+  o YAML `pipeline.lint_debt_rules` / `pipeline.test_ambient_patterns`):
+  - `lint_debt_rules`: regole eslint (es. `@typescript-eslint/no-explicit-any`)
+    il cui debito, se già presente in baseline in *qualunque* file, non è
+    "nuovo" quando riappare in un file nuovo (relocato) o si "accende" dopo
+    che il batch ha fissato i type error che ne bloccavano l'analisi.
+  - `test_ambient_patterns`: sottostringhe di chiavi FAIL vitest per test
+    ambient-sensitive (DB-gated, rete). Un test skip in baseline (env giù)
+    che fallisce al retry (env up) non è "nuovo".
 - **Escalation sui test**: rispondere (non `skip`) imposta `tests_waived` e al
   resume va a `code_review` senza rilanciare l'implementer; `skip` chiude
   forzatamente il batch come prima.
@@ -355,6 +367,8 @@ Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
 | `PIPELINE_AGENT_TRANSIENT_RETRIES` | `1` | retry automatici su fallimenti agente transitori |
 | `PIPELINE_CONDENSER_KEEP_RECENT` | `3` | round verbatim nel condenser (negativo → 0, non-intero → default) |
 | `PIPELINE_TOKEN_BUDGET_<ROLE>` | — | tetto token per il condenser del ruolo; assente = no-op, non-intero = trattato come assente |
+| `PIPELINE_LINT_DEBT_RULES` | vedi `config.py` | regole eslint `;`-separate il cui debito preesistente non è "nuovo" |
+| `PIPELINE_TEST_AMBIENT_PATTERNS` | vedi `config.py` | sottostringhe `;`-separate di test ambient-sensitive (DB-gated) |
 | `PIPELINE_REPO` | da `git rev-parse` | root del repo |
 | `PIPELINE_CONDENSER_KEEP_RECENT` | `3` | round verbatim nel condenser (negativo → 0; non-intero → default con warning) |
 | `PIPELINE_TOKEN_BUDGET_<ROLE>` | — | budget token per ruolo; assente = condenser no-op; non-intero = trattato come assente |

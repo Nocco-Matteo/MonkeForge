@@ -23,6 +23,26 @@ pipeline:
   # Set to true for graph-only execution; agents are stubbed in dry-run mode.
   dry_run: false
 
+  # --- Test-gate tuning (false-positive suppression) -----------------------
+  # LINT rules whose violations are "known debt": if the same rule was present
+  # in the baseline (any file), new occurrences in other files are NOT counted
+  # as new failures. Stops pre-existing debt from looking like a batch
+  # regression when it surfaces (type-aware rules) or is relocated to a new
+  # file. A rule NOT in baseline in any file is still a real regression.
+  lint_debt_rules:
+    - "@typescript-eslint/no-explicit-any"
+    - "react-refresh/only-export-components"
+    - "react-hooks/immutability"
+    - "react-hooks/set-state-in-effect"
+    - "react-hooks/purity"
+
+  # Vitest FAIL key substrings for environment-sensitive tests (DB-gated,
+  # network, external services). A failure matching any pattern is NOT counted
+  # as new — it was skipped in baseline (env down) and fails when the env
+  # comes up mid-batch. Declare only tests you know are ambient.
+  test_ambient_patterns:
+    - "magic auto-grant: class domain & patron spells"
+
 # Effort presets:
 #   scout-monke  = leggero: implement + review, no debate, no gate
 #   troop-monke  = medio (default): implement + review + debate

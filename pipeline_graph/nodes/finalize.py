@@ -161,7 +161,11 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
         return None
 
     _, all_failures, summary = tr.run_repo_tests()
-    failures = tr.new_failures_since_baseline(all_failures, baseline, [])
+    failures = tr.new_failures_since_baseline(
+        all_failures, baseline, [],
+        lint_debt_rules=C.LINT_DEBT_RULES,
+        ambient_patterns=C.TEST_AMBIENT_PATTERNS,
+    )
     if not failures:
         return None
 
@@ -196,7 +200,11 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
             remaining_label=remaining_label,
         )
         _, all_failures, summary = tr.run_repo_tests()
-        failures = tr.new_failures_since_baseline(all_failures, baseline, [])
+        failures = tr.new_failures_since_baseline(
+            all_failures, baseline, [],
+            lint_debt_rules=C.LINT_DEBT_RULES,
+            ambient_patterns=C.TEST_AMBIENT_PATTERNS,
+        )
         if not failures:
             ev.emit(
                 "step_end",

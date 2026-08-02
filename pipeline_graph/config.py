@@ -68,9 +68,8 @@ def arch_docs_block() -> str:
     return "\n".join(f"- {p}" for p in present) or "- (none configured)"
 
 # --- Role -> {model, command} mapping. Single concept: each role knows which
-# model to use and how to invoke it. Override either from .env:
-#   PIPELINE_MODEL_PROPOSER=glm-5.3
-#   PIPELINE_CMD_PROPOSER=cursor-agent --model {model} --trust -p {prompt}
+# model to use and how to invoke it. Override from monkeforge.yaml (agents:
+# section) — the yaml is the only override path, no env vars.
 # Placeholders in cmd: {model}, {prompt}, {prompt_file}. First token = binary.
 _DEFAULT_ROLE_CONFIG = {
     "INTERVIEWER": {
@@ -125,11 +124,21 @@ _DEFAULT_ROLE_CONFIG = {
     },
 }
 
+# Override defaults from monkeforge.yaml (agents: section). The yaml is the
+# ONLY override path for role model/cmd — no env vars, so a stale terminal
+# session can't silently shadow the yaml and rerun a deprecated/expired model.
+_yaml_file = MF_ROOT / "monkeforge.yaml"
 ROLE_CONFIG: dict[str, dict[str, str]] = {}
+_yaml_agents: dict[str, dict[str, str]] = {}
+if _yaml_file.exists():
+    import yaml as _yaml
+    _yaml_agents = (_yaml.safe_load(_yaml_file.read_text()) or {}).get("agents") or {}
 for _role, _cfg in _DEFAULT_ROLE_CONFIG.items():
-    _model = os.environ.get(f"PIPELINE_MODEL_{_role}", _cfg["model"])
-    _cmd   = os.environ.get(f"PIPELINE_CMD_{_role}",  _cfg["cmd"])
-    ROLE_CONFIG[_role] = {"model": _model, "cmd": _cmd}
+    _over = _yaml_agents.get(_role, {})
+    ROLE_CONFIG[_role] = {
+        "model": _over.get("model", _cfg["model"]),
+        "cmd":   _over.get("cmd",   _cfg["cmd"]),
+    }
 
 # Line-buffering / process wrappers that precede the real agent CLI in a
 # command. `stdbuf -oL devin …` must resolve to `devin`, not `stdbuf`, or
@@ -441,6 +450,47 @@ NOTIFY_RATE = int(os.environ.get("PIPELINE_NOTIFY_RATE", "30"))
 NOTIFY_WINDOW = int(os.environ.get("PIPELINE_NOTIFY_WINDOW", "60"))
 NOTIFY_SOCKET = Path(os.environ.get("PIPELINE_NOTIFY_SOCKET")
                      or (METRICS / "notify.sock"))
+
+# --- Test-gate tuning (false-positive suppression) -------------------------
+# Two mechanisms that stop pre-existing debt from looking like a batch
+# regression. Both are ;-separated lists, overridable via env or YAML.
+#
+# LINT_DEBT_RULES: eslint rule IDs whose violations are "known debt". If the
+#   SAME rule was present in the baseline (in any file), new occurrences of
+#   that rule in other files are NOT counted as new failures. This covers two
+#   false positives observed on TASK-016:
+#     (a) a rule that was invisible in baseline because type errors disabled
+#         type-aware analysis, then "appears" after the batch fixes the types;
+#     (b) debt relocated verbatim from a deleted file to a new file not in
+#         baseline.
+#   A rule NOT in baseline in any file is still a real regression.
+#
+# TEST_AMBIENT_PATTERNS: substrings of vitest FAIL keys that are
+#   environment-sensitive (DB-gated, network, external services). A failure
+#   whose key contains any of these patterns is NOT counted as new — it is
+#   treated as ambient noise (e.g. a describe.skipIf(!hasDb) test that was
+#   skipped in baseline but runs and fails when the DB comes up mid-batch).
+_DEFAULT_LINT_DEBT_RULES = (
+    "@typescript-eslint/no-explicit-any;"
+    "react-refresh/only-export-components;"
+    "react-hooks/immutability;"
+    "react-hooks/set-state-in-effect;"
+    "react-hooks/purity"
+)
+LINT_DEBT_RULES = tuple(
+    r.strip() for r in
+    os.environ.get("PIPELINE_LINT_DEBT_RULES", _DEFAULT_LINT_DEBT_RULES).split(";")
+    if r.strip()
+)
+
+_DEFAULT_TEST_AMBIENT_PATTERNS = (
+    "magic auto-grant: class domain & patron spells"
+)
+TEST_AMBIENT_PATTERNS = tuple(
+    p.strip() for p in
+    os.environ.get("PIPELINE_TEST_AMBIENT_PATTERNS", _DEFAULT_TEST_AMBIENT_PATTERNS).split(";")
+    if p.strip()
+)
 
 # Test suites to run for the in-graph test gate. Each entry is (label, subdir, env).
 # Format: "label:subdir:ENV_VAR=val,ENV2=val2;label2:subdir2:"

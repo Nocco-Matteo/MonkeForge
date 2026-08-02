@@ -15,6 +15,8 @@ from pathlib import Path
 
 # Load monkeforge.yaml (or .env as fallback) into os.environ.
 # Priority: real env vars > yaml > .env > defaults in config.py.
+# Exception: agent role model/cmd — yaml is the only override path (read
+# directly by config.py), so stale terminal env vars can't shadow it.
 _MF_ROOT = Path(__file__).resolve().parent
 _yaml_file = _MF_ROOT / "monkeforge.yaml"
 _env_file = _MF_ROOT / ".env"
@@ -34,8 +36,9 @@ def _load_yaml_to_env(path: Path) -> None:
     data = _yaml.safe_load(path.read_text()) or {}
 
     # pipeline: -> PIPELINE_*
+    _PIPELINE_LIST_KEYS = frozenset(("arch_docs", "lint_debt_rules", "test_ambient_patterns"))
     for key, val in (data.get("pipeline") or {}).items():
-        if key == "arch_docs":
+        if key in _PIPELINE_LIST_KEYS:
             val = ";".join(val) if isinstance(val, list) else str(val)
         elif key == "dry_run":
             val = "1" if val else ""
@@ -47,12 +50,9 @@ def _load_yaml_to_env(path: Path) -> None:
     if isinstance(effort, dict):
         os.environ.setdefault("PIPELINE_EFFORT_JSON", json.dumps(effort))
 
-    # agents: -> PIPELINE_MODEL_<ROLE>, PIPELINE_CMD_<ROLE>
-    for role, cfg in (data.get("agents") or {}).items():
-        if "model" in cfg:
-            os.environ.setdefault(f"PIPELINE_MODEL_{role}", str(cfg["model"]))
-        if "cmd" in cfg:
-            os.environ.setdefault(f"PIPELINE_CMD_{role}", str(cfg["cmd"]))
+    # agents: read directly by config.py from monkeforge.yaml — no env var
+    # bridge, so a stale terminal session can't shadow the yaml with a
+    # deprecated/expired model.
 
     # tools: -> direct env var names (with explicit mapping)
     _tool_keys = {"gemini_trust_workspace": "GEMINI_CLI_TRUST_WORKSPACE"}

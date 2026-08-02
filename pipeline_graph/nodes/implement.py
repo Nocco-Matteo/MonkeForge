@@ -61,7 +61,11 @@ def _in_graph_test_gate(state, b: dict, db_ok: bool) -> tuple[bool, list[str], s
     _, current, summary = tr.run_repo_tests()
     baseline = set(state.get("batch_test_baseline") or [])
     allow = b.get("test_failure_allowlist") or []
-    new = sorted(tr.new_failures_since_baseline(current, baseline, allow))
+    new = sorted(tr.new_failures_since_baseline(
+        current, baseline, allow,
+        lint_debt_rules=C.LINT_DEBT_RULES,
+        ambient_patterns=C.TEST_AMBIENT_PATTERNS,
+    ))
     return len(new) == 0, new, summary
 
 
