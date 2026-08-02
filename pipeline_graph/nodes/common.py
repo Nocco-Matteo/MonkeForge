@@ -47,13 +47,25 @@ def _file_or_stdout(
     Returns the content to read back: the file's text if it exists and is non-empty,
     else ``out``.  ``content`` is what gets saved (defaults to ``out``); use it to
     wrap stdout in section headers for append-mode debate files.
+
+    In append mode the content is ALWAYS appended — the "use the file if the agent
+    wrote it" shortcut only applies to one-shot writes (where the agent may have
+    written the file itself and we'd duplicate it). For append-mode debate files,
+    skipping the append when the file already exists silently drops round 2+
+    reviewer output from the debate history, leaving the proposer blind to new
+    blockers.
     """
+    if append:
+        save_text = content if content is not None else out
+        if save_text.strip():
+            _save(expected_path, save_text, append=True)
+        return read_if_exists(expected_path) or out
     file_text = read_if_exists(expected_path)
     if file_text:
         return file_text
     save_text = content if content is not None else out
     if save_text.strip():
-        _save(expected_path, save_text, append=append)
+        _save(expected_path, save_text, append=False)
     return out
 
 

@@ -197,6 +197,41 @@ def role_cmd(role: str, prompt_file: Path, prompt: str) -> list[str]:
     return [tok.format(**subs) if "{" in tok else tok for tok in tokens]
 
 
+# Prompts above this size are passed via stdin instead of as a CLI argument,
+# to avoid OSError [Errno 7] Argument list too long on roles that use
+# {prompt} inline (cursor-agent, claude). Roles that use {prompt_file}
+# (devin) are unaffected — the file path is always short.
+PROMPT_STDIN_THRESHOLD = 32_000
+
+
+def role_cmd_with_stdin(role: str, prompt_file: Path, prompt: str) -> tuple[list[str], str | None]:
+    """Build the CLI invocation, falling back to stdin for large prompts.
+
+    Returns (cmd, stdin_text). When the cmd template uses {prompt} inline and
+    the rendered prompt exceeds PROMPT_STDIN_THRESHOLD, the {prompt} placeholder
+    is replaced with an empty string and the prompt is returned as stdin_text
+    for the caller to pipe to the process. This avoids the OS arg-limit crash
+    (Errno 7) on long debate/plan prompts passed to cursor-agent/claude.
+
+    Roles that use {prompt_file} (devin) never hit this — the file path is
+    always short and the agent reads the file directly.
+    """
+    cfg = ROLE_CONFIG.get(role)
+    if cfg is None:
+        raise ValueError(
+            f"unknown role: {role} "
+            f"(add it to _DEFAULT_ROLE_CONFIG or set PIPELINE_CMD_{role})")
+    template = cfg["cmd"]
+    if "{prompt}" in template and len(prompt) > PROMPT_STDIN_THRESHOLD:
+        tokens = shlex.split(template)
+        subs = {"model": cfg["model"], "prompt": "", "prompt_file": str(prompt_file), "docs_dir": str(DOCS)}
+        cmd = [tok.format(**subs) if "{" in tok else tok for tok in tokens]
+        # Remove trailing empty-string args (the emptied {prompt} placeholder)
+        cmd = [t for t in cmd if t != ""]
+        return cmd, prompt
+    return role_cmd(role, prompt_file, prompt), None
+
+
 def token_budget(role: str) -> int | None:
     """Per-role token budget for the debate condenser, or None if unset.
 

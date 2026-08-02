@@ -42,13 +42,23 @@ def classify_output(code: int, output: str) -> tuple[str, str]:
 
     Order matters: a transient network/rate signal is worth a retry; a fatal
     model/tool signal is not; a non-zero exit or near-empty output is hard.
+
+    Fatal signatures are matched only in the first ~2KB of output: real CLI
+    errors are short and print the error at the top, while a 46KB plan that
+    *cites* "out of usage" as an example in an edge-case section must not be
+    flagged as a hard failure.
     """
     low = (output or "").lower()
     for sig in TRANSIENT_SIGNATURES:
         if sig in low:
             return "transient", sig
+    # Fatal signatures: only scan the head of the output. A real CLI error
+    # (quota exhausted, malformed tool call, context overflow) is short and
+    # prints at the top; a long agent output that merely quotes one of these
+    # strings as an example is not a failure.
+    head = low[:2048]
     for sig in FATAL_SIGNATURES:
-        if sig in low:
+        if sig in head:
             return "hard", sig
     # A negative exit code is Popen's convention for "killed by signal -code":
     # SIGPIPE (-13) when the agent daemon dies mid-call, SIGKILL (-9) on OOM,
@@ -223,13 +233,17 @@ def run_agent(role: str, conversation: "Conversation", step: str,
                 out_file.write_text(out)
                 time.sleep(0.05)
                 return 0, out
-            cmd = C.role_cmd(role, prompt_file, prompt)
+            cmd, stdin_text = C.role_cmd_with_stdin(role, prompt_file, prompt)
             chunks: list[str] = []
             last_beat = time.time()
             with out_file.open("w") as sink:
                 proc = subprocess.Popen(cmd, cwd=C.REPO, stdout=subprocess.PIPE,
-                                        stderr=subprocess.STDOUT, text=True, bufsize=1)
+                                        stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                        stdin=subprocess.PIPE if stdin_text else subprocess.DEVNULL)
                 assert proc.stdout is not None
+                if stdin_text:
+                    proc.stdin.write(stdin_text)
+                    proc.stdin.close()
                 for line in proc.stdout:          # streams live to disk
                     sink.write(line); sink.flush(); chunks.append(line)
                     if time.time() - last_beat >= HEARTBEAT_EVERY_S:

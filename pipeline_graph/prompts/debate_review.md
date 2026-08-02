@@ -12,6 +12,14 @@ if any).
 {debate_history}
 </debate_history>
 
+CRITICAL: <plan> is the CURRENT plan — the only version you review. The
+debate history contains discussions of PREVIOUS versions, including quotes of
+old text that was broken and later fixed. Never raise a blocker based on text
+from the debate history; only raise a blocker if the CURRENT <plan> has the
+issue. Before claiming the plan omits something, search <plan> for the exact
+text and quote what you find there — not what the debate history says about an
+earlier version.
+
 METHOD:
 1. For each risk you suspect, open the actual file and verify it. A finding
    without a file:line or a plan-section citation is not a finding.
