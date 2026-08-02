@@ -351,6 +351,17 @@ def _write_progress(task_id: str, batches: list[dict]) -> None:
             f"{b.get('outcome', '')} | {b.get('deviations', '')} |"
         )
     (C.FINAL / f"PROGRESS-{task_id}.md").write_text("\n".join(lines) + "\n")
+    # Backstop: a full rewrite here would drop the archive pointer that the
+    # condensation block appends at archive-creation time. Re-add it if a
+    # verbatim debate archive exists.
+    archive_path = C.DEBATES / f"DEBATE-{task_id}-full.md"
+    if archive_path.exists():
+        progress_path = C.FINAL / f"PROGRESS-{task_id}.md"
+        pointer = f"Verbatim debate archive: DEBATE-{task_id}-full.md"
+        existing = progress_path.read_text()
+        if pointer not in existing:
+            with progress_path.open("a") as f:
+                f.write(pointer + "\n")
 
 
 # --- escalation -------------------------------------------------------------
