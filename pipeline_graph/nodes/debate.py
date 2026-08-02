@@ -8,9 +8,9 @@ import time
 
 from .. import config as C
 from .. import events as ev
-from ..agents import count_blockers, parse_verdict, read_if_exists, run_agent
+from ..agents import classify_output, count_blockers, parse_verdict, read_if_exists, run_agent
 from ..state import Conversation
-from .common import _file_or_stdout, _recover_artifact, _save
+from .common import _file_or_stdout, _recover_artifact, _save, _trust_output
 
 TECH_LIMIT_RE = re.compile(
     r"^\s*TECH-LIMIT\s+VERIFIED\s*:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE
@@ -101,13 +101,23 @@ def debate_tech(state):
     rnd = state.get("debate_round", 0) + 1
     is_verification = rnd > C.resolved_debate_rounds(state)
     conv = Conversation.from_state(state)
-    _, out = run_agent(
+    code, out = run_agent(
         "PLAN_REVIEWER",
         conv,
         f"debate-r{rnd}-tech",
         template="debate_review",
         round=rnd,
     )
+    health, _signal = classify_output(code, out)
+    if not _trust_output(code, out, health):
+        return {
+            "debate_round": rnd,
+            "escalation": f"debate tech round {rnd} produced untrustworthy output — refusing to act on it (see journal for diagnostics)",
+            "journal": [
+                f"debate r{rnd} tech: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                f"{len(out)} bytes"
+            ],
+        }
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
     text = _file_or_stdout(
         debate_path, out, content=f"\n\n## Round {rnd} — Reviewer\n\n{out.strip()}\n", append=True
@@ -161,7 +171,7 @@ def debate_ux(state):
     review, verdict = "", "UNKNOWN"
     for attempt in range(UX_REVIEW_RETRIES):
         step = f"debate-r{rnd}-ux" + (f"-retry{attempt}" if attempt else "")
-        _, out = run_agent(
+        code, out = run_agent(
             "UX_REVIEWER",
             conv,
             step,
@@ -172,6 +182,21 @@ def debate_ux(state):
         )
         verdict = parse_verdict(out)
         if verdict != "UNKNOWN":
+            health, _signal = classify_output(code, out)
+            if not _trust_output(code, out, health):
+                return {
+                    "ux_verdict": "UNKNOWN",
+                    "ux_blockers": 0,
+                    "ux_shipped_blocked": True,
+                    "escalation": f"debate UX round {rnd} produced untrustworthy output despite a parseable verdict — refusing to act on it (see journal for diagnostics)",
+                    "degradations": [
+                        "UX critic produced untrustworthy output — shipped without a designer critique"
+                    ],
+                    "journal": [
+                        f"debate r{rnd} ux: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                        f"{len(out)} bytes"
+                    ],
+                }
             review = out
             break
         if attempt < UX_REVIEW_RETRIES - 1:

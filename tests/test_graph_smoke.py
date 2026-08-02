@@ -63,7 +63,7 @@ def _dry_state(**overrides) -> dict:
     return base
 
 
-_CANNED_OUTPUT = "VERDICT: APPROVE\nNo issues found.\n"
+_CANNED_OUTPUT = "VERDICT: APPROVE\nNo issues found. All checks passed.\n"
 
 
 def _patched_run_agent(*args, **kw):

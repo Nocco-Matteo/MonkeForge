@@ -254,7 +254,7 @@ def instrument(name: str, fn):
                 outcome="failed",
             )
             return {
-                "escalation": f"{name} crashed: {type(exc).__name__}: {exc}",
+                "escalation": f"step crashed in {name} — see the journal for the exception detail",
                 "journal": [f"{name}: CRASHED — {type(exc).__name__}: {exc}"],
             }
 
@@ -273,6 +273,18 @@ def instrument(name: str, fn):
         return delta
 
     return wrapper
+
+
+def _trust_output(code: int, out: str, health: str) -> bool:
+    """True only when the agent produced trustworthy output: a healthy
+    classification, a zero exit, and non-empty content. Any failure → False,
+    so the caller escalates instead of acting on garbage (the silent-APPROVE
+    rubber-stamp that let a crashed/empty reviewer ship a batch).
+
+    `health` is the value returned by ``agents.classify_output``; the caller
+    computes it once and passes it in so this guard does not re-import agents.
+    """
+    return health == "ok" and code == 0 and bool(out and out.strip())
 
 
 def _step_outcome(delta: dict) -> str:
@@ -393,6 +405,17 @@ def _escalation_options(reason: str) -> dict:
             "retry": "re-run the fix loop (e.g. after manual fixes)",
             "ok": "ship with the known failures (recorded in the report)",
             "stop": "stop the run — fix the failing tests manually, then restart",
+        }
+    # A crash (OOM, signal kill, daemon death) is infrastructure, not a code
+    # fault — the only sane options are retry or stop. Force-closing a batch
+    # on a crash would rubber-stamp work the agent never produced.
+    # NB: string-matching heuristic — any future escalation reason that
+    # happens to contain one of these substrings non-crash-related would be
+    # mis-routed here. No collision exists today (verified).
+    if "crashed" in r or "killed by signal" in r or "agent-daemon crash" in r:
+        return {
+            "ok": "retry the step (the crash was infrastructure — OOM, signal, daemon death)",
+            "stop": "stop the run — fix the environment, then resume",
         }
     return {
         "ok": "retry / continue from here",
@@ -531,6 +554,9 @@ def escalate(state):
         return delta
 
     final_test_escalation = "final test gate" in r_low
+    crash_escalation = (
+        "crashed" in r_low or "killed by signal" in r_low or "agent-daemon crash" in r_low
+    )
 
     if final_test_escalation:
         if ans in ("stop", "no", "abort", "cancel"):
@@ -545,6 +571,22 @@ def escalate(state):
             delta["journal"] = [
                 f"escalation resolved: {answer} (shipping with known test failures)"
             ]
+    elif crash_escalation:
+        # A crash is infrastructure (OOM, signal, daemon death). A stop-like
+        # answer ends the run; an ok-like answer retries the step with stale
+        # verdicts cleared so the retried node is not rubber-stamped. No
+        # batch-force-close keys are set — the batch was never completed.
+        if ans in ("stop", "no", "abort", "cancel"):
+            delta["finished"] = True
+            delta["journal"] = [f"escalation resolved: {answer} (run stopped after crash)"]
+        else:
+            delta["escalation"] = ""
+            delta["code_verdict"] = None
+            delta["open_blockers"] = 0
+            delta["not_met"] = []
+            delta["journal"] = [f"escalation resolved: {answer} (retrying after crash)"]
+        ev.emit("escalation_resolved", tid, "escalate", f"answered {answer!r}; was: {reason}")
+        return delta
     elif forced:
         delta["not_met"] = []
         delta["open_blockers"] = 0
