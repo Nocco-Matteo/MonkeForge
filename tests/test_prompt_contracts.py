@@ -86,6 +86,8 @@ PROMPT_PLACEHOLDERS = {
         "db_note",
         "arch_docs",
         "checklist_items",
+        "failures",
+        "summary",
     },
     "code_review": {
         "batch_n",

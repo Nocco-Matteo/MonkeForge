@@ -724,7 +724,8 @@ def main() -> int:
                          # judged, and skips summary+judge straight to implement —
                          # running the new plan against the PREVIOUS run's FINAL.
                          "batches": [], "batch_idx": 0, "code_verdict": "",
-                         "fix_cycle": 0, "test_fix_attempt": 0}
+                         "fix_cycle": 0, "test_fix_attempt": 0,
+                         "test_fix_failures": [], "test_fix_summary": ""}
                 if args.from_phase == "plan":
                     reset["intake_done"] = True
                     as_node, nxt, reuse = "init", "plan", "the brief"

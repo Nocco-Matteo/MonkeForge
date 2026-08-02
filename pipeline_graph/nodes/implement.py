@@ -76,6 +76,8 @@ def implement(state):
         return {
             "test_fix_attempt": 0,
             "fix_cycle": 0,
+            "test_fix_failures": [],
+            "test_fix_summary": "",
             "journal": [f"impl b{b['n']}: skipped (tests waived)"],
         }
 
@@ -102,6 +104,11 @@ def implement(state):
     step = f"impl-b{b['n']}"
     if attempt:
         step += f"-fix{attempt}"
+    # F2: thread the previous attempt's failing tests + summary into the retry
+    # prompt so the implementer fixes them instead of re-running blind. Empty
+    # on the first attempt (state fields default to [] / "").
+    failures = state.get("test_fix_failures", [])
+    summary = state.get("test_fix_summary", "")
     code, out = _N.run_agent(
         "IMPLEMENTER",
         conv,
@@ -112,6 +119,8 @@ def implement(state):
         db_note=db_note,
         arch_docs=C.arch_docs_block(),
         checklist_items=", ".join(map(str, b.get("checklist", []))),
+        failures=failures,
+        summary=summary,
     )
 
     if "discrepancy" in out.lower() and "plan" in out.lower():
@@ -166,6 +175,8 @@ def implement(state):
         return {
             **baseline_delta,
             "test_fix_attempt": attempt + 1,
+            "test_fix_failures": new_fails,
+            "test_fix_summary": summary,
             "journal": [f"impl b{b['n']}: {detail}, retry {attempt + 1}"],
         }
 
@@ -177,6 +188,8 @@ def implement(state):
         **baseline_delta,
         "test_fix_attempt": 0,
         "fix_cycle": 0,
+        "test_fix_failures": [],
+        "test_fix_summary": "",
         "db_degraded": not db_ok,
         "journal": [f"impl b{b['n']}: done{test_note}"],
     }
@@ -225,6 +238,8 @@ def close_batch(state):
         "batch_idx": idx + 1,
         "fix_cycle": 0,
         "tests_waived": False,
+        "test_fix_failures": [],
+        "test_fix_summary": "",
         "baseline_batch_n": 0,
         "batch_test_baseline": [],
         "journal": [f"batch {b['n']}: committed"],

@@ -492,6 +492,8 @@ def escalate(state):
                 "code_verdict": "",
                 "fix_cycle": 0,
                 "test_fix_attempt": 0,
+                "test_fix_failures": [],
+                "test_fix_summary": "",
                 "redo_debate": True,
                 "degradations": [],
                 "journal": [
@@ -591,6 +593,8 @@ def escalate(state):
         delta["not_met"] = []
         delta["open_blockers"] = 0
         delta["code_verdict"] = "APPROVE"
+        delta["test_fix_failures"] = []
+        delta["test_fix_summary"] = ""
         delta["degradations"] = [
             "a batch was force-closed with unresolved blockers / NOT-MET items"
         ]

@@ -73,6 +73,8 @@ class PipelineState(TypedDict, total=False):
     # --- per-batch loop
     fix_cycle: int
     test_fix_attempt: int
+    test_fix_failures: list[str]    # failing-test identifiers from the previous implement attempt (retry prompt)
+    test_fix_summary: str           # one-line test summary from the previous implement attempt (retry prompt)
     tests_waived: bool              # human waived the in-graph test gate for this batch
     final_tests_waived: bool        # human waived the final test gate (ship with known failures)
     baseline_batch_n: int           # batch ``n`` for which batch_test_baseline was captured
