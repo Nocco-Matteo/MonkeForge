@@ -120,6 +120,7 @@ class Conversation:
     brief: str
     plan: str
     debate_history: str
+    debate_ledger: str
     batch_context: str
     review_history: str
     final: str
@@ -138,6 +139,11 @@ class Conversation:
         brief = read_if_exists(C.TASKS / f"TASK-{task_id}-brief.md")
         plan = read_if_exists(C.PLANS / f"PLAN-{task_id}.md")
         debate_history = read_if_exists(C.DEBATES / f"DEBATE-{task_id}.md")
+        # Function-local import to avoid an import cycle (condenser imports
+        # from agents, agents imports Conversation from state — same D2 pattern
+        # as run_agent's function-local condenser import).
+        from .condenser import debate_ledger as _debate_ledger
+        debate_ledger = _debate_ledger(debate_history)
         batch_context = json.dumps(
             {
                 "batch_idx": state.get("batch_idx", 0),
@@ -172,6 +178,7 @@ class Conversation:
             brief=brief,
             plan=plan,
             debate_history=debate_history,
+            debate_ledger=debate_ledger,
             batch_context=batch_context,
             review_history=review_history,
             final=final,

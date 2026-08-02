@@ -23,6 +23,7 @@ def _conv(tid):
         brief="",
         plan="",
         debate_history="",
+        debate_ledger="",
         batch_context="{}",
         review_history="",
         final="",

@@ -137,9 +137,14 @@ def render_prompt(template: str, conversation: "Conversation", **kw) -> str:
     text = (C.TEMPLATES / f"{template}.md").read_text()
     subs = dataclasses.asdict(conversation)
     subs.update(kw)
-    for key, value in subs.items():
-        text = text.replace("{" + key + "}", _fmt(value))
-    return text
+    # Single-pass re.sub: replacement strings returned by the callable are NOT
+    # re-scanned, so no substituted value (plan, ledger, or any other) can
+    # cascade into a remaining placeholder (C6 — verbatim-plan invariant).
+    return re.sub(
+        r"\{(\w+)\}",
+        lambda m: _fmt(subs[m.group(1)]) if m.group(1) in subs else m.group(0),
+        text,
+    )
 
 
 def run_agent(role: str, conversation: "Conversation", step: str,

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 
 from .agents import count_blockers, parse_verdict
+from .nodes.debate import TECH_LIMIT_RE
 
 # Verbatim from PLAN-003 §3 / nodes/debate.py:18. Group 1 = critic name
 # ("Reviewer", "UX", "Reply", "Proposer"). Redefined here rather than imported
@@ -28,6 +29,55 @@ _ROUND_NUM_RE = re.compile(r"Round\s+(\d+)")
 # the "RESOLVED" resolution flag.
 _CRITICS = ("Reviewer", "UX")
 _REPLY_LIKE = ("Reply", "Proposer")
+
+# --- debate_ledger helpers (TASK-014) ---------------------------------------
+
+# Matches BOTH TECH-LIMIT VERIFIED and TECH-LIMIT REJECTED lines, used to
+# exclude those line spans from the [BLOCKER]/[SUGGESTION] scan so a
+# `[BLOCKER]` tag embedded in a certification/rejection line does not produce
+# a phantom BLOCKER entry. (TECH_LIMIT_RE — VERIFIED only — is reused from
+# nodes.debate for ledger item extraction.)
+TECH_LIMIT_LINE_RE = re.compile(
+    r"^\s*TECH-LIMIT\s+(?:VERIFIED|REJECTED)\s*:", re.MULTILINE | re.IGNORECASE
+)
+
+# Raise lines in critic sections: `[BLOCKER] <claim>` or `[SUGGESTION] <claim>`,
+# optionally wrapped in markdown bold (`**[BLOCKER] foo**`).
+_RAISE_LINE_RE = re.compile(
+    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)\]\s*(.+?)\s*\*{0,2}\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# `### [SEVERITY] <claim>` header in Reply/Proposer sections (explicit preferred form).
+_HEADER_CLAIM_RE = re.compile(
+    r"^##+\s*\[(BLOCKER|SUGGESTION)\]\s*(.+?)\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# `[SEVERITY] <claim>` inline tag line in Reply/Proposer sections (primary matcher).
+_TAG_CLAIM_RE = re.compile(
+    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)\]\s*(.+?)\s*\*{0,2}\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# ACCEPTED / REJECTED / PARTIAL markers that delimit reply item blocks.
+_REPLY_MARKER_RE = re.compile(
+    r"^\s*(ACCEPTED|REJECTED|PARTIAL)\b", re.MULTILINE | re.IGNORECASE
+)
+
+# Standalone RESOLVED marker (word-boundary, case-insensitive); rejects
+# substrings such as UNRESOLVED.
+_RESOLVED_STANDALONE_RE = re.compile(r"\bRESOLVED\b", re.IGNORECASE)
+
+# UX re-review indexed resolution/open lines.
+_UX_RESOLVED_RE = re.compile(
+    r"^\s*RESOLVED\s+(\d+)\s*:", re.MULTILINE | re.IGNORECASE
+)
+_UX_STILL_OPEN_RE = re.compile(
+    r"^\s*STILL\s+OPEN\s+(\d+)\s*:", re.MULTILINE | re.IGNORECASE
+)
+
+_LEDGER_HEADER = "## Debate ledger (prior rounds, deduplicated)\n"
 
 
 def estimate_tokens(text: str) -> int:
@@ -132,3 +182,220 @@ def condense(text: str, keep_recent: int) -> str:
         for _critic, body in secs:
             parts.append(body)
     return "".join(parts)
+
+
+# --- debate_ledger (TASK-014) ----------------------------------------------
+#
+# A deterministic, deduplicated summary of every item raised in the debate,
+# one line per unique (normalized_claim, severity_kind, critic), with round +
+# status. Pure text-in/string-out — no LLM, no IO, no events (C1).
+
+
+def _normalize_claim(claim: str) -> str:
+    r"""Strip surrounding ``*``/``\```` and collapse internal whitespace."""
+    norm = claim.strip().strip("*`").strip()
+    return re.sub(r"\s+", " ", norm).strip()
+
+
+def _clean_claim(raw: str) -> str:
+    """Clean a raw claim extracted from a raise line or reply tag.
+
+    Strips surrounding markdown, collapses whitespace, and strips a trailing
+    ``— RESOLVED`` suffix (which is not a resolution signal on a raise line).
+    """
+    claim = raw.strip().strip("*`").strip()
+    # Strip trailing `— RESOLVED…` (em-dash or double-hyphen); the raise-line
+    # suffix is NOT a resolution signal in a critic section.
+    claim = re.sub(r"\s*(?:—|--)\s*RESOLVED\b.*$", "", claim, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", claim).strip()
+
+
+def _match_claim_in_block(preceding: str, block: str) -> tuple[str | None, str | None]:
+    """Identify the claim in a Reply/Proposer resolution block.
+
+    Two match levels, no substring fallback (§6 signal (b)):
+    (i)  ``### [SEVERITY] <claim>`` header in the text preceding the
+         ACCEPTED/REJECTED/PARTIAL marker (explicit, preferred);
+    (ii) ``[SEVERITY] <claim>`` inline tag in the preceding text (primary
+         matcher — the producer contract guarantees this is present).
+
+    If neither is present the block is skipped → item stays OPEN (conservative,
+    no false resolution). Returns (claim, severity) or (None, None).
+    """
+    # (i) header
+    headers = _HEADER_CLAIM_RE.findall(preceding)
+    if headers:
+        sev, claim = headers[-1]
+        return _clean_claim(claim), sev.upper()
+    # (ii) inline tag in preceding text
+    tags = _TAG_CLAIM_RE.findall(preceding)
+    if tags:
+        sev, claim = tags[-1]
+        return _clean_claim(claim), sev.upper()
+    # Also check the block itself (tag at/preceding block start).
+    tags_in_block = _TAG_CLAIM_RE.findall(block)
+    if tags_in_block:
+        sev, claim = tags_in_block[0]
+        return _clean_claim(claim), sev.upper()
+    return None, None
+
+
+def _process_reply_section(body: str, items: dict) -> None:
+    """Scan a Reply/Proposer section for tag-based resolution blocks.
+
+    Splits at ACCEPTED/REJECTED/PARTIAL markers; a block is a RESOLVED signal
+    iff it contains the standalone ``RESOLVED`` marker. The claim is identified
+    via :func:`_match_claim_in_block`. A resolution resolves ALL critics'
+    entries for that ``(normalized_claim, severity)`` (deterministic target for
+    critic-less replies). TECH-LIMIT items are exempt (severity ``TECH-LIMIT``
+    is never matched by ``[BLOCKER]``/``[SUGGESTION]`` tags).
+    """
+    markers = list(_REPLY_MARKER_RE.finditer(body))
+    for i, m in enumerate(markers):
+        block_start = m.start()
+        block_end = markers[i + 1].start() if i + 1 < len(markers) else len(body)
+        block = body[block_start:block_end]
+        if not _RESOLVED_STANDALONE_RE.search(block):
+            continue
+        search_start = markers[i - 1].start() if i > 0 else 0
+        preceding = body[search_start:block_start]
+        claim, sev = _match_claim_in_block(preceding, block)
+        if claim is None:
+            continue
+        norm = _normalize_claim(claim)
+        for key in list(items.keys()):
+            if key[0] == norm and key[1] == sev:
+                items[key]["status"] = "RESOLVED"
+
+
+def debate_ledger(debate_text: str) -> str:
+    """Build a deterministic, deduplicated debate ledger from raw debate text.
+
+    Each unique ``(normalized_claim, severity_kind, critic)`` item appears at
+    most once, with its first-raise round and final status (OPEN/RESOLVED).
+    Lines are sorted oldest-raise → newest. Pure text transform — no LLM, no
+    IO, no events (C1). Empty/None input → ``""`` (C4).
+
+    See FINAL-014 §3/D5 and §6 for the status resolution model.
+    """
+    text = debate_text or ""
+    if not text.strip():
+        return ""
+    _preamble, rounds = _parse_rounds(text)
+    if not rounds:
+        return ""
+
+    # key = (normalized_claim, severity_kind, critic) → item dict
+    items: dict[tuple[str, str, str], dict] = {}
+    items_order: list[tuple[str, str, str]] = []
+
+    for round_num, sections in rounds:
+        # UX-sourced [BLOCKER] items from rounds < round_num, in ledger order.
+        # <n> in RESOLVED <n>:/STILL OPEN <n>: indexes this set (1-based).
+        ux_blocker_keys = [
+            k for k in items_order if k[1] == "BLOCKER" and k[2] == "UX"
+        ]
+
+        for critic, body in sections:
+            critic_upper = critic.upper()
+            if critic in _CRITICS:
+                _process_critic_section(
+                    body, round_num, critic_upper,
+                    ux_blocker_keys, items, items_order,
+                )
+            elif critic in _REPLY_LIKE:
+                _process_reply_section(body, items)
+
+    if not items_order:
+        return ""
+
+    # Sort by first-raise round (oldest → newest); stable sort preserves
+    # encounter order for items raised in the same round.
+    sorted_keys = sorted(items_order, key=lambda k: items[k]["round"])
+    lines = [_LEDGER_HEADER]
+    for key in sorted_keys:
+        item = items[key]
+        _norm, sev, critic = key
+        lines.append(
+            f"[R{item['round']} · {critic} · {sev} · {item['status']}] {item['claim']}"
+        )
+    return "\n".join(lines) + "\n"
+
+
+def _process_critic_section(
+    body: str,
+    round_num: int,
+    critic_upper: str,
+    ux_blocker_keys: list[tuple[str, str, str]],
+    items: dict,
+    items_order: list,
+) -> None:
+    """Extract raises + UX indexed signals from one critic section body.
+
+    Signals are processed in file order (last signal wins). TECH-LIMIT lines
+    (VERIFIED|REJECTED) are excluded from the [BLOCKER]/[SUGGESTION] scan via
+    :data:`TECH_LIMIT_LINE_RE`. TECH-LIMIT VERIFIED items are extracted as
+    RESOLVED at extraction time (REVIEWER only); REJECTED lines produce no
+    ledger item.
+    """
+    lines = body.split("\n")
+    # Identify TECH-LIMIT line indices (VERIFIED|REJECTED) for exclusion.
+    tech_limit_lines: set[int] = set()
+    for i, line in enumerate(lines):
+        if TECH_LIMIT_LINE_RE.match(line):
+            tech_limit_lines.add(i)
+
+    # Extract TECH-LIMIT VERIFIED items (REVIEWER only) — RESOLVED at extraction.
+    if critic_upper == "REVIEWER":
+        for i, line in enumerate(lines):
+            if i not in tech_limit_lines:
+                continue
+            m = TECH_LIMIT_RE.search(line)  # VERIFIED only
+            if m:
+                claim = _clean_claim(m.group(1))
+                norm = _normalize_claim(claim)
+                key = (norm, "TECH-LIMIT", "REVIEWER")
+                if key not in items:
+                    items[key] = {
+                        "round": round_num,
+                        "claim": claim,
+                        "status": "RESOLVED",
+                    }
+                    items_order.append(key)
+
+    # Process signals in file order.
+    for i, line in enumerate(lines):
+        if i in tech_limit_lines:
+            continue
+
+        # UX indexed signals (RESOLVED <n>: / STILL OPEN <n>:).
+        if critic_upper == "UX":
+            m_res = _UX_RESOLVED_RE.match(line)
+            if m_res:
+                n = int(m_res.group(1))
+                if 1 <= n <= len(ux_blocker_keys):
+                    items[ux_blocker_keys[n - 1]]["status"] = "RESOLVED"
+                continue
+            m_open = _UX_STILL_OPEN_RE.match(line)
+            if m_open:
+                n = int(m_open.group(1))
+                if 1 <= n <= len(ux_blocker_keys):
+                    items[ux_blocker_keys[n - 1]]["status"] = "OPEN"
+                continue
+
+        # Raise lines [BLOCKER]/[SUGGESTION] — OPEN signal (re-raise reopens).
+        m_raise = _RAISE_LINE_RE.match(line)
+        if m_raise:
+            sev = m_raise.group(1).upper()
+            claim = _clean_claim(m_raise.group(2))
+            norm = _normalize_claim(claim)
+            key = (norm, sev, critic_upper)
+            if key not in items:
+                items[key] = {
+                    "round": round_num,
+                    "claim": claim,
+                    "status": "OPEN",
+                }
+                items_order.append(key)
+            else:
+                items[key]["status"] = "OPEN"

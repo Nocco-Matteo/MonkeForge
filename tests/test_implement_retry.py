@@ -33,6 +33,7 @@ def _conv(task_id: str = "retry") -> Conversation:
         brief="",
         plan="",
         debate_history="",
+        debate_ledger="",
         batch_context="{}",
         review_history="",
         final="",
