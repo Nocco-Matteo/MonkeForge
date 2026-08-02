@@ -149,6 +149,7 @@ class TestPromptPlaceholders:
 # markers in the prompt text itself, or the agent will not know to use them.
 MARKER_CONTRACTS = {
     "debate_reply": ["PLAN START", "PLAN END"],
+    "implement": ["PLAN_DISCREPANCY:"],
 }
 
 

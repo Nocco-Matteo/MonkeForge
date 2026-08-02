@@ -149,7 +149,7 @@ class EscalateRouterErrorBranch(unittest.TestCase):
         self.assertEqual(d.get("escalation"), "")
         # No batch-semantics keys are set on a routing failure.
         for banned in ("code_verdict", "open_blockers", "not_met",
-                       "degradations", "tests_waived", "baseline_failures",
+                       "degradations", "tests_waived",
                        "final_tests_waived", "ux_shipped_blocked"):
             self.assertNotIn(banned, d, f"router_error branch must not set {banned!r}")
 

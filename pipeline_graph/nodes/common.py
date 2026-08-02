@@ -153,6 +153,36 @@ def _extract_json(text: str) -> list | dict | None:
     return None
 
 
+def _strip_batches_block(text: str, batches_json: list | dict | None) -> str:
+    """Remove the fenced BATCHES json block from ``text`` (judge prose → FINAL).
+
+    Mirrors ``_extract_json``'s two fence patterns exactly (```json fence, then
+    plain-fence array) so the span removed is the span ``_extract_json`` actually
+    matched. Only the first fence whose ``json.loads`` equals ``batches_json`` is
+    removed; any other fenced JSON in the prose (examples, illustrative blocks)
+    survives. Raw unfenced arrays are never stripped. No-op when
+    ``batches_json`` is falsy (judge produced no BATCHES — nothing to strip).
+    """
+    import re as _re
+
+    if not batches_json:
+        return text
+
+    patterns = (
+        r"```json\s*\n?(.*?)```",        # ```json fence (relaxed closing)
+        r"```\s*\n(\[.*?\])\s*```",      # plain-fence array
+    )
+    for pat in patterns:
+        for m in _re.finditer(pat, text, _re.DOTALL):
+            try:
+                parsed = json.loads(m.group(1))
+            except json.JSONDecodeError:
+                continue
+            if parsed == batches_json:
+                return text[: m.start()] + text[m.end() :]
+    return text
+
+
 def _stage_all() -> None:
     """Stage the working tree so the batch under review is a real, diffable object.
 
@@ -669,7 +699,6 @@ def escalate(state):
         elif ans in ("retry", "again", "fix"):
             delta["journal"] = [f"escalation resolved: {answer} (re-running fix loop)"]
         else:
-            delta["baseline_failures"] = True
             delta["final_tests_waived"] = True
             delta["degradations"] = ["shipped with known failing tests at the final gate"]
             delta["journal"] = [

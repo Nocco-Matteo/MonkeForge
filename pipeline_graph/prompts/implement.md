@@ -26,6 +26,14 @@ describes reality. If a dependency you need does not exist as the plan
 describes it, report the discrepancy instead of silently adapting the spec or
 rewriting the dependency.
 
+PLAN_DISCREPANCY: <what and where> — emit a single line whose trimmed text
+starts with `PLAN_DISCREPANCY:` ONLY when you hit a genuine contradiction
+between the spec and the real code (a dependency the plan names does not
+exist, a signature the plan assumes is wrong, a file the plan says to modify
+is absent). Describe what contradicts and where. Do NOT emit this marker, and
+do NOT write any "no discrepancy" prose, when there is no contradiction —
+proceed with the work and report normally.
+
 <progress>
 {progress}
 </progress>
@@ -60,4 +68,6 @@ descope and do NOT report the batch complete.
 FINAL OUTPUT (max 30 lines): files changed; the checklist self-check; test
 results (counts + any failure); DEVIATIONS — any difference between what the
 plan specified and what you actually built, or "none"; anything you could not
-do and why.
+do and why. If and only if you hit a genuine plan/code contradiction, precede
+this section with a single `PLAN_DISCREPANCY: <what and where>` line (see the
+PRIOR STATE rule above); otherwise emit no such line.

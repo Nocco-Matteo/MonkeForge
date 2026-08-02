@@ -44,7 +44,6 @@ def _capture_test_baseline(state, b: dict, db_ok: bool) -> dict:
             "any batch. New failures are still blocked, but these are tolerated "
             "as baseline — fix them or they hide behind the gate.",
         )
-        delta["baseline_failures"] = len(failures)
         delta["degradations"] = [
             f"branch started RED: {len(failures)} test(s) already failing "
             "before any batch — tolerated as baseline"
@@ -123,11 +122,19 @@ def implement(state):
         summary=summary,
     )
 
-    if "discrepancy" in out.lower() and "plan" in out.lower():
+    # F1: explicit PLAN_DISCREPANCY: marker contract — the implementer emits a
+    # line whose trimmed text starts with `PLAN_DISCREPANCY:` only on a genuine
+    # plan/code contradiction. The old `"discrepancy"+"plan"` substring pair
+    # false-positived on prose mentioning both words.
+    matched_line = next(
+        (ln for ln in out.splitlines() if ln.strip().startswith("PLAN_DISCREPANCY:")),
+        None,
+    )
+    if matched_line is not None:
         return {
             **baseline_delta,
-            "escalation": f"implementer reported a plan/code discrepancy (batch {b['n']})",
-            "journal": [f"impl b{b['n']}: discrepancy"],
+            "escalation": f"implementer reported a plan/code discrepancy (batch {b['n']}): {matched_line}",
+            "journal": [f"impl b{b['n']}: PLAN_DISCREPANCY"],
         }
 
     if code < 0:

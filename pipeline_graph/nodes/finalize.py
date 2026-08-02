@@ -20,6 +20,7 @@ from .common import (
     _file_or_stdout,
     _recover_artifact,
     _save,
+    _strip_batches_block,
     _trust_output,
     _write_progress,
 )
@@ -74,10 +75,12 @@ def judge(state):
     batches_json = _extract_json(out)
     if batches_json:
         _save(batches_file, json.dumps(batches_json, indent=2))
-    # Save the FINAL report from stdout (everything before the BATCHES json)
+    # Save the FINAL report from stdout, with the fenced BATCHES block stripped
+    # so unrelated fenced JSON examples in the judge prose survive (F4).
     final_path = C.FINAL / f"FINAL-{tid}.md"
     if out.strip():
-        _save(final_path, out)
+        report_text = _strip_batches_block(out, batches_json)
+        _save(final_path, report_text)
     if not final_path.exists():
         _recover_artifact(tid, f"FINAL-{tid}.md", final_path)
     if not batches_file.exists():
@@ -91,18 +94,31 @@ def judge(state):
     except json.JSONDecodeError as exc:
         return {"escalation": f"BATCHES json invalid: {exc}", "journal": ["judge: bad batch json"]}
 
-    batches = [
-        {
-            "n": b["n"],
+    # F2: defend against a malformed BATCHES item before any .get/["n"] access —
+    # a non-dict element would otherwise raise AttributeError/KeyError and crash
+    # the run instead of escalating cleanly.
+    batches = []
+    for b in raw:
+        if not isinstance(b, dict):
+            return {
+                "escalation": f"malformed batch (no n) — BATCHES item is not an object: {b!r}",
+                "journal": ["judge: malformed batch (non-dict element)"],
+            }
+        n = b.get("n")
+        if not isinstance(n, int) or isinstance(n, bool):
+            return {
+                "escalation": f"malformed batch (no n) — missing or non-integer n: {b!r}",
+                "journal": ["judge: malformed batch (missing/non-int n)"],
+            }
+        batches.append({
+            "n": n,
             "scope": b.get("scope", ""),
             "status": "PENDING",
             "outcome": "",
             "deviations": "",
             "checklist": b.get("checklist", []),
             "test_failure_allowlist": b.get("test_failure_allowlist", []),
-        }
-        for b in raw
-    ]
+        })
     # has_ui was decided at plan-time (before the debate) and is not the judge's
     # to reset; the UX critique already happened during the debate.
     _write_progress(tid, batches)

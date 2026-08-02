@@ -79,7 +79,6 @@ class PipelineState(TypedDict, total=False):
     tests_waived: bool              # human waived the in-graph test gate for this batch
     final_tests_waived: bool        # human waived the final test gate (ship with known failures)
     baseline_batch_n: int           # batch ``n`` for which batch_test_baseline was captured
-    baseline_failures: int          # tests already failing on the branch before any batch
     batch_test_baseline: list[str]  # vitest FAIL keys at first implement entry (pre-agent)
     task_baseline: list[str]        # failures present at task start — tolerated by the FINAL gate
     batch_base_ref: str             # git HEAD before this batch — the diff base for code_review
