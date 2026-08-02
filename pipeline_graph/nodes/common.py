@@ -119,9 +119,14 @@ def _extract_json(text: str) -> list | dict | None:
         except json.JSONDecodeError:
             pass
 
-    # Raw JSON array — bracket-match from each `[`, return first valid parse.
-    # More robust than a greedy regex: handles nested arrays, ignores brackets
-    # inside strings, and skips `[` characters in prose that don't form JSON.
+    # Raw JSON array — bracket-match from each `[`, return first valid parse
+    # that is an array of dicts (objects). The BATCHES json is always
+    # [{"n": 1, ...}] — an array of objects. Arrays of scalars like
+    # ["baseline_failures"] are prose false positives (e.g. delta["key"] in
+    # code-discussion text) and must be skipped. If no array-of-dicts is
+    # found, fall back to the first valid array of any shape (for callers
+    # that use _extract_json for non-BATCHES purposes).
+    first_array_any: list | None = None
     for start in range(len(text)):
         if text[start] != "[":
             continue
@@ -147,10 +152,18 @@ def _extract_json(text: str) -> list | dict | None:
                 depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[start : end + 1])
+                        parsed = json.loads(text[start : end + 1])
                     except json.JSONDecodeError:
                         break
-    return None
+                    if isinstance(parsed, list):
+                        if first_array_any is None:
+                            first_array_any = parsed
+                        # Prefer arrays of dicts (BATCHES shape) over arrays
+                        # of scalars (prose false positives like ["key"]).
+                        if parsed and all(isinstance(item, dict) for item in parsed):
+                            return parsed
+                    break
+    return first_array_any
 
 
 def _strip_batches_block(text: str, batches_json: list | dict | None) -> str:
@@ -546,7 +559,6 @@ def escalate(state):
     ev.close_escalation(tid)
     delta = {"escalation": "", "test_fix_attempt": 0}
     ans = str(answer).strip().lower()
-    forced = ans in ("skip", "close", "force close", "force")
     test_escalation = "tests still failing" in reason.lower()
     intake_escalation = "intake" in reason.lower() or "interviewer" in reason.lower()
     r_low = reason.lower()
@@ -567,6 +579,30 @@ def escalate(state):
     # contain a router name like "route_intake") is not mis-routed into the
     # intake / debate / render branches below on a substring collision.
     router_error = not state.get("escalation")
+    # Validate the answer against the known options for this escalation. A
+    # fat-fingered or unrecognized answer must NOT default to "proceed" — it
+    # re-opens the escalation so the human gets the menu again. Router errors
+    # are exempt (any non-stop answer retries the router — there is no
+    # domain-specific menu to enforce).
+    if not router_error:
+        valid_options = _escalation_options(reason)
+        if valid_options and ans not in valid_options and ans not in (
+            "stop", "no", "abort", "cancel",  # universal stop keys
+        ):
+            ev.emit(
+                "escalation_reopened",
+                tid,
+                "escalate",
+                f"answer {answer!r} did not match any option; re-showing menu",
+            )
+            return {
+                "escalation": reason,
+                "journal": [
+                    f"escalation: answer {answer!r} not recognized — "
+                    f"valid options: {', '.join(sorted(valid_options))}"
+                ],
+            }
+    forced = ans in ("skip", "close", "force close", "force")
 
     if router_error:
         # A routing failure is infrastructure. A stop-like answer ends the run;

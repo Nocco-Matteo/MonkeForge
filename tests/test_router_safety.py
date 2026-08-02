@@ -201,5 +201,48 @@ class EscalateRouterErrorBranch(unittest.TestCase):
         self.assertFalse(d.get("finished"))
 
 
+class EscalateAnswerValidation(unittest.TestCase):
+    """A fat-fingered / unrecognized answer must re-open the escalation,
+    not default to 'proceed'. Router errors are exempt (any non-stop answer
+    retries the router — no domain-specific menu to enforce)."""
+
+    def _escalate(self, answer, *, escalation_reason, state=None):
+        tid = "av-1"
+        st = state if state is not None else {
+            "task_id": tid, "journal": [],
+            "escalation": escalation_reason,
+        }
+        with patch.object(_common, "interrupt", return_value=answer), \
+                patch.object(_common.ev, "emit"), \
+                patch.object(_common.ev, "open_escalation", return_value=True), \
+                patch.object(_common.ev, "close_escalation"):
+            return _common.escalate(st)
+
+    def test_unrecognized_answer_reopens_escalation(self):
+        d = self._escalate("fatfinger", escalation_reason="debate exhausted 2 rounds + verification: 1 blocker(s)")
+        # The escalation is re-opened (not cleared) so the human sees the menu again.
+        self.assertNotEqual(d.get("escalation"), "")
+        self.assertIn("not recognized", d["journal"][0])
+
+    def test_valid_answer_proceeds_normally(self):
+        d = self._escalate("ok", escalation_reason="debate exhausted 2 rounds + verification: 1 blocker(s)")
+        self.assertEqual(d.get("escalation"), "")
+
+    def test_stop_is_always_accepted(self):
+        # "stop" is a universal key — it bypasses the validation check and
+        # is accepted on any escalation (it may not set finished on all
+        # branches, but it must NOT re-open the escalation).
+        d = self._escalate("stop", escalation_reason="debate exhausted 2 rounds + verification: 1 blocker(s)")
+        self.assertEqual(d.get("escalation"), "")
+
+    def test_router_error_accepts_any_answer(self):
+        # Router errors have no domain-specific menu — any non-stop answer
+        # retries the router. "xyz" must NOT re-open the escalation.
+        _common._router_errors.clear()
+        _common._set_router_error("av-1", "routing failed in route_x — see journal")
+        d = self._escalate("xyz", escalation_reason="", state={"task_id": "av-1", "journal": []})
+        self.assertEqual(d.get("escalation"), "")
+
+
 if __name__ == "__main__":
     unittest.main()

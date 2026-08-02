@@ -94,6 +94,20 @@ def judge(state):
     except json.JSONDecodeError as exc:
         return {"escalation": f"BATCHES json invalid: {exc}", "journal": ["judge: bad batch json"]}
 
+    # Defense-in-depth: if _extract_json picked a prose false positive (e.g.
+    # ["baseline_failures"] from delta["key"] in code-discussion text), the
+    # raw list contains only strings/scalars, not dicts. Reject early instead
+    # of crashing on b["n"] with TypeError: string indices must be integers.
+    # A mixed list (some dicts + some non-dicts) is handled by the F2 guard
+    # below, which gives a more specific "malformed batch" message per-item.
+    if not isinstance(raw, list) or (
+        raw and not any(isinstance(b, dict) for b in raw)
+    ):
+        return {
+            "escalation": "BATCHES json is not a list of objects — judge output may contain a prose false positive",
+            "journal": [f"judge: BATCHES json has wrong shape (type={type(raw).__name__}, len={len(raw) if isinstance(raw, list) else 'n/a'})"],
+        }
+
     # F2: defend against a malformed BATCHES item before any .get/["n"] access —
     # a non-dict element would otherwise raise AttributeError/KeyError and crash
     # the run instead of escalating cleanly.
