@@ -9,7 +9,7 @@
   ./run.py graph            # print the graph as mermaid
 """
 from __future__ import annotations
-import argparse, contextlib, json, os, re, shutil, subprocess, sys
+import argparse, contextlib, json, os, re, shutil, subprocess, sys, threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -96,6 +96,67 @@ from pipeline_graph import config as C, events as ev
 from pipeline_graph.graph import build_graph, open_checkpointer
 
 
+# --- Council-log role mapping ----------------------------------------------
+# Maps graph node names to the agent-identity role key the council log should
+# render for that node. Nodes with no agent (checkpoints, render, wrap-up) map
+# to "COUNCIL"; the escalate node maps to "ESCALATION". An unknown node falls
+# back to its own name as the role key (see ``_role_display_name``) so the live
+# log never shows a bare ``?`` placeholder for a node added without an entry.
+NODE_TO_ROLE: dict[str, str] = {
+    "init":               "COUNCIL",
+    "intake_ask":         "INTERVIEWER",
+    "intake_wait":        "INTAKE",
+    "plan":               "PROPOSER",
+    "checkpoint_effort":  "COUNCIL",
+    "debate_tech":        "PLAN_REVIEWER",
+    "debate_ux":          "UX_REVIEWER",
+    "debate_reply":       "PROPOSER",
+    "summary":            "SUMMARIZER",
+    "judge":              "JUDGE",
+    "checkpoint_plan":    "COUNCIL",
+    "implement":          "IMPLEMENTER",
+    "code_review":        "CODE_REVIEWER",
+    "code_fix":           "IMPLEMENTER",
+    "code_verify":        "CODE_REVIEWER",
+    "close_batch":        "COUNCIL",
+    "ux_render":          "COUNCIL",
+    "ux_visual_review":   "VISUAL_REVIEWER",
+    "ux_visual_fix":      "VISUAL_FIXER",
+    "render_measure":     "COUNCIL",
+    "render_review":      "COUNCIL",
+    "render_fix":         "IMPLEMENTER",
+    "final_check":        "IMPLEMENTER",
+    "wrap_up":            "COUNCIL",
+    "escalate":           "ESCALATION",
+}
+
+
+def _role_name_for_role(role: str) -> str:
+    """Resolve a role key to its council-log display name.
+
+    Calls ``AGENT_IDENTITIES.get(role)`` directly (never
+    ``notify_daemon._identity_for``) and falls back to the raw role string
+    when the role is not registered, so an unknown role renders as itself
+    rather than a bare ``?``.
+    """
+    from pipeline_graph.notify_daemon import AGENT_IDENTITIES
+    name, _avatar = AGENT_IDENTITIES.get(role, (role, ""))
+    return name
+
+
+def _role_display_name(node: str) -> str:
+    """Render a node's council-log display name via ``AGENT_IDENTITIES``.
+
+    Looks up the node's role key in ``NODE_TO_ROLE`` (falling back to the raw
+    node name when the node is unknown), then resolves that role through
+    ``_role_name_for_role`` (which falls back to the raw role string when the
+    role is not registered). Both fallbacks ensure an unknown node never
+    renders as a bare ``?`` — the live council log stays readable as the
+    graph evolves.
+    """
+    return _role_name_for_role(NODE_TO_ROLE.get(node, node))
+
+
 @contextlib.contextmanager
 def _sleep_inhibitor():
     """Prevent system sleep while the pipeline is running.
@@ -153,29 +214,55 @@ def _pause_answers(data: dict) -> dict | list:
     return {}
 
 
+def _options_from_data(data: dict) -> list[dict]:
+    """Build a uniform ``options``-shaped list from any interrupt payload.
+
+    Reads the structured ``options`` list (Batch 1 escalation shape) when
+    present and non-empty, falling back to the legacy ``answers`` dict
+    (effort/intake pauses) or the ``levels`` list, synthesizing option dicts
+    in the same ``key``/``label``/``free_text`` shape. Returns ``[]`` for a
+    free-text pause (plan approval) — the caller treats an empty list as
+    "any non-empty answer is valid".
+    """
+    options = data.get("options")
+    if isinstance(options, list) and options:
+        return options
+    answers = data.get("answers")
+    if isinstance(answers, dict) and answers:
+        return [{"key": k, "label": str(v), "free_text": False}
+                for k, v in answers.items()]
+    levels = data.get("levels")
+    if isinstance(levels, list):
+        return [{"key": str(l), "label": "select this effort level", "free_text": False}
+                for l in levels]
+    # Plan approval or other free-text pause: no fixed option menu.
+    return []
+
+
 def _print_pause(data: dict, task_id: str) -> None:
-    """Print a pause as instructions instead of an opaque JSON blob."""
-    stage = str(data.get("stage", "?"))
+    """Print a pause as instructions instead of an opaque JSON blob.
+
+    Renders from a single ``options``-shaped list — the structured escalation
+    ``options`` when present, otherwise synthesized from the legacy
+    ``answers``/``levels`` shape — so every pause type prints the same uniform
+    menu. The ``./run.py resume <id> --answer ...`` action line is always
+    printed last, after the choices, so a human scanning upward sees the
+    action they must take immediately above the prompt.
+    """
+    stage = str(data.get("stage", ""))
     print(f"\n=== PAUSED: {stage} ===")
     print(f"  what to do: {_pause_reason(data)}")
     if data.get("context"):
         print(f"  context: {data['context']}")
-    options = data.get("options")
-    if isinstance(options, list) and options:
+    options = _options_from_data(data)
+    if options:
         print("  choices:")
+        hint = data.get("hint")
         for opt in options:
-            key = opt.get("key", "?")
+            key = opt.get("key", "")
             label = opt.get("label", "")
-            marker = "  (recommended)" if key == data.get("hint") else ""
+            marker = "  (recommended)" if key == hint else ""
             print(f"    {key}{marker} — {label}")
-    else:
-        answers = _pause_answers(data)
-        if answers:
-            print("  choices:")
-            if isinstance(answers, dict):
-                for key, meaning in answers.items():
-                    marker = "  (recommended)" if key == data.get("hint") else ""
-                    print(f"    {key}{marker} — {meaning}")
     print(f"  action: ./run.py resume {task_id} --answer \"<choice>\"")
 
 
@@ -192,20 +279,7 @@ def _pending_options(snap) -> list[dict] | None:
     """
     if not snap.interrupts:
         return None
-    data = snap.interrupts[0].value
-    options = data.get("options")
-    if isinstance(options, list) and options:
-        return options
-    answers = data.get("answers")
-    if isinstance(answers, dict) and answers:
-        return [{"key": k, "label": str(v), "free_text": False}
-                for k, v in answers.items()]
-    levels = data.get("levels")
-    if isinstance(levels, list):
-        return [{"key": str(l), "label": "select this effort level", "free_text": False}
-                for l in levels]
-    # Plan approval or other free-text pause: no fixed option menu.
-    return []
+    return _options_from_data(snap.interrupts[0].value)
 
 
 def _validate_answer(answer, options, *, free_text_allowed=False,
@@ -344,33 +418,126 @@ def _mark_idle(task_id: str, why: str) -> None:
         pass
 
 
+def _render_council_events(task_id: str, cursor: int,
+                           step_end_buffer: dict[str, str]) -> int:
+    """Render newly-arrived ``step_start``/``step_end`` events since ``cursor``.
+
+    ``step_start`` lines print immediately (with the node's role display name).
+    ``step_end`` return lines are buffered by node name in ``step_end_buffer``
+    and only emitted by the caller upon the next ``step_start`` or stream end
+    — the dedup buffer is keyed strictly by node name (not event index), so
+    fast-alternating nodes cannot cross-contaminate buffered return lines, and
+    a node that fires multiple ``step_end`` events collapses to one line.
+
+    Returns the new event cursor.
+    """
+    events = ev.read_events(task_id)[cursor:]
+    for e in events:
+        kind = e.get("kind")
+        node = e.get("step", "")
+        if not node:
+            continue
+        if kind == "step_start":
+            # Flush every buffered step_end return line from prior nodes before
+            # announcing the next step — the return line for node N appears when
+            # node N+1 starts (or at stream end), never inline with the event.
+            for _prev, line in step_end_buffer.items():
+                print(line, flush=True)
+            step_end_buffer.clear()
+            print(f"  [{_role_display_name(node)}] {e.get('msg', '')}", flush=True)
+        elif kind == "step_end":
+            step_end_buffer[node] = (
+                f"  [{_role_display_name(node)}] {e.get('msg', '')}"
+            )
+    return cursor + len(events)
+
+
+def _start_working_line_thread(task_id: str, stop_event: threading.Event
+                               ) -> threading.Thread:
+    """Start a daemon thread that prints a live working-elapsed line.
+
+    Reads ``C.METRICS / "current.json"`` (the heartbeat ``run_agent`` writes
+    while an agent step runs) and, when it points at this drive's task and the
+    step is not yet ``"agent done"``, prints a ``... <role> working on <step>
+    (<N>s elapsed)`` line. Daemonized so it never blocks process exit; stopped
+    via ``stop_event`` set in the driver's ``finally`` block.
+    """
+    def _loop():
+        while not stop_event.is_set():
+            try:
+                cur_path = C.METRICS / "current.json"
+                if cur_path.exists():
+                    cur = json.loads(cur_path.read_text())
+                    # Item 34: only render this drive's task — a stale
+                    # current.json from a different run must not leak in.
+                    if cur.get("task") == task_id:
+                        # Item 35: "agent done" marks the post-step heartbeat;
+                        # no working line while between steps.
+                        if cur.get("phase") != "agent done":
+                            started = cur.get("started")
+                            # Item 36: ``started`` is an ISO-8601 timestamp
+                            # written by run_agent, not a numeric epoch.
+                            if started:
+                                try:
+                                    started_dt = datetime.fromisoformat(started)
+                                except ValueError:
+                                    started_dt = None
+                                if started_dt is not None:
+                                    elapsed = int((datetime.now(timezone.utc)
+                                                   - started_dt).total_seconds())
+                                    role = cur.get("role", "")
+                                    name = _role_name_for_role(role)
+                                    step = cur.get("step", "")
+                                    print(f"  ... {name} working on {step} "
+                                          f"({elapsed}s elapsed)", flush=True)
+            except (OSError, ValueError):
+                pass
+            stop_event.wait(10)
+
+    t = threading.Thread(target=_loop, name="mf-working-line", daemon=True)
+    t.start()
+    return t
+
+
 def _drive(graph, task_id, payload):
     """Run until the graph ends or hits an interrupt; print what happened."""
     cfg = _thread(task_id)
     seen_updates = False
+    # Item 29: event-cursor baseline captured before consuming any events, so
+    # historical events from earlier runs on the same task id are skipped —
+    # only events emitted by THIS drive are rendered in the council log.
+    cursor = len(ev.read_events(task_id))
+    step_end_buffer: dict[str, str] = {}
+    stop_event = threading.Event()
+    _start_working_line_thread(task_id, stop_event)
     try:
-        for mode, chunk in graph.stream(payload, cfg,
-                                        stream_mode=["updates", "debug"]):
-            if mode == "debug" and chunk.get("type") == "task":
-                node = chunk.get("name", "?")
-                print(f"  [{node}] ...", flush=True)
-            elif mode == "updates":
+        # Item 27: stream_mode is updates-only — the "debug" mode that printed
+        # bare ``[<node>] ...`` lines (and a ``[?]`` placeholder when a debug
+        # chunk lacked a name) is gone.
+        for mode, chunk in graph.stream(payload, cfg, stream_mode=["updates"]):
+            if mode == "updates":
                 for node, delta in chunk.items():
                     if node == "__interrupt__":
                         continue
                     seen_updates = True
-                    if isinstance(delta, dict):
-                        for line in delta.get("journal", []):
-                            print(f"  [{node}] {line}", flush=True)
+            # Render any step_start/step_end events the instrumented nodes
+            # emitted since the last chunk. step_end return lines are buffered
+            # by node name and flushed on the next step_start or at stream end.
+            cursor = _render_council_events(task_id, cursor, step_end_buffer)
     except KeyboardInterrupt:
         ev.emit("run_stalled", task_id, "driver", "interrupted from the keyboard")
         raise
     except BrokenPipeError:
         # stdout pipe closed (parent terminal died during a background run).
-        # Redirect to /dev/null so remaining prints don't re-raise, then continue
-        # to the post-stream logic — the pipeline state is still valid.
+        # Redirect BOTH stdout and stderr to /dev/null so remaining prints (and
+        # any traceback on stderr) don't re-raise, then continue to the
+        # post-stream logic — the pipeline state is still valid.
         try:
             sys.stdout = open(os.devnull, "w")
+        except OSError:
+            pass
+        try:
+            sys.stderr = open(os.devnull, "w")
         except OSError:
             pass
     except Exception as exc:
@@ -379,6 +546,18 @@ def _drive(graph, task_id, payload):
         ev.emit("run_stalled", task_id, "driver",
                 f"driver crashed: {type(exc).__name__}: {exc}")
         raise
+    finally:
+        # Item 33: the working-line thread is daemonized and stopped via the
+        # event set here, so a KeyboardInterrupt during graph.stream still
+        # exits cleanly without a lingering background thread.
+        stop_event.set()
+
+    # Drain any events emitted after the last chunk (the final node's step_end
+    # lands here), then flush the remaining buffered return lines at stream end.
+    cursor = _render_council_events(task_id, cursor, step_end_buffer)
+    for _node, line in step_end_buffer.items():
+        print(line, flush=True)
+    step_end_buffer.clear()
 
     snap = graph.get_state(cfg)
     if not seen_updates and payload is None and snap.next:
