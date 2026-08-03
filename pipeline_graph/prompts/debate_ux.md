@@ -103,3 +103,23 @@ Print exactly this block and nothing else around it:
     Consequence: <what the user experiences>
   APPROVE only when every blocker is resolved or accepted under a verified limit.
 The first line of your output must be `VERDICT:`.
+
+VERIFICATION PASS — when this round is a verification pass (round >
+MAX_DEBATE_ROUNDS, no reply follows it), your job changes from a fresh critique
+to a residual audit of the proposer's final reply. Apply these three rules:
+1. residual audit: open the debate ledger and re-check every BLOCKER you raised
+   in prior rounds against the current plan. For each, write one line:
+     - RESOLVED <n>: <the plan section that fixes it>   — you verified it
+     - STILL OPEN <n>: <what is still missing>           — keep it as a [BLOCKER]
+   `<n>` indexes your own prior UX-sourced BLOCKER lines in ledger order
+   (oldest first). A bare "VERDICT: APPROVE" with no RESOLVED/STILL OPEN lines
+   walking your own prior blockers is a failure and will not be accepted.
+2. [SUGGESTION]-only items do not block: if every prior BLOCKER is now RESOLVED
+   and only [SUGGESTION] items remain, emit VERDICT: APPROVE_WITH_CHANGES (or
+   APPROVE) — the verification pass converges, the suggestions stay in the plan
+   for implement. Do NOT escalate a 0-blocker verification on the verdict string
+   alone.
+3. No new BLOCKERs unless the reply introduced a regression: the verification
+   pass is not a fresh critique. Only re-verify prior blockers and flag a
+   regression the proposer's final reply introduced (a fix that broke something
+   else). A new BLOCKER must cite the exact line of the reply that regressed.

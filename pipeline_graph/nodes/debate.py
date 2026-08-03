@@ -101,6 +101,7 @@ def _check_early_escalation(debate_text: str, rnd: int) -> dict | None:
     if not stuck:
         return None
     claims = "; ".join(stuck)
+    triage = _build_triage(debate_text, "debate stuck")
     return {
         "escalation": (
             f"debate stuck: {len(stuck)} blocker claim(s) repeated across "
@@ -108,10 +109,123 @@ def _check_early_escalation(debate_text: str, rnd: int) -> dict | None:
             f"the debate is not converging: {claims}"
         ),
         "debate_next": "summary",
+        "triage": triage,
+        "hint": triage.get("recommended", ""),
         "journal": [
             f"debate r{rnd}: STUCK — {len(stuck)} blocker(s) repeated across "
             f"{C.DEBATE_STUCK_ROUNDS} rounds: {claims}"
         ],
+    }
+
+
+def _check_thrashing_escalation(debate_text: str, rnd: int) -> dict | None:
+    """Detect a churning debate and escalate before the round cap is wasted.
+
+    Uses ``condenser.thrashing_report`` over the last
+    ``C.DEBATE_THRASH_ROUNDS`` rounds. When the trend is ``mode == "thrashing"``
+    (blockers not strictly decreasing AND new claims appearing), the debate is
+    churning, not converging — escalate early with a ``"debate thrashing:"``
+    prefix so the human gets the same continue/redo/stop/ok menu as a stuck
+    debate, plus a triage block (mode/blocker trend/repeated/new/recommended).
+
+    Returns ``None`` when the mode is anything other than ``"thrashing"``
+    (stuck/converging/unknown are handled by their own branches or by
+    ``_debate_decision``).
+
+    The ``condenser`` import is function-local to avoid the
+    ``condenser``↔``nodes.debate`` import cycle (same load-bearing pattern as
+    ``_check_early_escalation``).
+    """
+    from ..condenser import thrashing_report
+
+    report = thrashing_report(debate_text, C.DEBATE_THRASH_ROUNDS)
+    if report.get("mode") != "thrashing":
+        return None
+    triage = _build_triage(debate_text, "debate thrashing")
+    trend = " → ".join(str(n) for n in report.get("blocker_counts", []))
+    return {
+        "escalation": (
+            f"debate thrashing: blockers not decreasing ({trend}) with "
+            f"{len(report.get('new', []))} new claim(s) across the last "
+            f"{C.DEBATE_THRASH_ROUNDS} active rounds (round {rnd}) — the debate "
+            f"is churning, not converging"
+        ),
+        "debate_next": "summary",
+        "triage": triage,
+        "hint": triage.get("recommended", ""),
+        "journal": [
+            f"debate r{rnd}: THRASHING — blockers {trend}, "
+            f"{len(report.get('new', []))} new claim(s)"
+        ],
+    }
+
+
+# Recommendation table for _build_triage, keyed by reason_prefix.
+# thrashing/stuck → "ok" (proceed to the verdict — more rounds will not help).
+# exhausted → mode-mapped (converging → "continue" to let it close; else "ok").
+# requirements → "stop" (the blocker is in the brief, not the plan).
+_EXHAUSTED_RECOMMENDED = {
+    "thrashing": "ok",
+    "stuck": "ok",
+    "converging": "continue",
+    "unknown": "ok",
+}
+
+_RATIONALE = {
+    "thrashing": "blockers are not decreasing and new claims keep appearing — "
+                 "more rounds will not converge",
+    "stuck": "the same blocker has persisted across rounds — the debate is "
+             "not moving",
+    "converging": "blockers are strictly decreasing — the debate is closing",
+    "unknown": "no clear trend — proceed to the verdict",
+    "requirements": "the blocker is in the brief (REQUIREMENTS), not the plan "
+                     "— amend the brief and regenerate the plan",
+}
+
+
+def _build_triage(debate_text: str, reason_prefix: str) -> dict:
+    """Build the triage dict attached to a debate escalation.
+
+    Always calls ``condenser.thrashing_report`` first to populate
+    mode/blocker_counts/repeated/new, then adds ``recommended`` and
+    ``rationale`` according to ``reason_prefix``:
+
+    - ``"debate thrashing"`` → recommended ``"ok"`` (proceed to the verdict).
+    - ``"debate stuck"`` → recommended ``"ok"`` (proceed to the verdict).
+    - ``"debate exhausted"`` → recommended mode-mapped via
+      ``_EXHAUSTED_RECOMMENDED`` (converging → ``"continue"``; else ``"ok"``).
+    - ``"debate requirements"`` → forces ``mode="requirements"`` and
+      ``recommended="stop"`` (the blocker is in the brief, not the plan), while
+      still calling ``thrashing_report`` first so blocker_counts/repeated/new
+      are populated for the CLI/bot rendering.
+
+    The returned dict always has the six keys
+    mode/blocker_counts/repeated/new/recommended/rationale.
+    """
+    from ..condenser import thrashing_report
+
+    report = thrashing_report(debate_text, C.DEBATE_THRASH_ROUNDS)
+    mode = report.get("mode", "unknown")
+    if reason_prefix == "debate requirements":
+        recommended = "stop"
+        rationale = _RATIONALE["requirements"]
+        mode = "requirements"
+    elif reason_prefix == "debate exhausted":
+        recommended = _EXHAUSTED_RECOMMENDED.get(mode, "ok")
+        rationale = _RATIONALE.get(mode, _RATIONALE["unknown"])
+    elif reason_prefix in ("debate thrashing", "debate stuck"):
+        recommended = "ok"
+        rationale = _RATIONALE.get(mode, _RATIONALE["unknown"])
+    else:
+        recommended = "ok"
+        rationale = _RATIONALE.get(mode, _RATIONALE["unknown"])
+    return {
+        "mode": mode,
+        "blocker_counts": report.get("blocker_counts", []),
+        "repeated": report.get("repeated", []),
+        "new": report.get("new", []),
+        "recommended": recommended,
+        "rationale": rationale,
     }
 
 
@@ -137,6 +251,7 @@ def _check_requirements_escalation(debate_text: str) -> dict | None:
     if not claims:
         return None
     joined = "; ".join(claims)
+    triage = _build_triage(debate_text, "debate requirements")
     return {
         "escalation": (
             f"debate requirements: {len(claims)} blocker(s) tagged as "
@@ -144,6 +259,8 @@ def _check_requirements_escalation(debate_text: str) -> dict | None:
             f"the debate cannot fix them by iterating on the plan: {joined}"
         ),
         "debate_next": "summary",
+        "triage": triage,
+        "hint": triage.get("recommended", ""),
         "journal": [
             f"debate: REQUIREMENTS blocker(s) — {len(claims)} item(s): {joined}"
         ],
@@ -209,6 +326,7 @@ def debate_tech(state):
         "open_blockers": blockers,
         "tech_limits": limits,
         "redo_debate": False,
+        "debate_text": text,
         "journal": [
             f"debate r{rnd} tech: {verdict}, {blockers} blockers, "
             f"{len(limits)} tech-limit(s) verified"
@@ -223,21 +341,24 @@ def debate_tech(state):
         if state.get("has_ui") and not C.UX_RENDER_CMD.strip():
             bypass_note = "visual review disabled — no render command configured for this repo"
             delta.setdefault("journal", []).append(bypass_note)
-        # Stuck-claim early escalation (item 10): checked before _debate_decision
-        # so a stuck debate escalates with the "debate stuck:" menu instead of
-        # burning the remaining rounds. Takes precedence over the normal
-        # converge/reply/escalate decision.
+        # Precedence chain (TASK-022): requirements > early(stuck) > thrashing
+        # > _debate_decision. Each early-escalation branch that fires sets
+        # delta["triage"] and delta["hint"] via _build_triage so the CLI/bot
+        # render the triage block and the recommended-answer highlight.
         # Item 30: _check_requirements_escalation takes precedence over
         # _check_early_escalation when both fire — a REQUIREMENTS blocker is
         # unfixable by debate iteration, so the "debate requirements:" menu
         # (stop/ok) is the one the human needs, not the continue/redo/stop/ok
         # stuck menu.
         early = _check_early_escalation(text, rnd)
+        thrash = _check_thrashing_escalation(text, rnd)
         req = _check_requirements_escalation(text)
         if req:
             decision = req
         elif early:
             decision = early
+        elif thrash:
+            decision = thrash
         else:
             # _debate_decision can return its own journal on verification paths
             # (zero-blocker convergence or blocker-confirmed escalation); merge
@@ -363,25 +484,34 @@ def debate_ux(state):
     else:
         delta_note = ""
 
+    # Read the debate file AFTER the UX section was appended above, so the
+    # just-filed UX critique is in the scanned text. Used both for the delta
+    # (item 11) and for the early-escalation checks below.
+    debate_text = read_if_exists(debate_path)
     delta = {
         "ux_verdict": verdict,
         "ux_blockers": blockers,
+        "debate_text": debate_text,
         "journal": [f"debate r{rnd} ux: {verdict}, {blockers} blockers{delta_note}"],
     }
     is_verification = rnd > C.resolved_debate_rounds(state)
-    # Stuck-claim early escalation (item 11): checked after the debate file
-    # append (so the just-filed UX section is in the scanned text) and before
-    # _debate_decision. Takes precedence over the normal decision.
+    # Precedence chain (TASK-022): requirements > early(stuck) > thrashing
+    # > _debate_decision. Checked after the debate file append (so the
+    # just-filed UX section is in the scanned text) and before _debate_decision.
+    # Each early-escalation branch that fires sets delta["triage"] and
+    # delta["hint"] via _build_triage.
     # Item 30: _check_requirements_escalation takes precedence over
     # _check_early_escalation when both fire (same precedence rule as
     # debate_tech).
-    debate_text = read_if_exists(debate_path)
     early = _check_early_escalation(debate_text, rnd)
+    thrash = _check_thrashing_escalation(debate_text, rnd)
     req = _check_requirements_escalation(debate_text)
     if req:
         delta.update(req)
     elif early:
         delta.update(early)
+    elif thrash:
+        delta.update(thrash)
     else:
         delta.update(_debate_decision({**state, **delta}, is_verification=is_verification))
     return delta
@@ -427,11 +557,21 @@ def _debate_decision(state, is_verification: bool = False) -> dict:
             + (" and " if tech_b and ux_b else "")
             + ("UX" if ux_b else "")
         )
+        # TASK-022 item 12: the exhausted branch attaches a triage block (via
+        # _build_triage with reason_prefix "debate exhausted", reading
+        # debate_text from state) and a hint so the CLI/bot render the trend
+        # and the recommended-answer highlight. debate_text is set on the
+        # delta by debate_tech/debate_ux (item 11) and threaded into state via
+        # the {**state, **delta} merge at the call site.
+        debate_text = state.get("debate_text", "")
+        triage = _build_triage(debate_text, "debate exhausted")
         return {
             "debate_next": "summary",
             "escalation": f"debate exhausted {C.resolved_debate_rounds(state)} rounds + "
             f"verification: {n} {who} blocker(s) confirmed by the "
             f"critics after the proposer's final reply",
+            "triage": triage,
+            "hint": triage.get("recommended", ""),
             "journal": [f"debate verification: {n} {who} blocker(s) confirmed"],
         }
     return {"debate_next": "reply"}

@@ -455,6 +455,43 @@ if CONDENSER_KEEP_RECENT < DEBATE_STUCK_ROUNDS:
     )
     DEBATE_STUCK_ROUNDS = CONDENSER_KEEP_RECENT
 
+# Thrashing detection (TASK-022): how many consecutive trailing rounds the
+# deterministic thrashing_report scans for a churning trend (blockers not
+# strictly decreasing AND new claims appearing). Validated parse mirrors
+# DEBATE_STUCK_ROUNDS: a non-integer falls back to the default
+# (DEBATE_STUCK_ROUNDS) with a stderr warning. Clamped to [1,
+# CONDENSER_KEEP_RECENT] — the report reads the last k rounds verbatim, so k
+# must not exceed the number of rounds the condenser keeps verbatim, and a
+# thrashing trend needs at least 2 active rounds to be meaningful (the
+# thrashing_report itself returns mode="unknown" when fewer than 2 active
+# rounds are in the window, but the clamp keeps the scan window sane).
+_raw_thrash = os.environ.get("PIPELINE_DEBATE_THRASH_ROUNDS")
+if _raw_thrash is None or not _raw_thrash.strip():
+    DEBATE_THRASH_ROUNDS = DEBATE_STUCK_ROUNDS
+else:
+    try:
+        DEBATE_THRASH_ROUNDS = int(_raw_thrash)
+    except ValueError:
+        print(f"PIPELINE_DEBATE_THRASH_ROUNDS={_raw_thrash!r} not an int; "
+              f"using default {DEBATE_STUCK_ROUNDS}", file=sys.stderr)
+        DEBATE_THRASH_ROUNDS = DEBATE_STUCK_ROUNDS
+if DEBATE_THRASH_ROUNDS < 1:
+    print(f"PIPELINE_DEBATE_THRASH_ROUNDS={DEBATE_THRASH_ROUNDS} below 1; "
+          f"clamping to 1", file=sys.stderr)
+    DEBATE_THRASH_ROUNDS = 1
+if CONDENSER_KEEP_RECENT < DEBATE_THRASH_ROUNDS:
+    # Clamp to CONDENSER_KEEP_RECENT but never below the lower bound of 1
+    # (item 7): with CONDENSER_KEEP_RECENT=0 the bare clamp would disable
+    # thrashing detection (k=0), violating the required minimum.
+    _thrash_ceiling = max(CONDENSER_KEEP_RECENT, 1)
+    print(
+        f"PIPELINE_DEBATE_THRASH_ROUNDS={DEBATE_THRASH_ROUNDS} exceeds "
+        f"CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT}; clamping to "
+        f"{_thrash_ceiling}",
+        file=sys.stderr,
+    )
+    DEBATE_THRASH_ROUNDS = _thrash_ceiling
+
 # Consecutive non-improving cycles before the visual/render gates escalate early
 # (plateau detection — the fix loop is oscillating, not converging).
 PLATEAU_THRESHOLD = int(os.environ.get("PIPELINE_PLATEAU_THRESHOLD", "2"))

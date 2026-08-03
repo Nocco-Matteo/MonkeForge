@@ -1015,3 +1015,86 @@ class TestHookBeforePush:
         assert "starting plan" in err
         assert "plan done" in err
         assert slow_calls["n"] >= 1
+
+
+# --- TASK-022: pause triage block (item 19/26) ------------------------------
+
+
+class TestPauseTriageBlock:
+    """TASK-022 item 26: _print_pause renders a triage block (mode/blocker
+    trend/repeated-new/recommended+rationale) only when data["triage"] is a
+    dict, and prints "no active rounds" wording when blocker_counts is empty."""
+
+    def test_populated_blocker_counts_renders_trend(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        data = {
+            "stage": "escalation",
+            "reason": "debate thrashing: churning",
+            "options": [{"key": "ok", "label": "proceed"}],
+            "hint": "ok",
+            "triage": {
+                "mode": "thrashing",
+                "blocker_counts": [3, 2, 2],
+                "repeated": ["alpha", "beta"],
+                "new": ["delta"],
+                "recommended": "ok",
+                "rationale": "churning — more rounds will not converge",
+            },
+        }
+        err = _TtyStringIO()
+        err._tty = True
+        with redirect_stderr(err):
+            run_mod._print_pause(data, "pt", color=False)
+        text = err.getvalue()
+        assert "triage:" in text
+        assert "mode:" in text
+        assert "thrashing" in text
+        # The trend is joined by →.
+        assert "3 → 2 → 2" in text
+        assert "blockers:" in text
+        assert "repeated/new:" in text
+        assert "2 / 1" in text
+        assert "recommended: ok" in text
+        assert "churning" in text
+
+    def test_empty_blocker_counts_renders_no_active_rounds(
+            self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        data = {
+            "stage": "escalation",
+            "reason": "debate thrashing: churning",
+            "options": [{"key": "ok", "label": "proceed"}],
+            "hint": "ok",
+            "triage": {
+                "mode": "unknown",
+                "blocker_counts": [],
+                "repeated": [],
+                "new": [],
+                "recommended": "",
+                "rationale": "",
+            },
+        }
+        err = _TtyStringIO()
+        err._tty = True
+        with redirect_stderr(err):
+            run_mod._print_pause(data, "pt", color=False)
+        text = err.getvalue()
+        assert "triage:" in text
+        assert "no active rounds" in text
+
+    def test_no_triage_key_renders_no_triage_block(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        data = {
+            "stage": "escalation",
+            "reason": "tests still failing",
+            "options": [{"key": "ok", "label": "waive"}],
+        }
+        err = _TtyStringIO()
+        err._tty = True
+        with redirect_stderr(err):
+            run_mod._print_pause(data, "pt", color=False)
+        text = err.getvalue()
+        assert "triage:" not in text

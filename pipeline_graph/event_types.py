@@ -88,6 +88,13 @@ class RunPaused(Event):
     context: str | None = _UNSET
     blockers: str | None = _UNSET
     screens: str | None = _UNSET
+    # TASK-022: thrashing triage block (mode/blocker_counts/repeated/new/
+    # recommended/rationale). Declared LAST (Delta A) so appending it cannot
+    # break any future positional caller — every existing typed-Event
+    # construction in the repo is keyword-only, but the legacy emit() path
+    # (run.py) spreads this conditionally, so the field stays _UNSET-defaulted
+    # and to_record() omits it when unset (matching an absent **extra key).
+    triage: dict | None = _UNSET
 
 
 @dataclass
