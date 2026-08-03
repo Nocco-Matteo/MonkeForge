@@ -233,6 +233,15 @@ def checkpoint_effort(state):
         }
     )
     answer = str(decision).strip().lower()
+    # Universal stop keys end the run here (before the hint-fallback below
+    # would silently take the hint and proceed). The router checks
+    # ``state["finished"]`` and routes to END.
+    if answer in ("stop", "no", "abort", "cancel"):
+        return {
+            "finished": True,
+            "effort_checkpoint_shown": True,
+            "journal": [f"effort: run stopped by human ({decision})"],
+        }
     # "ok", empty, or unrecognized → take the hint.
     chosen = answer if answer in C.EFFORT_LEVELS else hint
     return {

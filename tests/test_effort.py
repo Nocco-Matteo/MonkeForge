@@ -285,6 +285,17 @@ class TestRouteAfterCheckpointEffort(unittest.TestCase):
                 {"effort": "scout-monke", "escalation": "oops"}),
             "escalate")
 
+    def test_finished_routes_to_end(self):
+        # A universal stop key at the effort checkpoint sets finished=True;
+        # the router must send the run to END before any escalation/effort check.
+        from langgraph.graph import END
+        self.assertEqual(
+            G.route_after_checkpoint_effort({"finished": True}), END)
+        # finished wins even when escalation is also set.
+        self.assertEqual(
+            G.route_after_checkpoint_effort(
+                {"finished": True, "escalation": "oops"}), END)
+
 
 # --- route_next_batch gating -----------------------------------------------
 
@@ -409,6 +420,19 @@ class TestCheckpointEffort(unittest.TestCase):
             delta = N.checkpoint_effort(
                 {"task_id": "t", "auto": False, "effort_hint_signals": signals})
         self.assertEqual(delta["effort"], "troop-monke")
+
+    def test_interactive_stop_key_ends_run(self):
+        # Universal stop keys at the effort checkpoint set finished=True
+        # before the hint-fallback would silently proceed.
+        signals = _signals(file_count=1, plan_chars=100)
+        for stop_key in ("stop", "no", "abort", "cancel"):
+            with patch.object(P, "interrupt", return_value=stop_key):
+                delta = N.checkpoint_effort(
+                    {"task_id": "t", "auto": False, "effort_hint_signals": signals})
+            self.assertTrue(delta.get("finished"),
+                            f"stop key {stop_key!r} did not set finished")
+            self.assertNotIn("effort", delta,
+                             f"stop key {stop_key!r} must not set an effort level")
 
     def test_no_signals_falls_back_to_reextract(self):
         # A pre-feature checkpoint resume: no signals stored → re-extract (empty).
@@ -556,6 +580,89 @@ class TestEffortArgparse(unittest.TestCase):
         args = self._parse("resume", "001")
         self.assertFalse(hasattr(args, "effort"))
 
+    def test_resume_answer_default_none(self):
+        # Item 14: --answer has no default (guided answers — no silent "ok").
+        args = self._parse("resume", "001")
+        self.assertIsNone(args.answer)
+
+    def test_resume_answer_explicit(self):
+        args = self._parse("resume", "001", "--answer", "stop")
+        self.assertEqual(args.answer, "stop")
+
+    def test_resume_has_no_input_flag(self):
+        # Item 16: --no-input is a store_true flag.
+        args = self._parse("resume", "001", "--no-input")
+        self.assertTrue(args.no_input)
+        args = self._parse("resume", "001")
+        self.assertFalse(args.no_input)
+
+
+# --- _validate_answer / _pending_options (CLI-edge validation) -------------
+
+class TestValidateAnswer(unittest.TestCase):
+    """Item (o): the plan-pause validation semantics.
+
+    _validate_answer("yes", plan_opts) accepts (approval keyword);
+    _validate_answer("no",  plan_opts) accepts (valid rejection reason /
+        universal stop key);
+    _validate_answer("",    plan_opts) is invalid (empty answer).
+    """
+
+    def setUp(self):
+        import run
+        self._validate = run._validate_answer
+
+    def test_plan_pause_yes_accepts(self):
+        self.assertIsNone(self._validate("yes", [], free_text_allowed=True))
+
+    def test_plan_pause_no_accepts(self):
+        # "no" is a universal stop key AND a valid rejection reason.
+        self.assertIsNone(self._validate("no", [], free_text_allowed=True))
+
+    def test_plan_pause_empty_rejects(self):
+        self.assertIsNotNone(self._validate("", [], free_text_allowed=True))
+
+    def test_plan_pause_none_rejects(self):
+        self.assertIsNotNone(self._validate(None, [], free_text_allowed=True))
+
+    def test_escalation_valid_key_accepts(self):
+        opts = [{"key": "ok", "label": "proceed", "free_text": False},
+                {"key": "stop", "label": "stop", "free_text": False}]
+        self.assertIsNone(self._validate("ok", opts))
+
+    def test_escalation_invalid_key_rejects(self):
+        opts = [{"key": "ok", "label": "proceed", "free_text": False},
+                {"key": "stop", "label": "stop", "free_text": False}]
+        self.assertIsNotNone(self._validate("banana", opts))
+
+    def test_escalation_composite_key_accepts(self):
+        # "skip / done" canonicalises to "skip".
+        opts = [{"key": "skip / done", "label": "stop interviewing", "free_text": False}]
+        self.assertIsNone(self._validate("skip", opts))
+        self.assertIsNone(self._validate("skip / done", opts))
+
+    def test_universal_stop_keys_always_accept(self):
+        opts = [{"key": "ok", "label": "proceed", "free_text": False}]
+        for key in ("stop", "no", "abort", "cancel"):
+            self.assertIsNone(self._validate(key, opts),
+                              f"stop key {key!r} should be accepted")
+
+    def test_router_error_accepts_any_nonempty(self):
+        self.assertIsNone(self._validate("anything", [], router_error=True))
+        self.assertIsNotNone(self._validate("", [], router_error=True))
+
+    def test_intake_accepts_end_and_submit_answers(self):
+        opts = []  # intake pauses have no structured options list
+        for key in ("skip", "done", "stop", "enough", "no", "abort", "cancel"):
+            self.assertIsNone(self._validate(key, opts, intake=True),
+                              f"intake end key {key!r} should be accepted")
+        for key in ("ok", "yes", "submit", "continue", "proceed"):
+            self.assertIsNone(self._validate(key, opts, intake=True),
+                              f"intake submit key {key!r} should be accepted")
+
+    def test_intake_rejects_unknown(self):
+        self.assertIsNotNone(self._validate("banana", [], intake=True))
+
 
 def _build_parser():
     """A standalone replica of run.py's argparse setup (just the subparsers)."""
@@ -570,7 +677,9 @@ def _build_parser():
     s.add_argument("--ref", dest="refs", action="append", default=[])
     s.add_argument("--effort", dest="effort", default=None,
                    choices=["scout-monke", "troop-monke", "barrel-monke"])
-    r = sub.add_parser("resume"); r.add_argument("task_id"); r.add_argument("--answer", default="ok")
+    r = sub.add_parser("resume"); r.add_argument("task_id")
+    r.add_argument("--answer")
+    r.add_argument("--no-input", action="store_true")
     rd = sub.add_parser("redo")
     rd.add_argument("task_id")
     rd.add_argument("--from", dest="from_phase",
@@ -597,11 +706,14 @@ class TestGraphCompilesWithEffort(unittest.TestCase):
         targets = {e.target for e in edges if e.source == "plan"}
         self.assertIn("checkpoint_effort", targets)
 
-    def test_checkpoint_effort_has_three_targets(self):
+    def test_checkpoint_effort_has_four_targets(self):
+        # END is reachable when the human answers a universal stop key at the
+        # effort checkpoint (checkpoint_effort sets finished, the router
+        # returns END). The other three are the pre-existing routing targets.
         g = G.build_graph()
         edges = g.get_graph().edges
         targets = {e.target for e in edges if e.source == "checkpoint_effort"}
-        self.assertEqual(targets, {"summary", "debate_tech", "escalate"})
+        self.assertEqual(targets, {"summary", "debate_tech", "escalate", "__end__"})
 
 
 if __name__ == "__main__":

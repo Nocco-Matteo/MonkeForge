@@ -284,7 +284,7 @@ def intake_ask(state):
     }
 
 
-INTAKE_END_ANSWERS = ("skip", "done", "stop", "enough")
+INTAKE_END_ANSWERS = ("skip", "done", "stop", "enough", "no", "abort", "cancel")
 INTAKE_SUBMIT_ANSWERS = ("ok", "yes", "submit", "continue", "proceed")
 
 

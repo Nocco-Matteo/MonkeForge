@@ -215,7 +215,7 @@ async def doctor(interaction: discord.Interaction, task_id: str):
 
 
 @tree.command(description="Resume a paused task with an answer")
-async def resume(interaction: discord.Interaction, task_id: str, answer: str = "ok"):
+async def resume(interaction: discord.Interaction, task_id: str, answer: str):
     if not _allowed(interaction.user.id):
         await interaction.response.send_message("Not authorised.", ephemeral=True)
         return

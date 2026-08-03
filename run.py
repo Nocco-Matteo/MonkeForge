@@ -179,6 +179,125 @@ def _print_pause(data: dict, task_id: str) -> None:
     print(f"  action: ./run.py resume {task_id} --answer \"<choice>\"")
 
 
+def _pending_options(snap) -> list[dict] | None:
+    """Extract the pending interrupt's option list from a graph snapshot.
+
+    Returns a list of structured option dicts (``key``/``label``/``free_text``)
+    for the pending interrupt, or ``None`` if there is no pending interrupt.
+    Synthesizes options for effort/intake pauses that use the legacy
+    ``answers``/``levels`` shape so ``_validate_answer`` has a uniform list to
+    check against. For free-text pauses (plan approval), returns an empty list
+    — the caller passes ``free_text_allowed=True`` to ``_validate_answer`` so
+    any non-empty answer is accepted.
+    """
+    if not snap.interrupts:
+        return None
+    data = snap.interrupts[0].value
+    options = data.get("options")
+    if isinstance(options, list) and options:
+        return options
+    answers = data.get("answers")
+    if isinstance(answers, dict) and answers:
+        return [{"key": k, "label": str(v), "free_text": False}
+                for k, v in answers.items()]
+    levels = data.get("levels")
+    if isinstance(levels, list):
+        return [{"key": str(l), "label": "select this effort level", "free_text": False}
+                for l in levels]
+    # Plan approval or other free-text pause: no fixed option menu.
+    return []
+
+
+def _validate_answer(answer, options, *, free_text_allowed=False,
+                     router_error=False, intake=False) -> str | None:
+    """Validate a ``resume --answer`` against the pending interrupt's options.
+
+    Returns ``None`` if the answer is valid, or an error string explaining why
+    not (printed to the user before the run is aborted). Validation rules:
+
+    * An empty/whitespace-only answer is always invalid (the CLI edge for the
+      plan pause per the corrected test (o)).
+    * Universal stop keys (``stop``, ``no``, ``abort``, ``cancel``) are always
+      accepted — every pause type honours them.
+    * Router errors accept any non-empty answer (there is no domain-specific
+      menu to enforce; any non-stop answer retries the router).
+    * Intake pauses accept ``INTAKE_END_ANSWERS`` + ``INTAKE_SUBMIT_ANSWERS``.
+    * Free-text-allowed pauses (plan approval) accept any non-empty answer —
+      ``"yes"`` approves, any other non-empty string is a rejection reason.
+    * Otherwise the answer must match (canonically) one of the option keys.
+    """
+    from pipeline_graph.nodes.common import _canonical_key
+
+    ans = str(answer).strip() if answer is not None else ""
+    if not ans:
+        return ("error: --answer is empty; provide one of the listed choices "
+                "(or a universal stop key: stop, no, abort, cancel)")
+    canonical = _canonical_key(ans)
+
+    # Universal stop keys are always valid for every pause type.
+    if canonical in ("stop", "no", "abort", "cancel"):
+        return None
+
+    if router_error:
+        return None  # any non-stop answer retries the router
+
+    if intake:
+        from pipeline_graph.nodes.intake import INTAKE_END_ANSWERS, INTAKE_SUBMIT_ANSWERS
+        if canonical in INTAKE_END_ANSWERS or canonical in INTAKE_SUBMIT_ANSWERS:
+            return None
+
+    if free_text_allowed:
+        return None  # any non-empty answer is valid (approve or reject-with-reason)
+
+    valid_keys = {_canonical_key(o["key"]) for o in (options or [])}
+    if canonical in valid_keys:
+        return None
+
+    valid_str = ", ".join(sorted(valid_keys)) if valid_keys else "(no options)"
+    return (f"error: answer {answer!r} is not one of the valid choices "
+            f"({valid_str}); pick one, or use a universal stop key "
+            f"(stop, no, abort, cancel)")
+
+
+def _tty_pick(options: list[dict], data: dict) -> str:
+    """Interactive picker: list the pending options and read a choice from stdin.
+
+    Returns the chosen option's canonical key. Falls back to the hint (or
+    ``"ok"``) on an empty line so a bare Enter takes the recommended path.
+    """
+    from pipeline_graph.nodes.common import _canonical_key
+
+    stage = str(data.get("stage", "?"))
+    reason = str(data.get("reason", "")).strip()
+    hint = str(data.get("hint", "")).strip()
+    print(f"\n=== PAUSED: {stage} ===")
+    if reason:
+        print(f"  {reason}")
+    if not options:
+        # Free-text pause (plan approval): read a raw line.
+        print("  type your answer and press Enter (empty = approve):")
+        try:
+            line = input("> ").strip()
+        except EOFError:
+            line = ""
+        return line or "ok"
+    print("  choices:")
+    for i, opt in enumerate(options, 1):
+        key = opt.get("key", "?")
+        label = opt.get("label", "")
+        marker = "  (recommended)" if key == hint else ""
+        print(f"    [{i}] {key}{marker} — {label}")
+    try:
+        line = input(f"  pick [1-{len(options)}] or type a key: ").strip()
+    except EOFError:
+        line = ""
+    if not line:
+        return _canonical_key(hint) if hint else "ok"
+    if line.isdigit() and 1 <= int(line) <= len(options):
+        return _canonical_key(options[int(line) - 1]["key"])
+    return _canonical_key(line)
+
+
 def _extract_debate_blockers(task_id: str) -> str:
     """Pull the [BLOCKER] lines from the latest round of the debate file.
 
@@ -614,7 +733,11 @@ def main() -> int:
     s.add_argument("--effort", dest="effort", default=None,
                    choices=["scout-monke", "troop-monke", "barrel-monke"],
                    help="force an effort level (skips the effort checkpoint)")
-    r = sub.add_parser("resume"); r.add_argument("task_id"); r.add_argument("--answer", default="ok")
+    r = sub.add_parser("resume"); r.add_argument("task_id")
+    r.add_argument("--answer",
+                   help="answer to the pending pause (required on non-TTY / --no-input)")
+    r.add_argument("--no-input", action="store_true",
+                   help="never prompt; --answer is required")
     rd = sub.add_parser("redo", help="re-run a phase reusing existing artifacts "
                                      "(e.g. redo the debate after fixing an agent)")
     rd.add_argument("task_id")
@@ -656,6 +779,48 @@ def main() -> int:
 
     if args.cmd == "metrics":
         return _metrics(args)
+
+    # Early DB guard + answer validation for resume/redo (items 19-21).
+    # The checkpointer must not be opened on a missing DB, and the resume
+    # answer is validated (or picked on a TTY) before preflight and before
+    # the notify/bot daemons are started — no point launching sidecar
+    # processes for an answer that will be rejected at the CLI edge.
+    if args.cmd == "resume":
+        if not C.CHECKPOINT_DB.exists():
+            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}")
+            return 1
+        with open_checkpointer() as _cp:
+            _graph = build_graph(_cp)
+            _snap = _graph.get_state(_thread(args.task_id))
+        if _snap.interrupts:
+            _data = _snap.interrupts[0].value
+            _options = _pending_options(_snap)
+            _router_error = bool(_data.get("router_error", False))
+            _stage = str(_data.get("stage", "")).lower()
+            _reason = str(_data.get("reason", "")).lower()
+            _intake = "intake" in _stage or "interviewer" in _reason
+            _free_text = not _options and not _intake and not _router_error
+            if args.answer is not None:
+                _err = _validate_answer(
+                    args.answer, _options,
+                    free_text_allowed=_free_text,
+                    router_error=_router_error, intake=_intake)
+                if _err:
+                    print(_err)
+                    return 2
+            elif args.no_input or not sys.stdin.isatty():
+                print("error: --answer is required on a non-TTY (or with --no-input); "
+                      "rerun with an answer from the pause menu")
+                return 2
+            else:
+                args.answer = _tty_pick(_options or [], _data)
+        # No pending interrupt: args.answer stays None; the resume handler
+        # below treats that as "continue at the next node".
+
+    if args.cmd == "redo":
+        if not C.CHECKPOINT_DB.exists():
+            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}")
+            return 1
 
     problems = C.preflight()
     if problems and args.cmd in ("start", "resume"):

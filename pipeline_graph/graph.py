@@ -115,7 +115,12 @@ def route_after_checkpoint_effort(state):
     """After the effort checkpoint: scout skips the debate, troop/barrel enter it.
 
     Returns ``summary`` only when the effective effort is ``scout-monke`` (C20).
+    A ``finished`` state (human answered a universal stop key at the effort
+    checkpoint) routes straight to END — checked before escalation so a
+    deliberate stop is not re-routed into the escalate node.
     """
+    if state.get("finished"):
+        return END
     if state.get("escalation"):
         return "escalate"
     if C._effort_for(state) == "scout-monke":
@@ -333,9 +338,11 @@ def build_graph(checkpointer=None):
     g.add_conditional_edges("plan", after(),
                             {"continue": "checkpoint_effort", "escalate": "escalate"})
     # The effort checkpoint routes to summary (scout) or debate_tech (troop/barrel).
+    # END is reachable when the human answers a universal stop key at the effort
+    # checkpoint (checkpoint_effort sets ``finished`` and the router returns END).
     g.add_conditional_edges("checkpoint_effort", route_after_checkpoint_effort,
                             {"summary": "summary", "debate_tech": "debate_tech",
-                             "escalate": "escalate"})
+                             "escalate": "escalate", END: END})
 
     # A round: technical critic → (UX critic, if the task has a surface) →
     # decide. debate_reply loops back to debate_tech, so a round always ends on a
