@@ -82,6 +82,39 @@ def _open_blocker_count(verdict: str, out: str, latest_tech: str) -> int:
     return count_blockers(out) or count_blockers(latest_tech)
 
 
+def _check_early_escalation(debate_text: str, rnd: int) -> dict | None:
+    """Detect a stuck debate and escalate before the round cap is wasted.
+
+    Scans the last ``C.DEBATE_STUCK_ROUNDS`` rounds for BLOCKER claims repeated
+    in every round (via ``condenser.stuck_claims``). When the same claim
+    persists across that many consecutive rounds, the debate is not converging
+    — escalate early with a ``"debate stuck:"`` prefix so the human gets the
+    continue/redo/stop/ok menu instead of burning the remaining rounds.
+
+    The ``condenser`` import is function-local to avoid the
+    ``condenser``↔``nodes.debate`` import cycle (condenser imports
+    ``TECH_LIMIT_RE`` from this module at load time).
+    """
+    from ..condenser import stuck_claims
+
+    stuck = stuck_claims(debate_text, C.DEBATE_STUCK_ROUNDS)
+    if not stuck:
+        return None
+    claims = "; ".join(stuck)
+    return {
+        "escalation": (
+            f"debate stuck: {len(stuck)} blocker claim(s) repeated across "
+            f"{C.DEBATE_STUCK_ROUNDS} consecutive rounds (round {rnd}) — "
+            f"the debate is not converging: {claims}"
+        ),
+        "debate_next": "summary",
+        "journal": [
+            f"debate r{rnd}: STUCK — {len(stuck)} blocker(s) repeated across "
+            f"{C.DEBATE_STUCK_ROUNDS} rounds: {claims}"
+        ],
+    }
+
+
 def debate_tech(state):
     """The technical critic. Critiques the plan AND certifies TECH-LIMIT claims.
 
@@ -155,10 +188,18 @@ def debate_tech(state):
         if state.get("has_ui") and not C.UX_RENDER_CMD.strip():
             bypass_note = "visual review disabled — no render command configured for this repo"
             delta.setdefault("journal", []).append(bypass_note)
-        # _debate_decision can return its own journal on verification paths
-        # (zero-blocker convergence or blocker-confirmed escalation); merge
-        # instead of letting delta.update drop the bypass note (item 28).
-        decision = _debate_decision({**state, **delta}, is_verification=is_verification)
+        # Stuck-claim early escalation (item 10): checked before _debate_decision
+        # so a stuck debate escalates with the "debate stuck:" menu instead of
+        # burning the remaining rounds. Takes precedence over the normal
+        # converge/reply/escalate decision.
+        early = _check_early_escalation(text, rnd)
+        if early:
+            decision = early
+        else:
+            # _debate_decision can return its own journal on verification paths
+            # (zero-blocker convergence or blocker-confirmed escalation); merge
+            # instead of letting delta.update drop the bypass note (item 28).
+            decision = _debate_decision({**state, **delta}, is_verification=is_verification)
         if bypass_note and "journal" in decision:
             decision["journal"] = [bypass_note, *decision["journal"]]
         delta.update(decision)
@@ -285,7 +326,15 @@ def debate_ux(state):
         "journal": [f"debate r{rnd} ux: {verdict}, {blockers} blockers{delta_note}"],
     }
     is_verification = rnd > C.resolved_debate_rounds(state)
-    delta.update(_debate_decision({**state, **delta}, is_verification=is_verification))
+    # Stuck-claim early escalation (item 11): checked after the debate file
+    # append (so the just-filed UX section is in the scanned text) and before
+    # _debate_decision. Takes precedence over the normal decision.
+    debate_text = read_if_exists(debate_path)
+    early = _check_early_escalation(debate_text, rnd)
+    if early:
+        delta.update(early)
+    else:
+        delta.update(_debate_decision({**state, **delta}, is_verification=is_verification))
     return delta
 
 

@@ -425,6 +425,36 @@ if CONDENSER_KEEP_RECENT < 0:
           file=sys.stderr)
     CONDENSER_KEEP_RECENT = 0
 
+# Stuck-claim detection (TASK-017 batch 1): how many consecutive trailing rounds
+# to scan for a repeated BLOCKER claim before declaring the debate "stuck" and
+# escalating early (before hitting the round cap). Validated parse mirrors
+# CONDENSER_KEEP_RECENT: a non-integer falls back to the default (2) with a
+# stderr warning. Clamped to a minimum of 1 (with a stderr warning) so a
+# misconfigured 0 never disables the guard silently. Then clamped to
+# CONDENSER_KEEP_RECENT: the stuck scan reads the last k rounds verbatim, so k
+# must not exceed the number of rounds the condenser keeps verbatim — when
+# CONDENSER_KEEP_RECENT is 0 (condense-all), DEBATE_STUCK_ROUNDS is forced to 0
+# too (the guard is disabled because there are no verbatim rounds to scan).
+_raw_stuck = os.environ.get("PIPELINE_DEBATE_STUCK_ROUNDS", "2")
+try:
+    DEBATE_STUCK_ROUNDS = int(_raw_stuck)
+except ValueError:
+    print(f"PIPELINE_DEBATE_STUCK_ROUNDS={_raw_stuck!r} not an int; using default 2",
+          file=sys.stderr)
+    DEBATE_STUCK_ROUNDS = 2
+if DEBATE_STUCK_ROUNDS < 1:
+    print(f"PIPELINE_DEBATE_STUCK_ROUNDS={DEBATE_STUCK_ROUNDS} below 1; clamping to 1",
+          file=sys.stderr)
+    DEBATE_STUCK_ROUNDS = 1
+if CONDENSER_KEEP_RECENT < DEBATE_STUCK_ROUNDS:
+    print(
+        f"PIPELINE_DEBATE_STUCK_ROUNDS={DEBATE_STUCK_ROUNDS} exceeds "
+        f"CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT}; clamping to "
+        f"{CONDENSER_KEEP_RECENT}",
+        file=sys.stderr,
+    )
+    DEBATE_STUCK_ROUNDS = CONDENSER_KEEP_RECENT
+
 # Consecutive non-improving cycles before the visual/render gates escalate early
 # (plateau detection — the fix loop is oscillating, not converging).
 PLATEAU_THRESHOLD = int(os.environ.get("PIPELINE_PLATEAU_THRESHOLD", "2"))

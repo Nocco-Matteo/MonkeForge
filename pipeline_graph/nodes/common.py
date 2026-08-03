@@ -462,6 +462,24 @@ def _escalation_options(reason: str) -> dict:
     stops the human from rubber-stamping 'ok' without knowing what it does.
     """
     r = reason.lower()
+    if r.startswith("debate stuck:"):
+        # Stuck-claim early escalation (item 13/14): the debate is not
+        # converging — the same BLOCKER persists across k consecutive rounds.
+        # No "skip": force-closing a batch here would rubber-stamp a plan the
+        # critics keep blocking. "ok" proceeds to the verdict with the plan as
+        # it stands; "continue" extends the cap; "redo" restarts from round 1;
+        # "stop" ends the run (the blockers may be in the REQUIREMENTS).
+        return {
+            "continue": "extend the debate by 2 more rounds, keeping the existing "
+            "history (the proposer keeps iterating on the stuck blocker)",
+            "redo": "re-run the debate from round 1 on the SAME plan (use when the "
+            "debate itself derailed — it cannot fix a plan that is wrong)",
+            "stop": "stop the run — the stuck blocker may be in the REQUIREMENTS, "
+            "not the plan: amend the brief, then ./run.py redo <id> --from plan "
+            "to regenerate the plan",
+            "ok": "proceed to the verdict with the plan as it stands (the stuck "
+            "blocker is recorded in the report)",
+        }
     if "intake" in r or "interviewer" in r:
         return {
             "ok": "answer the questions in the intake file, then resume",
@@ -580,7 +598,15 @@ def escalate(state):
     test_escalation = "tests still failing" in reason.lower()
     intake_escalation = "intake" in reason.lower() or "interviewer" in reason.lower()
     r_low = reason.lower()
-    ux_escalation = ("ux" in r_low or "designer" in r_low) and "blocker" in r_low
+    # Item 15: the "debate stuck:" prefix boolean is computed immediately after
+    # r_low is assigned, ahead of its use in any other flag below. When true,
+    # it forces the substring-based flags False (item 16) so the prefix-gate
+    # menu (continue/redo/stop/ok) is the only one that fires — a partial gate
+    # would reproduce the Round 3 substring-collision blocker.
+    debate_stuck = r_low.startswith("debate stuck:")
+    ux_escalation = (
+        ("ux" in r_low or "designer" in r_low) and "blocker" in r_low
+    ) and not debate_stuck
     debate_escalation = "debate" in r_low
     # A render that could not run is retryable (fix the browser/stack, re-render);
     # a visual review that still has blockers is not — it ships or it doesn't.
@@ -589,8 +615,16 @@ def escalate(state):
         or "render command" in r_low
         or "no screenshots" in r_low
         or "cannot render" in r_low
-    )
-    visual_blocked = "visual issues remain" in r_low or "visual reviewer produced no" in r_low
+    ) and not debate_stuck
+    visual_blocked = (
+        "visual issues remain" in r_low or "visual reviewer produced no" in r_low
+    ) and not debate_stuck
+    # Item 16: when debate_stuck is true, force the remaining substring flags
+    # False together (intake_escalation and test_escalation were computed above
+    # from reason.lower() — re-gate them here so the prefix gate is total).
+    if debate_stuck:
+        intake_escalation = False
+        test_escalation = False
     # A router crash is the only path into escalate() with state["escalation"]
     # empty (the router cannot set state — it returns "escalate" and the graph
     # routes here). Checked first so the plain-language router reason (which may
@@ -698,6 +732,10 @@ def escalate(state):
                 "test_fix_failures": [],
                 "test_fix_summary": "",
                 "redo_debate": True,
+                # Item 18: reset the cap bonus so a redo after a prior "continue"
+                # always starts from the unmodified default, regardless of which
+                # escalation triggered it (debate-cap or debate-stuck).
+                "debate_round_bonus": 0,
                 "degradations": [],
                 "journal": [
                     f"escalation resolved: {answer} "
@@ -758,10 +796,10 @@ def escalate(state):
         ev.emit("escalation_resolved", tid, "escalate", f"answered {answer!r}; was: {reason}")
         return delta
 
-    final_test_escalation = "final test gate" in r_low
+    final_test_escalation = "final test gate" in r_low and not debate_stuck
     crash_escalation = (
         "crashed" in r_low or "killed by signal" in r_low or "agent-daemon crash" in r_low
-    )
+    ) and not debate_stuck
 
     if final_test_escalation:
         if ans in ("stop", "no", "abort", "cancel"):

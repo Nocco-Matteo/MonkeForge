@@ -156,6 +156,60 @@ def _collapse_round(round_num: int, sections: list[tuple[str, str]]) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def stuck_claims(debate_text: str, k: int) -> list[str]:
+    """Detect BLOCKER claims repeated across the last ``k`` consecutive rounds.
+
+    A claim is "stuck" when it is raised as a ``[BLOCKER]`` in each of the last
+    ``k`` rounds (after the verdict filter — a critic who APPROVE/APPROVE_WITH_CHANGES
+    is shipping, so any ``[BLOCKER]`` token in that section references a resolved
+    or prior item and is excluded from the stuck scan, mirroring
+    ``nodes.debate._open_blocker_count``).
+
+    Within each round, only the LAST section per critic name is scanned (matches
+    ``_collapse_round``'s "last wins" philosophy — a reviewer re-critiquing in
+    the same round supersedes the earlier pass). ``[SUGGESTION]`` raises are
+    never considered (item 2).
+
+    Returns ``[]`` when ``k < 1`` or when fewer than ``k`` rounds exist.
+    """
+    if k < 1:
+        return []
+    text = debate_text or ""
+    if not text.strip():
+        return []
+    _preamble, rounds = _parse_rounds(text)
+    if len(rounds) < k:
+        return []
+
+    recent = rounds[-k:]
+    per_round_claims: list[set[str]] = []
+    for _rn, sections in recent:
+        # Last section per critic name within this round (item 3).
+        last_body: dict[str, str] = {}
+        for critic, body in sections:
+            if critic in _CRITICS:
+                last_body[critic] = body
+        round_claims: set[str] = set()
+        for critic, body in last_body.items():
+            # Item 4: exclude APPROVE / APPROVE_WITH_CHANGES sections.
+            if parse_verdict(body) in ("APPROVE", "APPROVE_WITH_CHANGES"):
+                continue
+            # Item 2: only BLOCKER raises (skip SUGGESTION).
+            for m in _RAISE_LINE_RE.finditer(body):
+                if m.group(1).upper() == "BLOCKER":
+                    claim = _normalize_claim(_clean_claim(m.group(2)))
+                    if claim:
+                        round_claims.add(claim)
+        per_round_claims.append(round_claims)
+
+    if not per_round_claims:
+        return []
+    stuck = per_round_claims[0]
+    for claims in per_round_claims[1:]:
+        stuck = stuck & claims
+    return sorted(stuck)
+
+
 def condense(text: str, keep_recent: int) -> str:
     """Collapse older rounds of a debate file, keeping the last ``keep_recent`` verbatim.
 
