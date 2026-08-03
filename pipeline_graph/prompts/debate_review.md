@@ -12,6 +12,10 @@ deduplicated — each raised item once, with its status).
 {debate_ledger}
 </debate_ledger>
 
+<brief>
+{brief}
+</brief>
+
 CRITICAL: <plan> is the CURRENT plan — the only version you review. The
 debate history contains discussions of PREVIOUS versions, including quotes of
 old text that was broken and later fixed. Never raise a blocker based on text

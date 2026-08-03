@@ -13,6 +13,10 @@ Verified technical limits so far: {tech_limits}
 {debate_history}
 </debate_history>
 
+<brief>
+{brief}
+</brief>
+
 THE DESIGNER IS AUTHORITATIVE ON UX. Treat a UX finding as a requirement to
 meet, not an opinion to argue. Fix the plan to satisfy it. You may only decline
 a UX item if meeting it is blocked by a real technical constraint — and then you

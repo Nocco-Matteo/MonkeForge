@@ -15,6 +15,10 @@ Technical limits certified so far: {tech_limits}
 {debate_ledger}
 </debate_ledger>
 
+<brief>
+{brief}
+</brief>
+
 The manifesto is your rubric. Judge the plan's user-facing design against its
 six principles, in this order, each COMPLIANT or VIOLATED:
  P1 Mechanical empathy — does the UI speak the user's model, not the schema's?
