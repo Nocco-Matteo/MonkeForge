@@ -42,21 +42,27 @@ TECH_LIMIT_LINE_RE = re.compile(
 )
 
 # Raise lines in critic sections: `[BLOCKER] <claim>` or `[SUGGESTION] <claim>`,
-# optionally wrapped in markdown bold (`**[BLOCKER] foo**`).
+# optionally carrying a provenance suffix (`[BLOCKER:PLAN]` / `[BLOCKER:REQUIREMENTS]`)
+# between the severity tag and the claim, and optionally wrapped in markdown bold
+# (`**[BLOCKER] foo**`). Group 1 = severity, group 2 = provenance (optional, None
+# when absent — callers default to "PLAN"), group 3 = claim.
 _RAISE_LINE_RE = re.compile(
-    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)\]\s*(.+?)\s*\*{0,2}\s*$",
+    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*(.+?)\s*\*{0,2}\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
-# `### [SEVERITY] <claim>` header in Reply/Proposer sections (explicit preferred form).
+# `### [SEVERITY] <claim>` header in Reply/Proposer sections (explicit preferred
+# form). Same 3-group structure as _RAISE_LINE_RE (group 2 = optional provenance).
 _HEADER_CLAIM_RE = re.compile(
-    r"^##+\s*\[(BLOCKER|SUGGESTION)\]\s*(.+?)\s*$",
+    r"^##+\s*\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*(.+?)\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
-# `[SEVERITY] <claim>` inline tag line in Reply/Proposer sections (primary matcher).
+# `[SEVERITY] <claim>` inline tag line in Reply/Proposer sections (primary
+# matcher). Same 3-group structure as _RAISE_LINE_RE (group 2 = optional
+# provenance).
 _TAG_CLAIM_RE = re.compile(
-    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)\]\s*(.+?)\s*\*{0,2}\s*$",
+    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*(.+?)\s*\*{0,2}\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -148,11 +154,26 @@ def _collapse_round(round_num: int, sections: list[tuple[str, str]]) -> str:
     if not order:
         return f"[Round {round_num} — (no critic section) — condensed]\n\n"
 
-    lines = [
-        f"[Round {round_num} — {critic}: {parse_verdict(last_body[critic])}, "
-        f"{count_blockers(last_body[critic])} blockers, {res} — condensed]"
-        for critic in order
-    ]
+    lines = []
+    for critic in order:
+        verdict = parse_verdict(last_body[critic])
+        # Item 28: verdict-gate the blocker count. Under APPROVE /
+        # APPROVE_WITH_CHANGES the critic is shipping, so any [BLOCKER] token
+        # in that section references a resolved or prior item — counting it
+        # would inflate the condensed marker with now-resolved blockers
+        # (mirrors nodes.debate._open_blocker_count and the stuck_claims
+        # verdict filter). This was a pre-existing display bug that Batch 3's
+        # extension of count_blockers to match [BLOCKER:PLAN]/[BLOCKER:REQUIREMENTS]
+        # would otherwise make worse (counting provenance-tagged, resolved
+        # blockers as open).
+        n_blockers = (
+            0 if verdict in ("APPROVE", "APPROVE_WITH_CHANGES")
+            else count_blockers(last_body[critic])
+        )
+        lines.append(
+            f"[Round {round_num} — {critic}: {verdict}, "
+            f"{n_blockers} blockers, {res} — condensed]"
+        )
     return "\n".join(lines) + "\n\n"
 
 
@@ -197,7 +218,8 @@ def stuck_claims(debate_text: str, k: int) -> list[str]:
             # Item 2: only BLOCKER raises (skip SUGGESTION).
             for m in _RAISE_LINE_RE.finditer(body):
                 if m.group(1).upper() == "BLOCKER":
-                    claim = _normalize_claim(_clean_claim(m.group(2)))
+                    # group(3) is the claim (group(2) is the optional provenance).
+                    claim = _normalize_claim(_clean_claim(m.group(3)))
                     if claim:
                         round_claims.add(claim)
         per_round_claims.append(round_claims)
@@ -208,6 +230,60 @@ def stuck_claims(debate_text: str, k: int) -> list[str]:
     for claims in per_round_claims[1:]:
         stuck = stuck & claims
     return sorted(stuck)
+
+
+def latest_requirements_blockers(debate_text: str) -> list[str]:
+    """Return the claims from ``[BLOCKER:REQUIREMENTS]`` lines in the last round.
+
+    Item 27: a REQUIREMENTS-provenanced blocker is one the critic believes
+    belongs to the brief, not the plan — the debate cannot fix it by iterating
+    on the plan, so the run should escalate to a human (amend the brief, then
+    redo from plan) instead of burning more rounds.
+
+    Within the last round, only the LAST section per critic name is scanned
+    (matches ``_collapse_round``'s / ``stuck_claims``'s "last wins" philosophy).
+    Sections whose verdict is ``APPROVE`` or ``APPROVE_WITH_CHANGES`` are
+    skipped: a shipping critic's ``[BLOCKER:REQUIREMENTS]`` token references a
+    resolved or prior item, not a live requirements blocker (mirrors
+    ``stuck_claims``'s verdict filter and ``_open_blocker_count``).
+
+    Returns the cleaned claims in first-seen order. Empty/None input or no
+    rounds → ``[]``.
+    """
+    text = debate_text or ""
+    if not text.strip():
+        return []
+    _preamble, rounds = _parse_rounds(text)
+    if not rounds:
+        return []
+
+    _rn, sections = rounds[-1]
+    last_body: dict[str, str] = {}
+    order: list[str] = []
+    for critic, body in sections:
+        if critic in _CRITICS:
+            if critic not in last_body:
+                order.append(critic)
+            last_body[critic] = body
+
+    claims: list[str] = []
+    seen: set[str] = set()
+    for critic in order:
+        body = last_body[critic]
+        if parse_verdict(body) in ("APPROVE", "APPROVE_WITH_CHANGES"):
+            continue
+        for m in _RAISE_LINE_RE.finditer(body):
+            if m.group(1).upper() != "BLOCKER":
+                continue
+            provenance = (m.group(2) or "PLAN").upper()
+            if provenance != "REQUIREMENTS":
+                continue
+            claim = _clean_claim(m.group(3))
+            norm = _normalize_claim(claim)
+            if norm and norm not in seen:
+                seen.add(norm)
+                claims.append(claim)
+    return claims
 
 
 def condense(text: str, keep_recent: int) -> str:
@@ -279,17 +355,17 @@ def _match_claim_in_block(preceding: str, block: str) -> tuple[str | None, str |
     # (i) header
     headers = _HEADER_CLAIM_RE.findall(preceding)
     if headers:
-        sev, claim = headers[-1]
+        sev, _prov, claim = headers[-1]
         return _clean_claim(claim), sev.upper()
     # (ii) inline tag in preceding text
     tags = _TAG_CLAIM_RE.findall(preceding)
     if tags:
-        sev, claim = tags[-1]
+        sev, _prov, claim = tags[-1]
         return _clean_claim(claim), sev.upper()
     # Also check the block itself (tag at/preceding block start).
     tags_in_block = _TAG_CLAIM_RE.findall(block)
     if tags_in_block:
-        sev, claim = tags_in_block[0]
+        sev, _prov, claim = tags_in_block[0]
         return _clean_claim(claim), sev.upper()
     return None, None
 
@@ -441,7 +517,10 @@ def _process_critic_section(
         m_raise = _RAISE_LINE_RE.match(line)
         if m_raise:
             sev = m_raise.group(1).upper()
-            claim = _clean_claim(m_raise.group(2))
+            # Item 25: provenance from group(2), defaulting to "PLAN" when the
+            # optional :PLAN/:REQUIREMENTS suffix is absent.
+            provenance = (m_raise.group(2) or "PLAN").upper()
+            claim = _clean_claim(m_raise.group(3))
             norm = _normalize_claim(claim)
             key = (norm, sev, critic_upper)
             if key not in items:
@@ -449,6 +528,7 @@ def _process_critic_section(
                     "round": round_num,
                     "claim": claim,
                     "status": "OPEN",
+                    "provenance": provenance,
                 }
                 items_order.append(key)
             else:

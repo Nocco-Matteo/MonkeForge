@@ -480,6 +480,22 @@ def _escalation_options(reason: str) -> dict:
             "ok": "proceed to the verdict with the plan as it stands (the stuck "
             "blocker is recorded in the report)",
         }
+    if r.startswith("debate requirements:"):
+        # Item 33: a REQUIREMENTS-provenanced blocker is unfixable by debate
+        # iteration — the issue lives in the brief, not the plan. Only two
+        # sane choices: stop to amend the brief and regenerate the plan, or
+        # proceed to the verdict with the requirements blocker recorded.
+        # No "skip"/"continue"/"redo": continuing or redoing the debate on the
+        # same brief cannot fix a brief-level issue, and force-closing would
+        # rubber-stamp a plan the critics flagged as built on wrong requirements.
+        return {
+            "stop": "stop the run — the blocker is in the REQUIREMENTS (the brief), "
+            "not the plan: amend the brief, then ./run.py redo <id> --from plan "
+            "to regenerate the plan from the corrected requirements",
+            "ok": "proceed to the verdict with the plan as it stands (the "
+            "REQUIREMENTS blocker is recorded in the report) — the bonus is "
+            "cleared so a later redo starts from the default cap",
+        }
     if "intake" in r or "interviewer" in r:
         return {
             "ok": "answer the questions in the intake file, then resume",
@@ -603,10 +619,15 @@ def escalate(state):
     # it forces the substring-based flags False (item 16) so the prefix-gate
     # menu (continue/redo/stop/ok) is the only one that fires — a partial gate
     # would reproduce the Round 3 substring-collision blocker.
+    # Item 34: the same prefix gate also matches "debate requirements:" — a
+    # REQUIREMENTS-provenanced escalation must suppress the same substring
+    # flags so only the stop/ok menu fires.
     debate_stuck = r_low.startswith("debate stuck:")
+    debate_requirements = r_low.startswith("debate requirements:")
+    debate_prefix = debate_stuck or debate_requirements
     ux_escalation = (
         ("ux" in r_low or "designer" in r_low) and "blocker" in r_low
-    ) and not debate_stuck
+    ) and not debate_prefix
     debate_escalation = "debate" in r_low
     # A render that could not run is retryable (fix the browser/stack, re-render);
     # a visual review that still has blockers is not — it ships or it doesn't.
@@ -615,14 +636,14 @@ def escalate(state):
         or "render command" in r_low
         or "no screenshots" in r_low
         or "cannot render" in r_low
-    ) and not debate_stuck
+    ) and not debate_prefix
     visual_blocked = (
         "visual issues remain" in r_low or "visual reviewer produced no" in r_low
-    ) and not debate_stuck
-    # Item 16: when debate_stuck is true, force the remaining substring flags
-    # False together (intake_escalation and test_escalation were computed above
-    # from reason.lower() — re-gate them here so the prefix gate is total).
-    if debate_stuck:
+    ) and not debate_prefix
+    # Item 16/34: when a debate prefix is true, force the remaining substring
+    # flags False together (intake_escalation and test_escalation were computed
+    # above from reason.lower() — re-gate them here so the prefix gate is total).
+    if debate_prefix:
         intake_escalation = False
         test_escalation = False
     # A router crash is the only path into escalate() with state["escalation"]
@@ -796,10 +817,10 @@ def escalate(state):
         ev.emit("escalation_resolved", tid, "escalate", f"answered {answer!r}; was: {reason}")
         return delta
 
-    final_test_escalation = "final test gate" in r_low and not debate_stuck
+    final_test_escalation = "final test gate" in r_low and not debate_prefix
     crash_escalation = (
         "crashed" in r_low or "killed by signal" in r_low or "agent-daemon crash" in r_low
-    ) and not debate_stuck
+    ) and not debate_prefix
 
     if final_test_escalation:
         if ans in ("stop", "no", "abort", "cancel"):
@@ -852,7 +873,25 @@ def escalate(state):
             f"escalation resolved: {answer} (proceeding with UX blockers UNRESOLVED)"
         ]
     else:
-        delta["journal"] = [f"escalation resolved: {answer}"]
+        # Item 35: when the reason carries the "debate requirements:" prefix
+        # and the human answered "ok" (proceed to the verdict), clear the
+        # debate-round bonus so a later redo starts from the default cap, and
+        # make sure redo_debate is False so the graph routes to the verdict
+        # rather than restarting the debate. A "debate requirements:" escalation
+        # that reaches this generic tail with "ok" has already been validated
+        # against the stop/ok menu (no continue/redo/skip keys), so the only
+        # other accepted answer is "stop" — handled by the universal stop
+        # branch above.
+        if debate_requirements and ans == "ok":
+            delta["debate_round_bonus"] = 0
+            delta["redo_debate"] = False
+            delta["journal"] = [
+                f"escalation resolved: {answer} "
+                "(proceeding to the verdict with the REQUIREMENTS blocker recorded; "
+                "debate bonus cleared)"
+            ]
+        else:
+            delta["journal"] = [f"escalation resolved: {answer}"]
     ev.emit(
         "escalation_resolved",
         tid,

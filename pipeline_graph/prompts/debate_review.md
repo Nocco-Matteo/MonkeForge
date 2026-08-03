@@ -47,6 +47,17 @@ or makes the plan unimplementable as written. Everything else is [SUGGESTION].
 Remediating a blocker costs roughly 10x what raising it costs, so a wrong
 blocker is expensive. When unsure, use [SUGGESTION].
 
+PROVENANCE TAG — every [BLOCKER] item MUST carry a provenance suffix that says
+WHERE the issue lives, so the pipeline can route a brief-level blocker to a
+human instead of burning more debate rounds the plan cannot fix. Use one of:
+  [BLOCKER:PLAN]          the issue is in the PLAN — the proposer can fix it
+  [BLOCKER:REQUIREMENTS]  the issue is in the BRIEF/REQUIREMENTS — the plan
+                          cannot fix it; the human must amend the brief and
+                          regenerate the plan
+  [BLOCKER]               bare form — treated as [BLOCKER:PLAN] (the default);
+                          use the explicit suffix when you can
+[SUGGESTION] items do not take a provenance suffix.
+
 SCOPE: regression risk, missed edge cases, feasibility, performance, security,
 and whether the batch split is coherent (including backwards dependencies).
 NOT: architecture you would have chosen differently, naming, formatting.
@@ -71,7 +82,7 @@ OUTPUT -> print the review to stdout (the pipeline appends it to the debate file
 "## Round {round} — Reviewer":
   VERDICT: APPROVE | APPROVE_WITH_CHANGES | REJECT
   then at most 5 items, max 4 lines each:
-    [BLOCKER|SUGGESTION] <one-line claim>
+    [BLOCKER:PLAN|BLOCKER:REQUIREMENTS|BLOCKER|SUGGESTION] <one-line claim>
     Evidence: <file:line or PLAN section>
     Impact: <what breaks, concretely>
   then any `TECH-LIMIT VERIFIED:` / `TECH-LIMIT REJECTED:` lines.

@@ -175,7 +175,10 @@ class TestCondense:
             "[BLOCKER] one — RESOLVED by doing X\n"
         )
         out = condenser.condense(text, keep_recent=0)
-        marker = ("[Round 1 — Reviewer: APPROVE_WITH_CHANGES, 2 blockers, "
+        # Item 28: APPROVE_WITH_CHANGES is a shipping verdict → 0 blockers in
+        # the marker, even though the section has 2 [BLOCKER] tokens (they
+        # reference resolved/prior items, not live blockers).
+        marker = ("[Round 1 — Reviewer: APPROVE_WITH_CHANGES, 0 blockers, "
                   "all RESOLVED — condensed]")
         assert marker in out
 
@@ -199,7 +202,8 @@ class TestCondense:
             "## Round 1 — Reply\n\n[BLOCKER] a — RESOLVED\n"
         )
         out = condenser.condense(text, keep_recent=0)
-        reviewer_marker = ("[Round 1 — Reviewer: APPROVE_WITH_CHANGES, 1 blockers, "
+        # Item 28: APPROVE_WITH_CHANGES → 0 blockers; REJECT → counts blockers.
+        reviewer_marker = ("[Round 1 — Reviewer: APPROVE_WITH_CHANGES, 0 blockers, "
                            "all RESOLVED — condensed]")
         ux_marker = "[Round 1 — UX: REJECT, 1 blockers, all RESOLVED — condensed]"
         assert reviewer_marker in out

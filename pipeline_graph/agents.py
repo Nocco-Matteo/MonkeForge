@@ -379,7 +379,10 @@ def parse_verdict(text: str) -> str:
 
 
 def count_blockers(text: str) -> int:
-    return len(re.findall(r"\[BLOCKER\]", text or ""))
+    # Item 26: match the three tag forms — bare [BLOCKER], [BLOCKER:PLAN],
+    # [BLOCKER:REQUIREMENTS] — so a provenance-tagged blocker counts the same
+    # as a bare one.
+    return len(re.findall(r"\[BLOCKER(?::(?:PLAN|REQUIREMENTS))?\]", text or ""))
 
 
 def parse_not_met(text: str) -> list[str]:

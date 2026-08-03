@@ -115,6 +115,41 @@ def _check_early_escalation(debate_text: str, rnd: int) -> dict | None:
     }
 
 
+def _check_requirements_escalation(debate_text: str) -> dict | None:
+    """Detect a REQUIREMENTS-provenanced blocker in the latest round.
+
+    Item 29-31: a ``[BLOCKER:REQUIREMENTS]`` tag means the critic believes the
+    issue lives in the brief, not the plan — the debate cannot fix it by
+    iterating on the plan, so escalate immediately with a
+    ``"debate requirements:"`` prefix. The human gets the stop/ok menu (item
+    33): ``ok`` proceeds to the verdict (clearing the bonus so a later redo
+    starts from the default cap), ``stop`` ends the run so the brief can be
+    amended and the plan regenerated.
+
+    The ``condenser`` import is function-local to avoid the
+    ``condenser``↔``nodes.debate`` import cycle (condenser imports
+    ``TECH_LIMIT_RE`` from this module at load time) — the same load-bearing
+    pattern as ``_check_early_escalation``.
+    """
+    from ..condenser import latest_requirements_blockers
+
+    claims = latest_requirements_blockers(debate_text)
+    if not claims:
+        return None
+    joined = "; ".join(claims)
+    return {
+        "escalation": (
+            f"debate requirements: {len(claims)} blocker(s) tagged as "
+            f"belonging to the REQUIREMENTS (the brief), not the plan — "
+            f"the debate cannot fix them by iterating on the plan: {joined}"
+        ),
+        "debate_next": "summary",
+        "journal": [
+            f"debate: REQUIREMENTS blocker(s) — {len(claims)} item(s): {joined}"
+        ],
+    }
+
+
 def debate_tech(state):
     """The technical critic. Critiques the plan AND certifies TECH-LIMIT claims.
 
@@ -192,8 +227,16 @@ def debate_tech(state):
         # so a stuck debate escalates with the "debate stuck:" menu instead of
         # burning the remaining rounds. Takes precedence over the normal
         # converge/reply/escalate decision.
+        # Item 30: _check_requirements_escalation takes precedence over
+        # _check_early_escalation when both fire — a REQUIREMENTS blocker is
+        # unfixable by debate iteration, so the "debate requirements:" menu
+        # (stop/ok) is the one the human needs, not the continue/redo/stop/ok
+        # stuck menu.
         early = _check_early_escalation(text, rnd)
-        if early:
+        req = _check_requirements_escalation(text)
+        if req:
+            decision = req
+        elif early:
             decision = early
         else:
             # _debate_decision can return its own journal on verification paths
@@ -291,7 +334,7 @@ def debate_ux(state):
     with debate_path.open("a") as f:
         f.write(f"\n\n## Round {rnd} — UX\n\n{review.strip()}\n")
 
-    blockers = count_blockers(review)
+    blockers = 0 if verdict in ("APPROVE", "APPROVE_WITH_CHANGES") else count_blockers(review)
 
     # Rubber-stamp guard: on a re-review, a bare APPROVE that does not walk the
     # blockers it raised before is the failure we saw on 009 (a 168-byte
@@ -329,9 +372,15 @@ def debate_ux(state):
     # Stuck-claim early escalation (item 11): checked after the debate file
     # append (so the just-filed UX section is in the scanned text) and before
     # _debate_decision. Takes precedence over the normal decision.
+    # Item 30: _check_requirements_escalation takes precedence over
+    # _check_early_escalation when both fire (same precedence rule as
+    # debate_tech).
     debate_text = read_if_exists(debate_path)
     early = _check_early_escalation(debate_text, rnd)
-    if early:
+    req = _check_requirements_escalation(debate_text)
+    if req:
+        delta.update(req)
+    elif early:
         delta.update(early)
     else:
         delta.update(_debate_decision({**state, **delta}, is_verification=is_verification))

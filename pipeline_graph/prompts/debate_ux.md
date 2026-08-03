@@ -61,6 +61,17 @@ as a [BLOCKER] — do not soften it because the proposer merely claimed difficul
 manifesto violation on a new surface with no accepted technical limit.
 Everything else is [SUGGESTION]. Style and taste are never blockers.
 
+PROVENANCE TAG — every [BLOCKER] item MUST carry a provenance suffix that says
+WHERE the issue lives, so the pipeline can route a brief-level blocker to a
+human instead of burning more debate rounds the plan cannot fix. Use one of:
+  [BLOCKER:PLAN]          the issue is in the PLAN — the proposer can fix it
+  [BLOCKER:REQUIREMENTS]  the issue is in the BRIEF/REQUIREMENTS — the plan
+                          cannot fix it; the human must amend the brief and
+                          regenerate the plan
+  [BLOCKER]               bare form — treated as [BLOCKER:PLAN] (the default);
+                          use the explicit suffix when you can
+[SUGGESTION] items do not take a provenance suffix.
+
 Never reopen an item marked RESOLVED in a prior round unless the new plan
 reintroduces the problem — then raise it as NEW.
 
@@ -87,7 +98,7 @@ Print exactly this block and nothing else around it:
   then, on rounds after the first, one RESOLVED/STILL OPEN line per prior blocker
   (see RE-REVIEW above);
   then at most 5 items, max 3 lines each:
-    [BLOCKER|SUGGESTION] <one-line claim>
+    [BLOCKER:PLAN|BLOCKER:REQUIREMENTS|BLOCKER|SUGGESTION] <one-line claim>
     Evidence: <file:line or PLAN section> · Principle: <Pn>
     Consequence: <what the user experiences>
   APPROVE only when every blocker is resolved or accepted under a verified limit.

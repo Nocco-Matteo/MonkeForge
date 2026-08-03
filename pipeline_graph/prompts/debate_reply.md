@@ -30,9 +30,19 @@ reading.
 METHOD, per item:
 1. Open the cited file/section and check the claim yourself. State what you
    found before deciding.
-2. Begin each item answer with the reviewer's exact severity tag and claim
-   text, copied verbatim from the critic's block (e.g. `[BLOCKER] <claim>` or
-   `[SUGGESTION] <claim>`), so the pipeline can match it to the raised item.
+2. Begin each item answer with the reviewer's exact severity tag AND provenance
+   suffix AND claim text, copied verbatim from the critic's block — one of:
+     `[BLOCKER:PLAN] <claim>`
+     `[BLOCKER:REQUIREMENTS] <claim>`
+     `[BLOCKER] <claim>`        (bare form — copy it as-is)
+     `[SUGGESTION] <claim>`
+   The pipeline matches your reply to the raised item by this tag, so the
+   severity AND the provenance suffix must be copied verbatim. If the critic
+   tagged a blocker `[BLOCKER:REQUIREMENTS]`, your reply MUST begin with
+   `[BLOCKER:REQUIREMENTS] <claim>` — do NOT downgrade it to `[BLOCKER]` or
+   `[BLOCKER:PLAN]`, and do NOT drop the suffix. A REQUIREMENTS blocker is one
+   you believe lives in the brief, not the plan: say so explicitly in your
+   answer (the human will be asked to amend the brief, not you to fix the plan).
    Then answer exactly one of:
    ACCEPTED  — the claim holds; apply the minimal fix to the plan.
    REJECTED  — the claim is factually wrong; quote the evidence that refutes it.
@@ -51,9 +61,11 @@ CONSTRAINTS:
 OUTPUT -> print the reply to stdout (the pipeline appends it to the debate file
 automatically) under "## Round {round} — Proposer", in this order:
 1. Technical items first, then UX items, then any TECH-LIMIT lines — one block
-   per item. Each block begins with the reviewer's exact `[SEVERITY] <claim>`
-   tag (copied verbatim from the critic's block), then the ACCEPTED / REJECTED
-   / PARTIAL and RESOLVED markers as before.
+   per item. Each block begins with the reviewer's exact tag, copied verbatim
+   from the critic's block — one of `[BLOCKER:PLAN] <claim>`,
+   `[BLOCKER:REQUIREMENTS] <claim>`, `[BLOCKER] <claim>`, or
+   `[SUGGESTION] <claim>` (severity AND provenance suffix verbatim) — then the
+   ACCEPTED / REJECTED / PARTIAL and RESOLVED markers as before.
 2. Then the COMPLETE updated plan (the full plan text with your fixes applied,
    not a diff), enclosed between these exact marker lines on their own:
    === PLAN START ===

@@ -9,7 +9,7 @@
   ./run.py graph            # print the graph as mermaid
 """
 from __future__ import annotations
-import argparse, contextlib, json, os, shutil, subprocess, sys
+import argparse, contextlib, json, os, re, shutil, subprocess, sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -171,6 +171,10 @@ def _extract_debate_blockers(task_id: str) -> str:
     lines = debate.read_text().splitlines()
     # Find the last "## Round N — Reviewer" or "## Round N — UX" section
     # and collect [BLOCKER] lines from there until the next section header.
+    # Item 36: match the three provenance tag forms — bare [BLOCKER],
+    # [BLOCKER:PLAN], [BLOCKER:REQUIREMENTS] — so a provenance-tagged blocker
+    # surfaces in the Discord card the same as a bare one.
+    blocker_re = re.compile(r"\[BLOCKER(?::(?:PLAN|REQUIREMENTS))?\]", re.IGNORECASE)
     blockers: list[str] = []
     in_last_section = False
     for line in lines:
@@ -181,7 +185,7 @@ def _extract_debate_blockers(task_id: str) -> str:
         if in_last_section and line.startswith("## "):
             in_last_section = False
             continue
-        if in_last_section and "[BLOCKER]" in line:
+        if in_last_section and blocker_re.search(line):
             blockers.append(line.strip())
     return "\n".join(blockers[:8])  # cap at 8 for Discord embed limits
 

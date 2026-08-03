@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -263,6 +264,10 @@ async def debate(interaction: discord.Interaction, task_id: str):
     lines = debate_path.read_text().splitlines()
     # Collect the LAST section for each reviewer type (Reviewer, UX).
     # Earlier rounds' blockers were likely resolved — showing them is confusing.
+    # Item 37: match the three provenance tag forms — bare [BLOCKER],
+    # [BLOCKER:PLAN], [BLOCKER:REQUIREMENTS] — so a provenance-tagged blocker
+    # surfaces in the Discord card the same as a bare one.
+    blocker_re = re.compile(r"\[BLOCKER(?::(?:PLAN|REQUIREMENTS))?\]", re.IGNORECASE)
     last_sections: dict[str, list[str]] = {}
     cur_type = None
     cur_lines: list[str] = []
@@ -279,7 +284,7 @@ async def debate(interaction: discord.Interaction, task_id: str):
             cur_type = None
             cur_lines = []
             continue
-        if cur_type and ("[BLOCKER]" in line or "VERDICT:" in line or line.startswith("RESOLVED") or line.startswith("STILL OPEN")):
+        if cur_type and (blocker_re.search(line) or "VERDICT:" in line or line.startswith("RESOLVED") or line.startswith("STILL OPEN")):
             cur_lines.append(line.strip())
     if cur_type and cur_lines:
         last_sections[cur_type] = cur_lines
