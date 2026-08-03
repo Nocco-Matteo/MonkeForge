@@ -58,41 +58,60 @@ Leave each `**A:**` empty; the human fills them in. Then end your message with
 exactly:
     INTAKE: QUESTIONS <n>
 
-(B) Nothing material is unresolved. WRITE {brief_path} with these sections:
+(B) Nothing material is unresolved. WRITE {brief_path} as a markdown contract
+with these exact section headers (a chat summary is not enough — the file must
+contain them):
 
-    0. On its own line near the top, exactly:
-       UI-SURFACE: yes | no
+    UI-SURFACE: yes | no
+       On its own line near the top.
        "yes" if this task changes anything a user sees or interacts with (a
        screen, a component, a flow, copy, an error state); "no" for pure
        backend/data/tooling work. This decides whether a UX designer joins the
        plan debate, so when genuinely unsure, answer yes.
-    1. Goal — what must be true when this is done, max 3 lines.
-    2. Corrections to the request — every place the seed request was wrong,
-       incomplete or over-generalised, stated as a correction with its evidence,
-       so the human can object. If there are none, say "none" and mean it.
-    3. Rules / domain data — anything transcribed from the references, with the
-       source named. Transcribe values as tables, not prose. Where a sequence is
-       not derivable by formula, say so explicitly.
-    4. Codebase anchors — the files and symbols this will touch, verified to
-       exist, with the warning that code is ground truth for signatures while
-       this brief is ground truth for intent.
-    4b. Architecture docs to follow — name the specific docs the implementer MUST
-       read for this task (from CLAUDE.md's index): frontend/ARCHITECTURE.md +
-       frontend/AGENTS.md for UI, the matching {docs_dir}/<subsystem>.md for a backend
-       domain, {docs_dir}/UX-MANIFESTO.md for UI behaviour. List only the relevant
+
+    ## 1. Goal
+       What must be true when this is done, max 3 lines.
+
+    ## 2. Corrections to the request
+       Every place the seed request was wrong, incomplete or over-generalised,
+       stated as a correction with its evidence, so the human can object. If
+       there are none, say "none" and mean it.
+
+    ## 3. Rules / domain data
+       Anything transcribed from the references, with the source named.
+       Transcribe values as tables, not prose. Where a sequence is not
+       derivable by formula, say so explicitly.
+
+    ## 4. Codebase anchors
+       The files and symbols this will touch, verified to exist, with the
+       warning that code is ground truth for signatures while this brief is
+       ground truth for intent.
+
+    ## 4b. Architecture docs to follow
+       Name the specific docs the implementer MUST read for this task (from
+       CLAUDE.md's index): frontend/ARCHITECTURE.md + frontend/AGENTS.md for
+       UI, the matching {docs_dir}/<subsystem>.md for a backend domain,
+       {docs_dir}/UX-MANIFESTO.md for UI behaviour. List only the relevant
        ones, so the implementer reads what governs this work, not all of them.
-    5. Definition of done — observable, one line each. Each item must state
-       its verification method (the command, check, or human action that
-       proves it met) inline, e.g. "X — verified by `pytest tests/test_x.py`"
-       or "Y — verified by opening /route and confirming Z". A DoD item that
-       names no verification method is itself a REQUIREMENTS blocker: the
-       proposer cannot prove it done, so the plan debate will reject the brief
-       and re-escalate here. Do not leave verification implicit.
-    6. Scope: in / out — explicit non-goals, not silence.
-    7. Manual acceptance — the scenarios a human should walk, including one that
-       exercises each exception found under section 2.
-    8. Unverified assumptions — anything you could not check, including
-       references you could not read.
+
+    ## 5. Definition of done
+       Observable, one line each. Each item must state its verification method
+       (the command, check, or human action that proves it met) inline, e.g.
+       "X — verified by `pytest tests/test_x.py`" or "Y — verified by opening
+       /route and confirming Z". A DoD item that names no verification method
+       is itself a REQUIREMENTS blocker: the proposer cannot prove it done, so
+       the plan debate will reject the brief and re-escalate here. Do not leave
+       verification implicit.
+
+    ## 6. Scope: in / out
+       Explicit non-goals, not silence.
+
+    ## 7. Manual acceptance
+       The scenarios a human should walk, including one that exercises each
+       exception found under section 2.
+
+    ## 8. Unverified assumptions
+       Anything you could not check, including references you could not read.
 
 Then end your message with exactly:
     INTAKE: COMPLETE
@@ -104,3 +123,12 @@ RULES
   cheaply, write the brief and record them under Unverified assumptions.
 - The brief is a contract, not a summary: no "etc.", no "and so on", no
   "refactor as needed". Enumerate.
+- INTAKE: COMPLETE is valid only after the brief file itself contains the full
+  (B) document (UI-SURFACE, ## 1. Goal, …, ## 8. Unverified assumptions). A
+  chat status note ("Round N complete…", "the contract brief is at…") is NOT
+  a brief — never end with COMPLETE unless you wrote those sections into
+  `{brief_path}` (or printed the full document to stdout for materialization).
+- If the seed at `{brief_path}` is already structured, you still rewrite it into
+  the (B) contract form (corrections, verified anchors, observable DoD). Leaving
+  the seed untouched and saying COMPLETE is a failure; overwriting it with a
+  summary is also a failure.

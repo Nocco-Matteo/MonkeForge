@@ -148,27 +148,33 @@ def judge(state):
 
 
 def checkpoint_plan(state):
-    """Human gate after the verdict (skipped in AUTO).
+    """Human gate after the verdict (skipped only in AUTO).
 
-    Suppression has two independent conditions, checked in order (C6):
-      1. ``auto`` is true  → skip (the original behaviour).
-      2. ``effort_checkpoint_shown`` is true AND ``effort_forced`` is false
-         → skip: the human already chose an effort level at the effort
-         checkpoint, so a second confirmation back-to-back is noise.
-    When ``effort_forced`` is true (--effort flag) the effort checkpoint was
-    short-circuited (no interrupt), so this gate is the human's only chance to
-    approve the plan — it still fires.
+    Effort choice and plan approval are different questions:
+      - ``checkpoint_effort`` (post-plan): how hard should the council work?
+      - ``checkpoint_plan`` (post-judge): may we implement these batches?
+
+    A prior interactive effort pick must NOT suppress this gate — that was the
+    018 failure mode where implement started without a human "plan approved?".
+    ``--effort`` / ``effort_forced`` also leave this gate on (it is then the
+    only post-verdict confirmation).
     """
     if state.get("auto"):
         return {"journal": ["checkpoint plan: auto, skipped"]}
-    if state.get("effort_checkpoint_shown") and not state.get("effort_forced"):
-        return {"journal": ["checkpoint plan: effort checkpoint already shown, skipped"]}
+    tid = state["task_id"]
     decision = interrupt(
         {
             "stage": "plan approved?",
-            "task": state["task_id"],
+            "task": tid,
+            "reason": "review FINAL + batches, then approve to start implement",
             "batches": [f"{b['n']}: {b['scope']}" for b in state.get("batches", [])],
-            "final": str(C.FINAL / f"FINAL-{state['task_id']}.md"),
+            "plan": str(C.PLANS / f"PLAN-{tid}.md"),
+            "final": str(C.FINAL / f"FINAL-{tid}.md"),
+            "answers": {
+                "ok": "approve the plan and start implement",
+                "yes": "same as ok",
+                "approve": "same as ok",
+            },
         }
     )
     if str(decision).strip().lower() not in ("ok", "yes", "approve", "y"):

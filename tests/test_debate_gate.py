@@ -122,6 +122,38 @@ class EscalationReturnToJudge(unittest.TestCase):
                  "debate_round": 2}
         self.assertEqual(G.route_escalation_return(state), "summary")
 
+    def test_ok_clears_bonus_so_router_goes_to_summary_not_debate(self):
+        # Regression (018): prior "continue" left debate_round_bonus=2; "ok"
+        # must clear it (escalate) so this router sees summary, not debate_tech.
+        from pipeline_graph.nodes import common as _common
+        from unittest.mock import patch
+
+        reason = (
+            "debate exhausted 5 rounds + verification: 1 technical blocker(s) "
+            "confirmed by the critics after the proposer's final reply"
+        )
+        with patch.object(_common, "interrupt", return_value="ok"), \
+             patch.object(_common.ev, "emit"), \
+             patch.object(_common.ev, "open_escalation", return_value=True), \
+             patch.object(_common.ev, "close_escalation"):
+            delta = _common.escalate({
+                "task_id": "018",
+                "escalation": reason,
+                "journal": [],
+                "debate_round_bonus": 2,
+                "debate_round": 6,
+            })
+        state = {
+            "branch": "feature/task-018",
+            "intake_done": True,
+            "batches": [],
+            "debate_round": 6,
+            "debate_round_bonus": delta["debate_round_bonus"],
+            "redo_debate": delta.get("redo_debate"),
+        }
+        self.assertEqual(delta["debate_round_bonus"], 0)
+        self.assertEqual(G.route_escalation_return(state), "summary")
+
     def test_stale_batches_would_skip_summary(self):
         # Documents the bug the redo reset fixes: with batches still present the
         # router goes to implement, NOT summary — so redo must clear them.

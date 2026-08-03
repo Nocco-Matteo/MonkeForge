@@ -987,23 +987,28 @@ def escalate(state):
         )
         return delta
     else:
-        # Item 35: when the reason carries the "debate requirements:" prefix
-        # and the human answered "ok" (proceed to the verdict), clear the
-        # debate-round bonus so a later redo starts from the default cap, and
-        # make sure redo_debate is False so the graph routes to the verdict
-        # rather than restarting the debate. A "debate requirements:" escalation
-        # that reaches this generic tail with "ok" has already been validated
-        # against the stop/ok menu (no continue/redo/skip keys), so the only
-        # other accepted answer is "stop" — handled by the universal stop
-        # branch above.
-        if debate_requirements and ans == "ok":
+        # Proceed-to-verdict answers for any debate escalation must clear a
+        # leftover debate_round_bonus from an earlier "continue". Otherwise
+        # route_escalation_return sees a truthy bonus and re-enters debate_tech
+        # instead of summary — the 018 failure mode where "ok" after a prior
+        # "continue" restarted the debate.
+        # Also covers "debate requirements:" (item 35): clear bonus + redo_debate
+        # so the graph routes to the verdict rather than restarting.
+        if debate_escalation and ans in ("ok", "skip"):
             delta["debate_round_bonus"] = 0
             delta["redo_debate"] = False
-            delta["journal"] = [
-                f"escalation resolved: {answer} "
-                "(proceeding to the verdict with the REQUIREMENTS blocker recorded; "
-                "debate bonus cleared)"
-            ]
+            if debate_requirements:
+                delta["journal"] = [
+                    f"escalation resolved: {answer} "
+                    "(proceeding to the verdict with the REQUIREMENTS blocker "
+                    "recorded; debate bonus cleared)"
+                ]
+            else:
+                delta["journal"] = [
+                    f"escalation resolved: {answer} "
+                    "(proceeding to the verdict with the plan as it stands; "
+                    "debate bonus cleared)"
+                ]
         else:
             delta["journal"] = [f"escalation resolved: {answer}"]
     ev.emit(

@@ -254,6 +254,16 @@ def _print_pause(data: dict, task_id: str) -> None:
     print(f"  what to do: {_pause_reason(data)}")
     if data.get("context"):
         print(f"  context: {data['context']}")
+    # Plan / verdict artifacts the human should read before answering.
+    if data.get("plan"):
+        print(f"  plan: {data['plan']}")
+    if data.get("final"):
+        print(f"  final: {data['final']}")
+    batches = data.get("batches")
+    if isinstance(batches, list) and batches:
+        print("  batches:")
+        for b in batches:
+            print(f"    - {b}")
     options = _options_from_data(data)
     if options:
         print("  choices:")
@@ -581,6 +591,9 @@ def _drive(graph, task_id, payload):
                 router_error=router_error,
                 hint=data.get("hint", ""),
                 context=data.get("context", ""), blockers=blockers,
+                plan=data.get("plan", ""),
+                final=data.get("final", ""),
+                batches=data.get("batches") or [],
                 screens=str(C.SCREENS / f"task-{task_id}")
                         if "screenshot" in reason.lower()
                         or "visual" in reason.lower() else "")

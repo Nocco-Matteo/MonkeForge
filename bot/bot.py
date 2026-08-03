@@ -114,6 +114,17 @@ async def _post_escalation(channel, rec: dict):
     embed = discord.Embed(title=title, description=reason, color=0xE74C3C)
     if rec.get("hint"):
         embed.add_field(name="recommended", value=str(rec["hint"]), inline=False)
+    if rec.get("plan"):
+        embed.add_field(name="plan", value=str(rec["plan"])[:1024], inline=False)
+    if rec.get("final"):
+        embed.add_field(name="final", value=str(rec["final"])[:1024], inline=False)
+    batches = rec.get("batches") or []
+    if isinstance(batches, list) and batches:
+        embed.add_field(
+            name="batches",
+            value="\n".join(f"- {b}" for b in batches)[:1024],
+            inline=False,
+        )
     if rec.get("context"):
         embed.add_field(name="where", value=str(rec["context"])[:1024], inline=False)
     if blockers:

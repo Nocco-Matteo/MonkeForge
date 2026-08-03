@@ -11,7 +11,11 @@ from langgraph.types import interrupt
 from .. import config as C
 from .. import events as ev
 from ..agents import run_agent
-from ..intake_materialize import materialize_intake_output
+from ..intake_materialize import (
+    is_contract_brief,
+    materialize_intake_output,
+    missing_contract_sections,
+)
 from ..state import Conversation
 from .common import _dirty_blocks_interactive_init, _dirty_paths, _git, _rel
 
@@ -204,6 +208,8 @@ def intake_ask(state):
         }
 
     # Gemini prints to stdout only; GLM/Cursor may edit files directly — fill gaps.
+    # materialize refuses non-contract COMPLETE bodies so a chat summary cannot
+    # clobber a seed brief the agent already wrote (or left untouched).
     materialize_intake_output(
         tid,
         rnd,
@@ -215,6 +221,8 @@ def intake_ask(state):
     bf = brief_file(tid)
     now = bf.stat().st_mtime if bf.exists() else None
     fresh_brief = now is not None and now != before
+    brief_text = bf.read_text() if bf.exists() else ""
+    contract_ok = is_contract_brief(brief_text)
 
     if "INTAKE: COMPLETE" in out.upper():
         if not fresh_brief:
@@ -223,6 +231,17 @@ def intake_ask(state):
                 "intake_round": rnd,
                 "escalation": f"interviewer reported COMPLETE but wrote no brief{stale}",
                 "journal": [f"intake r{rnd}: no brief written"],
+            }
+        if not contract_ok:
+            missing = ", ".join(missing_contract_sections(brief_text)) or "required sections"
+            return {
+                "intake_round": rnd,
+                "escalation": (
+                    "interviewer reported COMPLETE but the brief is not a contract "
+                    f"brief (missing: {missing}) — rewrite "
+                    f"{_rel(brief_file(tid))} with the intake (B) sections, then resume"
+                ),
+                "journal": [f"intake r{rnd}: brief failed contract check"],
             }
         has_brief = True
     elif "INTAKE: QUESTIONS" in out.upper():
@@ -235,7 +254,20 @@ def intake_ask(state):
             }
         has_brief = False
     elif fresh_brief:
-        has_brief = True  # brief written this round, marker forgotten
+        # Marker forgotten, but a file write happened — still require contract shape
+        # so a tool Write of a status note cannot sneak past as intake_done.
+        if not contract_ok:
+            missing = ", ".join(missing_contract_sections(brief_text)) or "required sections"
+            return {
+                "intake_round": rnd,
+                "escalation": (
+                    "interviewer wrote a brief that is not a contract brief "
+                    f"(missing: {missing}) — rewrite "
+                    f"{_rel(brief_file(tid))} with the intake (B) sections, then resume"
+                ),
+                "journal": [f"intake r{rnd}: brief failed contract check"],
+            }
+        has_brief = True
     elif intake_file(tid).exists() and intake_file(tid).stat().st_mtime != intake_before:
         has_brief = False  # questions written this round, marker forgotten
     else:

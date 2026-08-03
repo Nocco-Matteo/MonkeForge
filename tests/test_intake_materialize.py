@@ -4,7 +4,9 @@ from pathlib import Path
 
 from pipeline_graph.intake_materialize import (
     extract_before_marker,
+    is_contract_brief,
     materialize_intake_output,
+    missing_contract_sections,
     sanitize_agent_doc,
 )
 
@@ -20,6 +22,65 @@ Why it matters: scope
 **A:**
 
 INTAKE: QUESTIONS 1
+"""
+
+SAMPLE_CONTRACT = """UI-SURFACE: yes
+
+# TASK-006: example
+
+## 1. Goal
+
+Ship the thing.
+
+## 2. Corrections to the request
+
+none
+
+## 3. Rules / domain data
+
+none
+
+## 4. Codebase anchors
+
+- `run.py`
+
+## 4b. Architecture docs to follow
+
+none
+
+## 5. Definition of done
+
+| ID | Criterion |
+|----|-----------|
+| F1 | Works — verified by `pytest` |
+
+## 6. Scope: in / out
+
+### In
+
+- the thing
+
+### Out
+
+- the other thing
+
+## 7. Manual acceptance
+
+1. Run it.
+
+## 8. Unverified assumptions
+
+none
+
+INTAKE: COMPLETE
+"""
+
+# The 018 failure mode: agent claims COMPLETE with a chat summary.
+SAMPLE_STATUS_COMPLETE = """Round 1 complete. I read the seed brief, confirmed all six gaps against `run.py`.
+
+The contract brief is at `docs/MonkeForge-clone/tasks/TASK-018-brief.md`. Four design choices are locked as defaults.
+
+INTAKE: COMPLETE
 """
 
 
@@ -46,6 +107,45 @@ class IntakeMaterialize(unittest.TestCase):
             extract_before_marker("hello\n\nINTAKE: COMPLETE", "INTAKE: COMPLETE"),
             "hello",
         )
+
+    def test_is_contract_brief_accepts_structured(self):
+        body = extract_before_marker(SAMPLE_CONTRACT, "INTAKE: COMPLETE")
+        self.assertTrue(is_contract_brief(body))
+        self.assertEqual(missing_contract_sections(body), [])
+
+    def test_is_contract_brief_rejects_status_summary(self):
+        body = extract_before_marker(SAMPLE_STATUS_COMPLETE, "INTAKE: COMPLETE")
+        self.assertFalse(is_contract_brief(body))
+        missing = missing_contract_sections(body)
+        self.assertIn("UI-SURFACE", missing)
+        self.assertIn("Goal", missing)
+
+    def test_materialize_complete_writes_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            intake_p = Path(tmp) / "intake.md"
+            brief_p = Path(tmp) / "brief.md"
+            ok = materialize_intake_output(
+                "006", 1, SAMPLE_CONTRACT,
+                intake_path=intake_p, brief_path=brief_p,
+            )
+            self.assertTrue(ok)
+            text = brief_p.read_text()
+            self.assertIn("UI-SURFACE: yes", text)
+            self.assertIn("## 1. Goal", text)
+            self.assertNotIn("INTAKE: COMPLETE", text)
+
+    def test_materialize_complete_does_not_clobber_seed_with_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            intake_p = Path(tmp) / "intake.md"
+            brief_p = Path(tmp) / "brief.md"
+            seed = extract_before_marker(SAMPLE_CONTRACT, "INTAKE: COMPLETE") + "\n"
+            brief_p.write_text(seed)
+            ok = materialize_intake_output(
+                "018", 1, SAMPLE_STATUS_COMPLETE,
+                intake_path=intake_p, brief_path=brief_p,
+            )
+            self.assertFalse(ok)
+            self.assertEqual(brief_p.read_text(), seed)
 
 
 if __name__ == "__main__":

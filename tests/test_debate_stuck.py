@@ -308,8 +308,28 @@ class TestEscalateDebateStuckGate(unittest.TestCase):
         # "ok" → generic else branch, escalation cleared, no forced keys.
         d = self._escalate("ok", "debate stuck: 1 blocker(s) repeated")
         self.assertEqual(d.get("escalation"), "")
+        self.assertEqual(d.get("debate_round_bonus"), 0)
+        self.assertEqual(d.get("redo_debate"), False)
         self.assertNotIn("ux_shipped_blocked", d)
         self.assertNotIn("degradations", d)
+
+    def test_ok_after_prior_continue_clears_bonus(self):
+        # Leftover bonus from an earlier "continue" must not survive "ok",
+        # or route_escalation_return re-enters debate instead of summary.
+        state = {
+            "task_id": "ds",
+            "escalation": "debate exhausted 5 rounds + verification: 1 technical blocker(s)",
+            "journal": [],
+            "debate_round_bonus": 2,
+        }
+        d = self._escalate(
+            "ok",
+            "debate exhausted 5 rounds + verification: 1 technical blocker(s)",
+            state=state,
+        )
+        self.assertEqual(d.get("debate_round_bonus"), 0)
+        self.assertEqual(d.get("redo_debate"), False)
+        self.assertIn("proceeding to the verdict", d["journal"][0])
 
     def test_continue_extends_debate(self):
         d = self._escalate("continue", "debate stuck: 1 blocker(s) repeated")

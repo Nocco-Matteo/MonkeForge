@@ -220,16 +220,23 @@ def checkpoint_effort(state):
     # 2. Auto: take the hint silently.
     if state.get("auto"):
         return {"effort": hint, "journal": [f"effort: auto, took hint {hint}"]}
-    # 3. Interactive: ask the human.
+    # 3. Interactive: ask the human. Include the plan path so the operator can
+    # read PLAN-*.md before committing to an effort level (this is not the
+    # post-judge "plan approved?" gate — that still fires later).
+    tid = state["task_id"]
     decision = interrupt(
         {
             "stage": "effort level",
-            "task": state["task_id"],
-            "reason": f"choose an effort level (recommended: {hint})",
+            "task": tid,
+            "reason": (
+                f"review the plan, then choose an effort level "
+                f"(recommended: {hint})"
+            ),
             "hint": hint,
             "signals": signals,
             "levels": list(C.EFFORT_LEVELS),
             "answers": C.effort_choices(),
+            "plan": str(C.PLANS / f"PLAN-{tid}.md"),
         }
     )
     answer = str(decision).strip().lower()

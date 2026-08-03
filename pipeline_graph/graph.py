@@ -251,6 +251,8 @@ def route_escalation_return(state):
         # Human answered "continue" to a debate-cap escalation: re-enter the
         # debate at the next round, keeping the existing history. The bonus
         # raised the cap so debate_tech won't immediately re-escalate.
+        # escalate() MUST clear debate_round_bonus on ok/skip — a leftover
+        # bonus from an earlier continue must not steal a later "proceed".
         return "debate_tech"
     if not state.get("batches"):
         # A debate-cap escalation resolved with "proceed": the plan and the whole

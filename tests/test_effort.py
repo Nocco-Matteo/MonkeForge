@@ -1,8 +1,8 @@
 """Tests for the adaptive effort feature (TASK-011).
 
 Covers: recommendation rules, resolver fallbacks, router gating, the
-checkpoint_effort node, checkpoint_plan suppression, YAML→env loading, and
-the --effort CLI flag.
+checkpoint_effort node, checkpoint_plan gate (not suppressed by effort),
+YAML→env loading, and the --effort CLI flag.
 """
 import json
 import os
@@ -450,50 +450,53 @@ class TestCheckpointEffort(unittest.TestCase):
         payload = pause.call_args.args[0]
         self.assertEqual(payload["stage"], "effort level")
         self.assertIn("recommended: scout-monke", payload["reason"])
+        self.assertIn("review the plan", payload["reason"])
+        self.assertTrue(payload.get("plan", "").endswith("PLAN-t.md"))
         self.assertEqual(set(payload["answers"]), set(C.EFFORT_LEVELS))
         self.assertTrue(all(payload["answers"].values()))
 
 
-# --- checkpoint_plan suppression -------------------------------------------
+# --- checkpoint_plan gate (must not be suppressed by effort) ---------------
 
-class TestCheckpointPlanSuppression(unittest.TestCase):
+class TestCheckpointPlanGate(unittest.TestCase):
     def test_auto_skips(self):
         delta = N.checkpoint_plan({"task_id": "t", "auto": True})
         self.assertNotIn("escalation", delta)
-        self.assertIn("journal", delta)
+        self.assertIn("auto, skipped", delta["journal"][0])
 
-    def test_shown_not_forced_skips(self):
-        delta = N.checkpoint_plan({
-            "task_id": "t", "auto": False,
-            "effort_checkpoint_shown": True, "effort_forced": False,
-        })
-        self.assertNotIn("escalation", delta)
-        self.assertIn("journal", delta)
+    def test_after_interactive_effort_still_asks(self):
+        # Regression: choosing effort used to skip this gate ("already shown").
+        with patch.object(F, "interrupt", return_value="ok") as iv:
+            delta = N.checkpoint_plan({
+                "task_id": "t", "auto": False,
+                "effort_checkpoint_shown": True, "effort_forced": False,
+                "batches": [{"n": 1, "scope": "do the thing"}],
+            })
+        self.assertIn("approved", delta["journal"][0])
+        payload = iv.call_args.args[0]
+        self.assertEqual(payload["stage"], "plan approved?")
+        self.assertTrue(payload.get("plan", "").endswith("PLAN-t.md"))
+        self.assertTrue(payload.get("final", "").endswith("FINAL-t.md"))
+        self.assertEqual(payload["batches"], ["1: do the thing"])
 
-    def test_forced_still_asks(self):
+    def test_forced_effort_still_asks(self):
         with patch.object(F, "interrupt", return_value="ok"):
             delta = N.checkpoint_plan({
                 "task_id": "t", "auto": False,
                 "effort_forced": True, "effort_checkpoint_shown": False,
+                "batches": [],
             })
-        self.assertIn("journal", delta)
+        self.assertIn("approved", delta["journal"][0])
 
-    def test_not_shown_not_forced_asks(self):
-        with patch.object(F, "interrupt", return_value="ok"):
+    def test_reject_escalates(self):
+        with patch.object(F, "interrupt", return_value="nope"):
             delta = N.checkpoint_plan({
                 "task_id": "t", "auto": False,
-                "effort_forced": False, "effort_checkpoint_shown": False,
+                "effort_checkpoint_shown": True, "effort_forced": False,
+                "batches": [],
             })
-        self.assertIn("journal", delta)
-
-    def test_forced_and_shown_still_asks(self):
-        # Edge case: forced=True AND shown=True → not skipped (forced path asks).
-        with patch.object(F, "interrupt", return_value="ok"):
-            delta = N.checkpoint_plan({
-                "task_id": "t", "auto": False,
-                "effort_forced": True, "effort_checkpoint_shown": True,
-            })
-        self.assertIn("journal", delta)
+        self.assertIn("rejected", delta["journal"][0])
+        self.assertIn("user rejected the plan", delta["escalation"])
 
 
 # --- YAML → PIPELINE_EFFORT_JSON loading -----------------------------------
