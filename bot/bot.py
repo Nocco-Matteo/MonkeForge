@@ -129,6 +129,30 @@ async def _post_escalation(channel, rec: dict):
         embed.add_field(name="where", value=str(rec["context"])[:1024], inline=False)
     if blockers:
         embed.add_field(name="blockers", value=blockers[:1024], inline=False)
+    # TASK-022 item 21: triage embed fields (mode/blocker trend/repeated-new/
+    # rationale) — only inside an `if rec.get("triage")` guard. The existing
+    # hint field / button-highlight logic is unchanged (the hint field above
+    # already renders the recommended-answer highlight).
+    triage = rec.get("triage")
+    if triage:
+        embed.add_field(name="triage mode", value=str(triage.get("mode", ""))[:1024],
+                        inline=False)
+        bc = triage.get("blocker_counts")
+        if isinstance(bc, list) and bc:
+            trend = " → ".join(str(n) for n in bc)
+        else:
+            trend = "no active rounds"
+        embed.add_field(name="blocker trend", value=trend[:1024], inline=False)
+        repeated = triage.get("repeated") or []
+        new = triage.get("new") or []
+        embed.add_field(
+            name="repeated/new",
+            value=f"{len(repeated)} / {len(new)}"[:1024],
+            inline=False,
+        )
+        rationale = str(triage.get("rationale", "") or "").strip()
+        if rationale:
+            embed.add_field(name="rationale", value=rationale[:1024], inline=False)
     embed.add_field(name="answers",
                     value="\n".join(f"**{o.get('key', '?')}** — {o.get('label', '')}"
                                     for o in options)[:1024],

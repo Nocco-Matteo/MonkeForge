@@ -5,15 +5,16 @@ file to compact one-line markers, keeping the last ``keep_recent`` rounds
 verbatim. No LLM calls, no third-party token libs, no file IO, no event
 emission — those live in ``agents.py::run_agent()`` (see D1 in PLAN-003).
 
-The only imports are ``re`` and the two verdict/blocker parsers from
-``agents``; ``agents.py`` imports this module function-locally inside
-``run_agent()`` to avoid an import-time cycle (D2).
+The only module-level imports are ``re`` and ``parse_verdict`` from
+``agents``; ``count_blockers`` is imported function-locally (item 2).
+``agents.py`` imports this module function-locally inside ``run_agent()`` to
+avoid an import-time cycle (D2).
 """
 from __future__ import annotations
 
 import re
 
-from .agents import count_blockers, parse_verdict
+from .agents import parse_verdict
 from .nodes.debate import TECH_LIMIT_RE
 
 # Verbatim from PLAN-003 §3 / nodes/debate.py:18. Group 1 = critic name
@@ -166,6 +167,7 @@ def _collapse_round(round_num: int, sections: list[tuple[str, str]]) -> str:
         # extension of count_blockers to match [BLOCKER:PLAN]/[BLOCKER:REQUIREMENTS]
         # would otherwise make worse (counting provenance-tagged, resolved
         # blockers as open).
+        from .agents import count_blockers  # function-local (item 2)
         n_blockers = (
             0 if verdict in ("APPROVE", "APPROVE_WITH_CHANGES")
             else count_blockers(last_body[critic])
@@ -230,6 +232,141 @@ def stuck_claims(debate_text: str, k: int) -> list[str]:
     for claims in per_round_claims[1:]:
         stuck = stuck & claims
     return sorted(stuck)
+
+
+def thrashing_report(debate_text: str, k: int) -> dict:
+    """Deterministic thrashing triage over the last ``k`` ACTIVE debate rounds.
+
+    A round is "active" when at least one of its critic sections (last section
+    per critic name, matching ``_collapse_round`` / ``stuck_claims``'s "last
+    wins" philosophy) has a verdict of ``REJECT`` or ``UNKNOWN`` — a round where
+    every critic ``APPROVE``/``APPROVE_WITH_CHANGES`` is shipping, so any
+    ``[BLOCKER]`` token in it references a resolved or prior item and the round
+    is excluded from the trend (mirrors ``stuck_claims``'s verdict filter and
+    ``_open_blocker_count``).
+
+    Returns a dict with:
+
+    - ``mode``: ``"thrashing"`` | ``"stuck"`` | ``"converging"`` | ``"unknown"``.
+    - ``blocker_counts``: one int per active round in the window — the sum of
+      ``count_blockers`` over each critic's last section INDEPENDENTLY (a claim
+      raised by both Reviewer and UX counts twice, by design — the trend tracks
+      total raised work, not deduplicated themes).
+    - ``repeated``: BLOCKER claims present in EVERY active round of the window
+      (intersection of per-round claim sets, each set deduped ACROSS critics so
+      a claim raised by both Reviewer and UX in the same round counts once).
+    - ``new``: BLOCKER claims in the latest active round that were NOT in the
+      previous active round (empty when the window has fewer than 2 rounds).
+
+    C15 override — ``len(active_window) < 2`` ⇒ ``mode="unknown"`` regardless of
+    ``k``. This intentionally diverges from ``stuck_claims``' own behaviour at
+    ``k=1`` (where a single round can still produce a non-empty intersection):
+    a single active round carries no trend information, so classifying it as
+    ``stuck``/``converging``/``thrashing`` would be a guess. ``blocker_counts``,
+    ``repeated`` and ``new`` are still populated from the available active
+    rounds so the caller can render them, but the mode stays ``"unknown"``. Do
+    NOT "fix" this as an inconsistency with ``stuck_claims`` — the divergence is
+    load-bearing (it is what resolves the contradiction the debate just
+    settled).
+
+    Classification order (when ``len(active_window) >= 2``):
+
+    1. ``stuck_claims(debate_text, k)`` non-empty → ``"stuck"`` (a claim repeated
+       across every one of the last ``k`` rounds — the debate is not moving).
+    2. latest ``blocker_counts`` entry ``== 0`` → ``"converging"`` (the last
+       active round raised no blockers — the debate is closing).
+    3. NOT strictly decreasing at every step AND ``len(new) >= 1`` →
+       ``"thrashing"`` (blockers are not going down AND new ones appear — the
+       debate is churning).
+    4. strictly decreasing at every step → ``"converging"`` (blockers strictly
+       drop each active round — the debate is closing).
+    5. else → ``"unknown"`` (e.g. not strictly decreasing but no new claims —
+       the debate is stuck on the same set without growing, which is neither
+       converging nor thrashing).
+
+    Empty/None input, ``k < 1``, or no rounds → ``mode="unknown"`` with empty
+    lists. ``count_blockers`` is imported function-locally (item 2) to keep
+    the module-level surface to ``parse_verdict`` only.
+    """
+    text = debate_text or ""
+    empty = {"mode": "unknown", "blocker_counts": [], "repeated": [], "new": []}
+    if not text.strip() or k < 1:
+        return empty
+    from .agents import count_blockers  # function-local (item 2)
+    _preamble, rounds = _parse_rounds(text)
+    if not rounds:
+        return empty
+
+    # Build per-active-round (blocker_count, claim_set). A round is active iff
+    # at least one critic's last section verdict is REJECT or UNKNOWN.
+    active: list[tuple[int, set[str]]] = []
+    for _rn, sections in rounds:
+        last_body: dict[str, str] = {}
+        order: list[str] = []
+        for critic, body in sections:
+            if critic in _CRITICS:
+                if critic not in last_body:
+                    order.append(critic)
+                last_body[critic] = body
+        if not order:
+            continue
+        any_active = any(
+            parse_verdict(last_body[critic]) not in ("APPROVE", "APPROVE_WITH_CHANGES")
+            for critic in order
+        )
+        if not any_active:
+            continue
+        # blocker_counts sums count_blockers per critic INDEPENDENTLY (a claim
+        # raised by both Reviewer and UX counts twice — by design).
+        bc = sum(count_blockers(last_body[critic]) for critic in order)
+        # claim set deduped ACROSS critics for repeated/new.
+        claims: set[str] = set()
+        for critic in order:
+            if parse_verdict(last_body[critic]) in ("APPROVE", "APPROVE_WITH_CHANGES"):
+                continue
+            for m in _RAISE_LINE_RE.finditer(last_body[critic]):
+                if m.group(1).upper() == "BLOCKER":
+                    claim = _normalize_claim(_clean_claim(m.group(3)))
+                    if claim:
+                        claims.add(claim)
+        active.append((bc, claims))
+
+    window = active[-k:] if k else active
+    blocker_counts = [bc for bc, _ in window]
+
+    if window:
+        repeated = set(window[0][1])
+        for _, claims in window[1:]:
+            repeated &= claims
+        repeated = sorted(repeated)
+    else:
+        repeated = []
+    if len(window) >= 2:
+        new = sorted(window[-1][1] - window[-2][1])
+    else:
+        new = []
+
+    # C15: a single active round carries no trend → unknown, regardless of k.
+    if len(window) < 2:
+        return {"mode": "unknown", "blocker_counts": blocker_counts,
+                "repeated": repeated, "new": new}
+
+    def _strictly_decreasing(seq: list[int]) -> bool:
+        return all(seq[i] < seq[i - 1] for i in range(1, len(seq)))
+
+    stuck = stuck_claims(text, k)
+    if stuck:
+        mode = "stuck"
+    elif blocker_counts[-1] == 0:
+        mode = "converging"
+    elif len(new) >= 1 and not _strictly_decreasing(blocker_counts):
+        mode = "thrashing"
+    elif _strictly_decreasing(blocker_counts):
+        mode = "converging"
+    else:
+        mode = "unknown"
+    return {"mode": mode, "blocker_counts": blocker_counts,
+            "repeated": repeated, "new": new}
 
 
 def latest_requirements_blockers(debate_text: str) -> list[str]:

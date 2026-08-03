@@ -375,6 +375,36 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False) -> None:
         for b in batches:
             sys.stderr.write(
                 f"    - {_sanitize_text(b, color=color, tty=tty)}\n")
+    # TASK-022 item 19: triage block (mode/blocker trend/repeated/new/
+    # recommended+rationale) — only when data["triage"] is a dict. Prints
+    # "no active rounds" wording when blocker_counts is empty.
+    triage = data.get("triage")
+    if isinstance(triage, dict):
+        mode = _sanitize_text(str(triage.get("mode", "")), color=color, tty=tty)
+        sys.stderr.write(f"  {_c('triage:', 'dim', color=color)}\n")
+        sys.stderr.write(f"    {_c('mode:', 'dim', color=color)} {mode}\n")
+        bc = triage.get("blocker_counts")
+        if isinstance(bc, list) and bc:
+            trend = _sanitize_text(" → ".join(str(n) for n in bc),
+                                   color=color, tty=tty)
+        else:
+            trend = _c("no active rounds", "dim", color=color)
+        sys.stderr.write(f"    {_c('blockers:', 'dim', color=color)} {trend}\n")
+        repeated = triage.get("repeated") or []
+        new = triage.get("new") or []
+        sys.stderr.write(
+            f"    {_c('repeated/new:', 'dim', color=color)} "
+            f"{len(repeated)} / {len(new)}\n")
+        recommended = str(triage.get("recommended", "") or "").strip()
+        rationale = _sanitize_text(str(triage.get("rationale", "") or ""),
+                                   color=color, tty=tty).strip()
+        if recommended or rationale:
+            parts = []
+            if recommended:
+                parts.append(_c(f"recommended: {recommended}", "cyan", color=color))
+            if rationale:
+                parts.append(rationale)
+            sys.stderr.write(f"    {_sanitize_text(' · '.join(parts), color=color, tty=tty)}\n")
     options = _options_from_data(data)
     if options:
         sys.stderr.write(f"  {_c('choices:', 'dim', color=color)}\n")
@@ -909,7 +939,14 @@ def _drive(graph, task_id, payload, args=None) -> int:
                 batches=data.get("batches") or [],
                 screens=str(C.SCREENS / f"task-{task_id}")
                         if "screenshot" in reason.lower()
-                        or "visual" in reason.lower() else "")
+                        or "visual" in reason.lower() else "",
+                # TASK-022 item 20 (C8): pass triage ONLY via a conditional
+                # spread keyed on isinstance(data.get("triage"), dict). The
+                # key is fully absent (not null) when there is no triage, so
+                # legacy run_paused records stay byte-identical (no
+                # "triage": null on a plain pause).
+                **({"triage": data["triage"]}
+                   if isinstance(data.get("triage"), dict) else {}))
         _mark_idle(task_id, "paused")
         return 0
     elif snap.next:

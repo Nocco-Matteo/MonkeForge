@@ -479,13 +479,20 @@ def _opt(key: str, label: str, *, free_text: bool = False) -> dict:
     return {"key": key, "label": label, "free_text": free_text}
 
 
-def _escalation_options(reason: str) -> list[dict]:
+def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict]:
     """What the valid answers mean for THIS escalation — the payload's menu.
 
     Returns a list of structured option dicts (``key``/``label``/``free_text``)
     so the CLI and the Discord bot render identical labels from a single source
     of truth. 'ok' vs 'skip' do different things per escalation type; advertising
     them stops the human from rubber-stamping 'ok' without knowing what it does.
+
+    ``triage`` is the thrashing/stuck/exhausted/requirements triage dict
+    attached to a debate escalation (TASK-022). It is used only by the
+    ``"debate exhausted"`` branch to rewrite the ``continue``/``ok`` labels with
+    a thrashing-specific warning when the exhausted debate was actually
+    churning (``triage["mode"] == "thrashing"``) — a ``mode="stuck"``
+    exhausted escalation keeps the default exhausted labels (item 14).
     """
     r = reason.lower()
     if r.startswith("debate stuck:"):
@@ -509,6 +516,28 @@ def _escalation_options(reason: str) -> list[dict]:
             _opt("ok",
                  "proceed to the verdict with the plan as it stands (the stuck "
                  "blocker is recorded in the report)"),
+        ]
+    if r.startswith("debate thrashing:"):
+        # TASK-022: thrashing early escalation — the debate is churning
+        # (blockers not decreasing AND new claims appearing). Same 4 keys as
+        # "debate stuck:" (continue/redo/stop/ok) with thrashing-specific
+        # labels that warn the human that more rounds will not converge.
+        return [
+            _opt("continue",
+                 "extend the debate by 2 more rounds — WARNING: the trend shows "
+                 "the debate is churning (blockers not decreasing, new claims "
+                 "appearing), so more rounds may not converge"),
+            _opt("redo",
+                 "re-run the debate from round 1 on the SAME plan (use when the "
+                 "debate itself derailed — a fresh start may break the churn)"),
+            _opt("stop",
+                 "stop the run — the churning blockers may be in the "
+                 "REQUIREMENTS, not the plan: amend the brief, then "
+                 "./run.py redo <id> --from plan to regenerate the plan"),
+            _opt("ok",
+                 "proceed to the verdict with the plan as it stands (the "
+                 "thrashing trend is recorded in the report) — recommended "
+                 "when the debate is churning without converging"),
         ]
     if r.startswith("debate requirements:"):
         # Item 33: a REQUIREMENTS-provenanced blocker is unfixable by debate
@@ -552,12 +581,37 @@ def _escalation_options(reason: str) -> list[dict]:
                  "(e.g. after fixing an agent or the UX reviewer prompt)"),
         ]
     if "debate hit the round cap" in r or "debate exhausted" in r:
+        # TASK-022 item 14: rewrite the continue/ok labels with a thrashing
+        # warning ONLY when triage is present AND triage["mode"] == "thrashing".
+        # A mode="stuck" (or unknown/converging) exhausted escalation keeps the
+        # default exhausted labels — the warning is specific to a churning
+        # trend, not to every exhausted debate.
+        thrashing_exhausted = (
+            triage is not None
+            and isinstance(triage, dict)
+            and triage.get("mode") == "thrashing"
+        )
+        if thrashing_exhausted:
+            continue_label = (
+                "extend the debate by 2 more rounds — WARNING: the trend shows "
+                "the debate is churning (blockers not decreasing, new claims "
+                "appearing), so more rounds may not converge"
+            )
+            ok_label = (
+                "proceed to the verdict with the plan as it stands (the "
+                "thrashing trend is recorded in the report) — recommended "
+                "when the debate is churning without converging"
+            )
+        else:
+            continue_label = (
+                "extend the debate by 2 more rounds, keeping the existing "
+                "history (the proposer keeps iterating on the remaining blockers)"
+            )
+            ok_label = "proceed to the verdict with the plan as it stands"
         return [
-            _opt("ok", "proceed to the verdict with the plan as it stands"),
+            _opt("ok", ok_label),
             _opt("skip", "same — proceed past the debate"),
-            _opt("continue",
-                 "extend the debate by 2 more rounds, keeping the existing "
-                 "history (the proposer keeps iterating on the remaining blockers)"),
+            _opt("continue", continue_label),
             _opt("redo",
                  "re-run the debate from round 1 on the SAME plan (use when the "
                  "debate itself derailed — it cannot fix a plan that is wrong)"),
@@ -682,7 +736,16 @@ def escalate(state):
     # included in the interrupt payload — the CLI pause renderer and the
     # Discord bot read it to decide whether to enforce the option menu.
     router_error = not state.get("escalation")
-    options = _escalation_options(reason)
+    # TASK-022 item 15: read the triage/hint a debate escalation attached to
+    # state (None/"" when this is not a debate escalation or the debate is not
+    # thrashing/stuck/exhausted/requirements). Both are included in the
+    # interrupt payload so the CLI/bot render the triage block and the
+    # recommended-answer highlight, and triage is passed into
+    # _escalation_options so the "debate exhausted" branch can rewrite its
+    # labels when the exhausted debate was actually churning.
+    triage = state.get("triage")
+    hint = state.get("hint", "")
+    options = _escalation_options(reason, triage=triage)
     answer = interrupt(
         {
             "stage": "escalation",
@@ -692,11 +755,19 @@ def escalate(state):
             "options": options,
             "router_error": router_error,
             "journal": state.get("journal", [])[-10:],
+            "triage": triage,
+            "hint": hint,
         }
     )
 
     ev.close_escalation(tid)
-    delta = {"escalation": "", "test_fix_attempt": 0}
+    # TASK-022 item 17 (C14): clear triage/hint unconditionally in the BASE
+    # delta so every resolution branch (router/stop/continue/ok/redo/intake/
+    # generic tail) wipes them. Without this, a stale thrashing recommendation
+    # would silently reappear on an unrelated later pause (e.g. a UX/render
+    # escalation showing a leftover "recommended: ok" button highlight). The
+    # redo branch's later delta.update(...) does NOT re-add either key.
+    delta = {"escalation": "", "test_fix_attempt": 0, "triage": None, "hint": ""}
     # Canonicalize composite answers ("skip / done" → "skip") so the behavioural
     # branches below (forced / INTAKE_END_ANSWERS / visual force) fire on the
     # first token rather than the literal composite, which never matched.
@@ -714,7 +785,11 @@ def escalate(state):
     # flags so only the stop/ok menu fires.
     debate_stuck = r_low.startswith("debate stuck:")
     debate_requirements = r_low.startswith("debate requirements:")
-    debate_prefix = debate_stuck or debate_requirements
+    # TASK-022 item 16: the prefix gate also matches "debate thrashing:" so a
+    # thrashing early-escalation suppresses the same substring flags and only
+    # the continue/redo/stop/ok menu fires (same gate as debate stuck).
+    debate_thrashing = r_low.startswith("debate thrashing:")
+    debate_prefix = debate_stuck or debate_requirements or debate_thrashing
     ux_escalation = (
         ("ux" in r_low or "designer" in r_low) and "blocker" in r_low
     ) and not debate_prefix

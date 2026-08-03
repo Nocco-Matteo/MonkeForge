@@ -165,3 +165,28 @@ class TestPromptMarkers:
                 f"{prompt_name}.md is missing marker '{marker}'. "
                 f"The node expects the agent to print between === {marker} === markers."
             )
+
+
+# --- verification pass (TASK-022) -------------------------------------------
+
+
+class TestVerificationPassSection:
+    """TASK-022 item 22/F3: both critic prompts must contain a VERIFICATION
+    PASS section with the three F3 rules, including the literal strings
+    ``residual audit`` and ``[SUGGESTION]``."""
+
+    @pytest.mark.parametrize("prompt_name", ["debate_review", "debate_ux"])
+    def test_verification_pass_section_present(self, prompt_name):
+        path = PROMPTS_DIR / f"{prompt_name}.md"
+        if not path.exists():
+            pytest.skip(f"{prompt_name}.md not found")
+        text = path.read_text()
+        assert "VERIFICATION PASS" in text, (
+            f"{prompt_name}.md is missing the VERIFICATION PASS section."
+        )
+        assert "residual audit" in text, (
+            f"{prompt_name}.md is missing the 'residual audit' rule."
+        )
+        assert "[SUGGESTION]" in text, (
+            f"{prompt_name}.md is missing the '[SUGGESTION]' rule."
+        )

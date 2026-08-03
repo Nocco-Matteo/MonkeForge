@@ -47,6 +47,13 @@ class PipelineState(TypedDict, total=False):
     ux_blockers: int               # UX blockers still open (0 = designer satisfied)
     tech_limits: list[str]         # UX items the reviewer verified as blocked by a real tech constraint
     debate_next: str               # "summary" | "reply" — where the round router should go
+    # TASK-022: deterministic thrashing triage attached to a debate escalation
+    # (mode/blocker_counts/repeated/new/recommended/rationale). None when the
+    # pause is not a debate escalation or when the debate is not thrashing.
+    triage: dict
+    # TASK-022: short recommended-answer key for the current pause ("ok" for a
+    # thrashing/stuck/exhausted debate, "" when no recommendation applies).
+    hint: str
 
     # --- verdict / plan
     batches: list[Batch]
