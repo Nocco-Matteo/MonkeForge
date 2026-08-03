@@ -149,9 +149,28 @@ class TestClassifyOutput:
         assert health == "hard"
 
     def test_transient_beats_fatal(self):
-        """A rate limit in output wins over a fatal signature."""
+        """A rate limit in the head wins over a fatal signature."""
         health, _ = classify_output(0, "rate limit and malformed tool call")
         assert health == "transient"
+
+    def test_body_citation_of_rate_limit_is_ok(self):
+        """Product text citing rate limits must not look like a CLI 429.
+
+        Seen on TASK-020: plan/debate replies quote 'Webhook rate limits…'
+        and were misclassified as transient after a long successful run.
+        """
+        body = (
+            "ACCEPTED — fixed the Discord narration.\n\n"
+            + ("x" * 2500)
+            + "\nWebhook rate limits remain acceptable at milestone default.\n"
+            + ("y" * 200)
+        )
+        assert classify_output(0, body) == ("ok", "")
+
+    def test_body_citation_of_out_of_usage_is_ok(self):
+        """Fatal signatures already head-scoped; keep the regression explicit."""
+        body = ("z" * 2500) + "\nExample edge case: out of usage for the CLI.\n"
+        assert classify_output(0, body) == ("ok", "")
 
 
 # --- _extract_json ---------------------------------------------------------

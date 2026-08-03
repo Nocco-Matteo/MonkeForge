@@ -55,20 +55,18 @@ def classify_output(code: int, output: str) -> tuple[str, str]:
     Order matters: a transient network/rate signal is worth a retry; a fatal
     model/tool signal is not; a non-zero exit or near-empty output is hard.
 
-    Fatal signatures are matched only in the first ~2KB of output: real CLI
-    errors are short and print the error at the top, while a 46KB plan that
-    *cites* "out of usage" as an example in an edge-case section must not be
-    flagged as a hard failure.
+    Transient and fatal signatures are matched only in the first ~2KB of
+    output: real CLI errors are short and print at the top, while a long
+    debate/plan reply that *cites* "rate limit" or "out of usage" as product
+    text (e.g. Discord notify rate limits) must not be flagged as unhealthy.
     """
     low = (output or "").lower()
-    for sig in TRANSIENT_SIGNATURES:
-        if sig in low:
-            return "transient", sig
-    # Fatal signatures: only scan the head of the output. A real CLI error
-    # (quota exhausted, malformed tool call, context overflow) is short and
-    # prints at the top; a long agent output that merely quotes one of these
-    # strings as an example is not a failure.
+    # Only scan the head: infrastructure errors print first; body citations of
+    # the same words (TASK-020 plan: "Webhook rate limits…") are false positives.
     head = low[:2048]
+    for sig in TRANSIENT_SIGNATURES:
+        if sig in head:
+            return "transient", sig
     for sig in FATAL_SIGNATURES:
         if sig in head:
             return "hard", sig
