@@ -73,8 +73,8 @@ PROMPT_PLACEHOLDERS = {
         "refs_list",
     },
     "plan": {"request", "brief", "arch_docs", "docs_dir"},
-    "debate_review": {"plan", "debate_ledger", "round"},
-    "debate_ux": {"plan", "debate_ledger", "round", "tech_limits", "docs_dir"},
+    "debate_review": {"plan_view", "debate_ledger", "round"},
+    "debate_ux": {"plan_view", "debate_ledger", "round", "tech_limits", "docs_dir"},
     "debate_reply": {"plan", "debate_history", "round", "tech_limits"},
     "summary": {"debate_history"},
     "judge": {"summary", "plan", "debate_history", "docs_dir"},
@@ -131,6 +131,16 @@ class TestPromptPlaceholders:
                 f"{prompt_name}.md still contains the old {{debate_history}} "
                 f"placeholder — the critic templates must use {{debate_ledger}}."
             )
+            # TASK-023: the critic templates must use {plan_view} (the lean
+            # plan input), not the raw {plan} placeholder.
+            assert "{plan_view}" in text, (
+                f"{prompt_name}.md must reference the {{plan_view}} placeholder "
+                f"(the lean plan input computed by _build_plan_view)."
+            )
+            assert "{plan}" not in text, (
+                f"{prompt_name}.md must not reference the raw {{plan}} "
+                f"placeholder — use {{plan_view}} instead."
+            )
 
     def test_debate_reply_has_severity_verbatim_prefix(self):
         """debate_reply.md must instruct the proposer to begin each item with
@@ -148,7 +158,7 @@ class TestPromptPlaceholders:
 # Prompts that instruct the agent to print between markers must contain those
 # markers in the prompt text itself, or the agent will not know to use them.
 MARKER_CONTRACTS = {
-    "debate_reply": ["PLAN START", "PLAN END"],
+    "debate_reply": ["PLAN PATCH START", "PLAN PATCH END"],
     "implement": ["PLAN_DISCREPANCY:"],
 }
 

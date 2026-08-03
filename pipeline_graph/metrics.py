@@ -18,6 +18,32 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from . import config as C
+from .condenser import estimate_tokens
+
+
+def debate_prompt_tokens(task_id: str) -> dict:
+    """Sum estimated tokens across the per-round debate prompt files for a task.
+
+    Globs ``C.PROMPTS / "{task_id}-debate-*.md"`` (the rendered prompt files
+    the pipeline writes per round), sums ``condenser.estimate_tokens`` per
+    file, and returns a dict with a ``"total"`` key plus a per-file breakdown.
+    A missing/empty glob yields ``{"total": 0, "files": []}``. Pure
+    filesystem-in / dict-out — no events, no mutation.
+    """
+    files = sorted(C.PROMPTS.glob(f"{task_id}-debate-*.md"))
+    per_file: list[dict] = []
+    total = 0
+    for path in files:
+        try:
+            text = path.read_text()
+        except OSError:
+            text = ""
+        n = estimate_tokens(text)
+        total += n
+        per_file.append({"file": path.name, "tokens": n})
+    return {"total": total, "files": per_file}
+
 
 @dataclass
 class TaskMetrics:

@@ -8,7 +8,7 @@ INPUT: the plan under debate (below), the debate ledger (prior rounds, deduplica
 Technical limits certified so far: {tech_limits}
 
 <plan>
-{plan}
+{plan_view}
 </plan>
 
 <debate_ledger>

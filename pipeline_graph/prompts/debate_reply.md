@@ -53,8 +53,11 @@ mark it UNVERIFIED and say what you would need to check it.
 
 CONSTRAINTS:
 - Fix only what the items raise. No opportunistic redesign, no new scope.
-- Do NOT edit the plan file directly — print the updated plan to stdout between
-  the markers below. The pipeline extracts it and overwrites the plan file for you.
+- Do NOT edit `PLAN-{id}.md` directly. The pipeline owns the plan file: it
+  captures a snapshot before your reply, applies your patch, and reverts ANY
+  direct edit you make to the plan file on a no-marker or failed-apply reply.
+  Print your plan changes to stdout via the patch format below — never write
+  the plan file yourself.
 - Mark each settled item RESOLVED.
 - Max 3 lines of reasoning per item. No summary of the plan.
 
@@ -66,11 +69,57 @@ automatically) under "## Round {round} — Proposer", in this order:
    `[BLOCKER:REQUIREMENTS] <claim>`, `[BLOCKER] <claim>`, or
    `[SUGGESTION] <claim>` (severity AND provenance suffix verbatim) — then the
    ACCEPTED / REJECTED / PARTIAL and RESOLVED markers as before.
-2. Then the COMPLETE updated plan (the full plan text with your fixes applied,
-   not a diff), enclosed between these exact marker lines on their own:
-   === PLAN START ===
-   <the full plan text>
-   === PLAN END ===
-The markers are mandatory: the pipeline extracts only the text between them and
-overwrites the plan file with it. Everything outside the
-markers (your per-item notes) is appended to the debate file as the reply.
+2. Then a PLAN PATCH — one `=== PLAN PATCH START ===` … `=== PLAN PATCH END ===`
+   envelope containing one or more `@@@ REPLACE section: "<title>" … @@@ END`
+   blocks, one per plan section you changed. The pipeline applies the patch to
+   the plan file for you; everything outside the envelope (your per-item notes)
+   is appended to the debate file as the reply.
+
+PLAN PATCH FORMAT (primary, required):
+Print exactly one envelope per reply, with one or more section-replace blocks
+inside it. Each block names the section by its exact numbered header title as
+it appears in the plan today, and prints the FULL replacement text for that
+section between `@@@ REPLACE section: "<title>"` and `@@@ END`:
+
+=== PLAN PATCH START ===
+@@@ REPLACE section: "<exact existing section title>"
+<exact existing section title>
+<the new body of that section, verbatim, as it should now appear>
+@@@ END
+@@@ REPLACE section: "<another section title>"
+<exact existing section title>
+<the new body>
+@@@ END
+=== PLAN PATCH END ===
+
+CRITICAL PATCH RULES:
+- The text you print inside each `@@@ REPLACE section: "<title>"` … `@@@ END`
+  block MUST start with the exact header line `<title>` (verbatim, as it
+  appears in the plan today) as its own first line, followed by the new body.
+  The pipeline replaces the whole section — header included — with what you
+  print here; omitting the header deletes that section's anchor from the plan,
+  so the next round's `@@@ REPLACE section: "<title>"` for that section will
+  fail to find it.
+- A `@@@ REPLACE` opened without a matching `@@@ END`, or any `@@@` text
+  outside a complete `=== PLAN PATCH START/END ===` envelope, is treated as a
+  MALFORMED patch and escalates — it does NOT silently fall back to "no
+  change". If you have nothing to change in a section, do not emit a block for
+  it.
+- Replace only the sections you changed. Sections you did not touch are left
+  as-is by the pipeline.
+
+LEGACY FULL-PLAN FORMAT (discouraged, degraded):
+If you cannot produce a section patch for some reason, you may instead print
+the COMPLETE updated plan between the legacy markers:
+=== PLAN START ===
+<the full plan text>
+=== PLAN END ===
+The pipeline accepts this and overwrites the plan file with it, but records a
+degradation (`debate reply used full-plan markers (legacy)`) and the critics
+are notified that you did not patch. Use the section-patch format above as
+the primary path; the legacy format exists only as a fallback.
+
+The patch envelope is mandatory when you change the plan: the pipeline
+extracts only the text between `=== PLAN PATCH START/END ===` and applies it.
+Everything outside the envelope (your per-item notes) is appended to the debate
+file as the reply.

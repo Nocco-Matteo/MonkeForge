@@ -5,7 +5,7 @@ INPUT: the repo, the plan below, and the debate ledger below (prior rounds,
 deduplicated — each raised item once, with its status).
 
 <plan>
-{plan}
+{plan_view}
 </plan>
 
 <debate_ledger>

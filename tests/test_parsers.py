@@ -10,7 +10,12 @@ from pipeline_graph.agents import (
     parse_verdict,
 )
 from pipeline_graph.nodes.common import _extract_json
-from pipeline_graph.nodes.debate import _extract_plan, _latest_section
+from pipeline_graph.nodes.debate import (
+    _apply_section_patch,
+    _extract_plan_or_patch,
+    _is_plan_section_header,
+    _latest_section,
+)
 from pipeline_graph.test_runner import (
     new_failures_since_baseline,
     parse_eslint_errors,
@@ -223,33 +228,181 @@ class TestExtractJson:
         assert _extract_json("") is None
 
 
-# --- _extract_plan ---------------------------------------------------------
+# --- _extract_plan_or_patch (TASK-023) -------------------------------------
 
 
-class TestExtractPlan:
-    def test_with_markers(self):
-        text = "Some notes\n=== PLAN START ===\n# My Plan\nbody\n=== PLAN END ===\nmore"
-        result = _extract_plan(text)
-        assert result is not None
-        assert "# My Plan" in result
-        assert "body" in result
+class TestExtractPlanOrPatch:
+    def test_patch_envelope_extracted(self):
+        text = (
+            "Some notes\n"
+            "=== PLAN PATCH START ===\n"
+            "@@@ REPLACE section: \"X\"\nX\nbody\n@@@ END\n"
+            "=== PLAN PATCH END ===\n"
+            "more notes"
+        )
+        kind, body = _extract_plan_or_patch(text)
+        assert kind == "patch"
+        assert body is not None
+        assert "@@@ REPLACE section:" in body
 
-    def test_no_markers(self):
-        assert _extract_plan("just text") is None
+    def test_legacy_full_plan_markers_extracted(self):
+        text = "=== PLAN START ===\n# My Plan\nbody\n=== PLAN END ==="
+        kind, body = _extract_plan_or_patch(text)
+        assert kind == "legacy"
+        assert body is not None
+        assert "# My Plan" in body
+
+    def test_no_markers_no_patch_tokens(self):
+        # Text with no @@@ and no envelope markers at all -> (None, None).
+        kind, body = _extract_plan_or_patch("just text, no patch tokens")
+        assert kind is None
+        assert body is None
 
     def test_none_input(self):
-        assert _extract_plan(None) is None
+        kind, body = _extract_plan_or_patch(None)
+        assert kind is None
+        assert body is None
 
-    def test_case_insensitive(self):
-        text = "=== plan start ===\ncontent\n=== plan end ==="
-        result = _extract_plan(text)
+    def test_case_insensitive_patch_envelope(self):
+        text = "=== plan patch start ===\n@@@ REPLACE section: \"X\"\nX\n@@@ END\n=== plan patch end ==="
+        kind, body = _extract_plan_or_patch(text)
+        assert kind == "patch"
+
+    def test_malformed_unmatched_patch_start(self):
+        # An unmatched === PLAN PATCH START === with no closing END -> malformed.
+        text = "=== PLAN PATCH START ===\n@@@ REPLACE section: \"X\"\nX\n@@@ END\nno closing marker"
+        kind, body = _extract_plan_or_patch(text)
+        assert kind == "malformed"
+        assert body is None
+
+    def test_malformed_bare_replace_block_no_envelope(self):
+        # A bare @@@ REPLACE … @@@ END block with no surrounding envelope.
+        text = "Some notes\n@@@ REPLACE section: \"X\"\nX\nbody\n@@@ END\nmore notes"
+        kind, body = _extract_plan_or_patch(text)
+        assert kind == "malformed"
+        assert body is None
+
+    def test_malformed_stray_at_at_at_token(self):
+        # A stray @@@ token in prose (no envelope, no REPLACE block).
+        kind, body = _extract_plan_or_patch("prose mentioning @@@ accidentally")
+        assert kind == "malformed"
+        assert body is None
+
+    def test_malformed_unmatched_patch_end(self):
+        # A closing === PLAN PATCH END === with no opening START -> malformed.
+        text = "notes\n=== PLAN PATCH END ===\nmore"
+        kind, body = _extract_plan_or_patch(text)
+        assert kind == "malformed"
+        assert body is None
+
+
+# --- _is_plan_section_header (TASK-023) ------------------------------------
+
+
+class TestIsPlanSectionHeader:
+    def test_numbered_header_with_body(self):
+        lines = ["1. Title", "body line", "2. Next"]
+        assert _is_plan_section_header(lines, 0) is True
+
+    def test_numbered_header_followed_by_another_numbered_is_not_header(self):
+        # A numbered line immediately followed by another numbered line is not
+        # a section header (it's a numbered list item, not a section anchor).
+        lines = ["1. item one", "2. item two", "body"]
+        assert _is_plan_section_header(lines, 0) is False
+
+    def test_non_numbered_line_is_not_header(self):
+        lines = ["plain text", "more text"]
+        assert _is_plan_section_header(lines, 0) is False
+
+    def test_last_line_numbered_is_header(self):
+        lines = ["body", "3. Last Section"]
+        assert _is_plan_section_header(lines, 1) is True
+
+    def test_out_of_range(self):
+        assert _is_plan_section_header(["x"], -1) is False
+        assert _is_plan_section_header(["x"], 5) is False
+
+
+# --- _apply_section_patch (TASK-023) ---------------------------------------
+
+
+class TestApplySectionPatch:
+    PLAN = (
+        "1. First Section\n"
+        "first body line\n"
+        "second body line\n"
+        "2. Second Section\n"
+        "second section body\n"
+        "3. Third Section\n"
+        "third body\n"
+    )
+
+    def test_no_at_at_at_returns_plan_unchanged(self):
+        # A patch body with no @@@ token is a no-op: return the plan unchanged.
+        result = _apply_section_patch(self.PLAN, "no patch tokens here")
+        assert result == self.PLAN
+
+    def test_at_at_at_with_no_valid_blocks_returns_none(self):
+        # @@@ tokens present but no valid REPLACE block -> None (apply failure).
+        result = _apply_section_patch(self.PLAN, "@@@ garbage\n@@@ also garbage")
+        assert result is None
+
+    def test_missing_section_title_returns_none(self):
+        patch = (
+            '@@@ REPLACE section: "Nonexistent Section"\n'
+            "Nonexistent Section\nnew body\n@@@ END\n"
+        )
+        result = _apply_section_patch(self.PLAN, patch)
+        assert result is None
+
+    def test_replaces_target_section_body(self):
+        # The patch body passed to _apply_section_patch is the text BETWEEN the
+        # envelope markers (as extracted by _extract_plan_or_patch).
+        body = (
+            '@@@ REPLACE section: "Second Section"\n'
+            "2. Second Section\n"
+            "completely new body\n"
+            "@@@ END\n"
+        )
+        result = _apply_section_patch(self.PLAN, body)
         assert result is not None
-        assert "content" in result
+        assert "completely new body" in result
+        # The other sections are untouched.
+        assert "1. First Section" in result
+        assert "3. Third Section" in result
+        # The old second-section body is gone.
+        assert "second section body" not in result
 
-    def test_strips_whitespace(self):
-        text = "=== PLAN START ===\n  trimmed  \n=== PLAN END ==="
-        result = _extract_plan(text)
-        assert result == "trimmed"
+    def test_patch_preserves_section_header(self):
+        # A patch whose body's first line is the target section's own header
+        # line results in that header still present verbatim in the result.
+        body = (
+            '@@@ REPLACE section: "First Section"\n'
+            "1. First Section\n"
+            "rewritten first body\n"
+            "@@@ END\n"
+        )
+        result = _apply_section_patch(self.PLAN, body)
+        assert result is not None
+        # The header line survives verbatim.
+        assert "1. First Section" in result
+        # The new body is present.
+        assert "rewritten first body" in result
+        # The old body is gone.
+        assert "first body line" not in result
+
+    def test_multiple_blocks_in_one_patch(self):
+        body = (
+            '@@@ REPLACE section: "First Section"\n'
+            "1. First Section\nnew first\n@@@ END\n"
+            '@@@ REPLACE section: "Third Section"\n'
+            "3. Third Section\nnew third\n@@@ END\n"
+        )
+        result = _apply_section_patch(self.PLAN, body)
+        assert result is not None
+        assert "new first" in result
+        assert "new third" in result
+        assert "2. Second Section" in result
 
 
 # --- _latest_section -------------------------------------------------------
