@@ -965,7 +965,7 @@ def main() -> int:
     p.add_argument("--no-color", dest="no_color", action="store_true",
                    help="disable ANSI colour output (also disabled when "
                         "NO_COLOR is set or stdout is not a TTY)")
-    sub = p.add_subparsers(dest="cmd", required=True)
+    sub = p.add_subparsers(dest="cmd", required=False)
 
     s = sub.add_parser("start"); s.add_argument("task_id")
     s.add_argument("request", nargs="?", default=None)
@@ -979,7 +979,10 @@ def main() -> int:
     s.add_argument("--effort", dest="effort", default=None,
                    choices=["scout-monke", "troop-monke", "barrel-monke"],
                    help="force an effort level (skips the effort checkpoint)")
-    r = sub.add_parser("resume"); r.add_argument("task_id")
+    r = sub.add_parser("resume",
+                       help="resume a paused or interrupted run, optionally "
+                            "answering the pending pause")
+    r.add_argument("task_id")
     r.add_argument("--answer",
                    help="answer to the pending pause (required on non-TTY / --no-input)")
     r.add_argument("--no-input", action="store_true",
@@ -1018,6 +1021,26 @@ def main() -> int:
     mt.add_argument("--all", dest="all", action="store_true",
                     help="aggregate every task into a single summary")
     args = p.parse_args()
+
+    # No subcommand: print concise, examples-first help (item 48).
+    # ``required=False`` on the subparsers lets ``./run.py`` with no args
+    # reach here instead of argparse erroring out — friendlier entry point.
+    if args.cmd is None:
+        print("MonkeForge pipeline CLI — examples:")
+        print()
+        print("  ./run.py start 005 \"rendere pubblicabile la classe Mystic\"")
+        print("  ./run.py start 006 --file docs/tasks/TASK-006-brief.md --auto")
+        print("  ./run.py resume 005                       # resume after crash/suspend")
+        print("  ./run.py resume 005 --answer ok           # answer a pending pause")
+        print("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts")
+        print("  ./run.py status 005                       # current node / batch / pause")
+        print("  ./run.py status 005 --json | jq           # machine-readable status")
+        print("  ./run.py doctor 005                       # failures, degradations, liveness")
+        print("  ./run.py graph                            # print the graph definition")
+        print("  ./run.py metrics 005                      # durations, retries, escalations")
+        print()
+        print("Run `./run.py <command> -h` for per-command options.")
+        return 0
 
     if args.cmd == "notify-daemon":
         from pipeline_graph import notify_daemon as nd_mod

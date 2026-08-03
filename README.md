@@ -53,6 +53,28 @@ rifà solo render + cancello visivo (utile dopo aver sistemato un agente o gli
 screenshot). `doctor` legge `events.jsonl` e ti dà in un colpo crash, agenti
 `unhealthy`, step `blocked`/`degraded`, notifiche e liveness.
 
+### `resume` contro `redo` — quando usare l'uno o l'altro
+
+I due comandi sembrano simili (entrambi riprendono un task esistente) ma
+risolvono problemi opposti:
+
+- **`resume <ID>`** continua dal punto esatto in cui il grafo si è fermato —
+  crash, suspend, terminale chiuso, o un'escalation/checkpoint in attesa di
+  risposta. Lo stato checkpointato su SQLite è la verità: nessun agente deve
+  indovinare dove eravamo. Con `--answer` rispondi alla pausa corrente in un
+  sol colpo (utile su non-TTY o in scripting). Non rifà nulla di già fatto.
+- **`redo <ID> --from <fase>`** scarta deliberatamente lo stato di quella fase
+  in poi e la rilancia riusando gli artefatti a monte. `--from debate` tiene
+  brief+piano e rifà il dibattito; `--from plan` tiene il brief e rifà
+  piano+dibattito; `--from visual` tiene la UI costruita e rifà render + cancello
+  visivo. Lo usi dopo aver sistemato un agente, un prompt o gli screenshot, quando
+  vuoi che il grafo ripassi quella fase con gli input precedenti intatti.
+
+Regola pratica: se il run si è solo **fermato** (aspetta te, o è morto il
+processo), `resume`. Se invece vuoi **rifare** un passaggio perché qualcosa
+a monte è cambiato, `redo`. `resume` non accetta `--from`; `redo` non accetta
+`--answer` — non c'è una pausa da sbloccare, si rilancia e basta.
+
 ---
 
 ## Uso: i casi
