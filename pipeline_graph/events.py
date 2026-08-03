@@ -26,6 +26,7 @@ import socket
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
 
 from . import config as C
 from .event_types import Event
@@ -154,6 +155,17 @@ def emit(kind: str, task: str = "?", step: str = "", msg: str = "",
     except OSError:
         pass
 
+    # Synchronous step-event hook (D9): fires immediately after the event is
+    # persisted to events.jsonl, BEFORE the (potentially 2s-blocking) notify
+    # push, so dispatch/return rendering cannot be delayed by the socket
+    # timeout. The hook drains events.jsonl from a shared cursor and renders
+    # in true chronological order. A broken UI hook must never fail the graph.
+    if kind in ("step_start", "step_end") and _step_hook is not None:
+        try:
+            _step_hook(task, step, msg, **extra)
+        except Exception:
+            pass
+
     if _should_notify(kind, notify):
         role = extra.get("role", "")
         if not role:
@@ -187,6 +199,56 @@ def read_events(task: str, kinds: set[str] | None = None) -> list[dict]:
             continue
         out.append(rec)
     return out
+
+
+# --- synchronous step-event hook (D9) --------------------------------------
+# A process-local callback invoked inside ``emit()`` for ``step_start`` /
+# ``step_end`` events, immediately after the event is persisted to
+# events.jsonl and before the notify push. The driver registers a hook that
+# drains events.jsonl from a shared cursor and renders dispatch/return lines
+# synchronously on the calling thread — so dispatch prints before the agent
+# blocks (C8) and return for N prints before dispatch for N+1 (C6).
+_step_hook: Callable | None = None
+
+
+def set_step_hook(cb: Callable | None) -> None:
+    """Register (or clear with ``None``) the synchronous step-event hook."""
+    global _step_hook
+    _step_hook = cb
+
+
+def read_events_since(task: str, offset: int) -> tuple[list[dict], int]:
+    """Tail-read events.jsonl from byte ``offset`` for one task.
+
+    Returns ``(events, new_offset)`` where ``new_offset`` is the byte offset
+    just past the last byte read (suitable for the next call). Only the new
+    tail bytes are parsed — O(new lines), not O(file) (D13) — so a synchronous
+    hook firing on every ``step_start``/``step_end`` cannot grow dispatch
+    latency with log size. Lines that fail to parse (partial write mid-append)
+    are skipped via ``ValueError``.
+    """
+    if not EVENTS_LOG.exists():
+        return [], 0
+    out: list[dict] = []
+    new_offset = offset
+    try:
+        with EVENTS_LOG.open("rb") as f:
+            f.seek(offset)
+            data = f.read()
+            new_offset = f.tell()
+    except OSError:
+        return [], offset
+    for line in data.splitlines():
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("task") != task:
+            continue
+        out.append(rec)
+    return out, new_offset
 
 
 def read_all_events(kinds: set[str] | None = None) -> list[dict]:

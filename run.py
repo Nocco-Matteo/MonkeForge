@@ -157,6 +157,100 @@ def _role_display_name(node: str) -> str:
     return _role_name_for_role(NODE_TO_ROLE.get(node, node))
 
 
+# --- Council-log coarse-phase section headers (D4) -------------------------
+# Ground truth per the §3 F2 node table: ``checkpoint_plan``/``summary``/
+# ``judge`` break a single-prefix rule, so the mapping is enumerated, not
+# derived. ``init`` and ``escalate`` map to ``""`` → no header, no phase change.
+NODE_TO_PHASE: dict[str, str] = {
+    "intake_ask":         "intake",
+    "intake_wait":        "intake",
+    "plan":               "plan",
+    "checkpoint_effort":  "plan",
+    "checkpoint_plan":    "plan",
+    "debate_tech":        "debate",
+    "debate_ux":          "debate",
+    "debate_reply":       "debate",
+    "summary":            "debate",
+    "judge":              "debate",
+    "implement":          "implement",
+    "code_review":        "implement",
+    "code_fix":           "implement",
+    "code_verify":        "implement",
+    "close_batch":        "implement",
+    "ux_render":          "visual",
+    "ux_visual_review":   "visual",
+    "ux_visual_fix":      "visual",
+    "render_measure":     "visual",
+    "render_review":      "visual",
+    "render_fix":         "visual",
+    "final_check":        "final",
+    "wrap_up":            "final",
+    "init":               "",
+    "escalate":           "",
+}
+
+_PHASE_HEADER: dict[str, str] = {
+    "intake":    "── intake ──",
+    "plan":      "── plan ──",
+    "debate":    "── debate ──",
+    "implement": "── implement ──",
+    "visual":    "── visual ──",
+    "final":     "── final ──",
+}
+
+# --- ANSI colour helpers (D5) ----------------------------------------------
+# One place keeps the byte-stability contract testable: ``_c`` returns text
+# unchanged when colour is off, so a colour-off capture never sees an ESC.
+_ANSI: dict[str, str] = {
+    "reset":  "\x1b[0m",
+    "dim":    "\x1b[2m",
+    "cyan":   "\x1b[36m",
+    "green":  "\x1b[32m",
+    "yellow": "\x1b[33m",
+    "red":    "\x1b[31m",
+    "bold":   "\x1b[1m",
+}
+
+_ANSI_CSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_BARE_ESC_RE = re.compile(r"\x1b")
+# C0 controls except \t (0x09) and \n (0x0a); \r is stripped separately.
+_C0_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _c(text: str, code: str, *, color: bool) -> str:
+    """Wrap ``text`` in an ANSI code when colour is on; return it unchanged
+    when colour is off so colour-off captures stay ESC-free."""
+    if not color:
+        return text
+    return f"{_ANSI[code]}{text}{_ANSI['reset']}"
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove CSI sequences and bare ESC bytes from ``text``."""
+    return _BARE_ESC_RE.sub("", _ANSI_CSI_RE.sub("", str(text)))
+
+
+def _sanitize_text(text, *, color: bool, tty: bool) -> str:
+    """The single choke point for human strings printed to stderr (D10).
+
+    When colour is on AND the stream is a TTY, text is returned unchanged
+    (coloured TTY mode). Otherwise — colour off OR non-TTY — CSI sequences,
+    bare ESC bytes, embedded ``\\r`` and other C0 controls (except ``\\n`` /
+    ``\\t``) are stripped so redirected / ``NO_COLOR`` / non-TTY captures stay
+    ESC-free and ``\\r``-free (C4/C5). Applied to every human-facing field:
+    event ``msg``, role names, pause ``reason``/``context``/``plan``/``final``
+    /option keys+labels/batch lines, crash one-liner, journal snippets.
+    """
+    s = str(text)
+    if color and tty:
+        return s
+    s = _ANSI_CSI_RE.sub("", s)
+    s = _BARE_ESC_RE.sub("", s)
+    s = s.replace("\r", "")
+    s = _C0_RE.sub("", s)
+    return s
+
+
 @contextlib.contextmanager
 def _sleep_inhibitor():
     """Prevent system sleep while the pipeline is running.
@@ -239,7 +333,7 @@ def _options_from_data(data: dict) -> list[dict]:
     return []
 
 
-def _print_pause(data: dict, task_id: str) -> None:
+def _print_pause(data: dict, task_id: str, *, color: bool = False) -> None:
     """Print a pause as instructions instead of an opaque JSON blob.
 
     Renders from a single ``options``-shaped list — the structured escalation
@@ -248,32 +342,53 @@ def _print_pause(data: dict, task_id: str) -> None:
     menu. The ``./run.py resume <id> --answer ...`` action line is always
     printed last, after the choices, so a human scanning upward sees the
     action they must take immediately above the prompt.
+
+    All output goes to ``sys.stderr`` (C1/C9). Every human-facing field is run
+    through ``_sanitize_text`` (D10/Delta A) so colour-off / non-TTY captures
+    stay ESC-free and ``\\r``-free: ``stage``, ``reason``, ``context``,
+    ``plan``, ``final``, batch lines, option ``key``/``label``.
     """
-    stage = str(data.get("stage", ""))
-    print(f"\n=== PAUSED: {stage} ===")
-    print(f"  what to do: {_pause_reason(data)}")
+    tty = sys.stderr.isatty()
+    stage = _sanitize_text(str(data.get("stage", "")), color=color, tty=tty)
+    sys.stderr.write(f"\n{_c('=== PAUSED:', 'bold', color=color)} "
+                     f"{_c(stage, 'cyan', color=color)} "
+                     f"{_c('===', 'bold', color=color)}\n")
+    sys.stderr.write(
+        f"  {_c('what to do:', 'dim', color=color)} "
+        f"{_sanitize_text(_pause_reason(data), color=color, tty=tty)}\n")
     if data.get("context"):
-        print(f"  context: {data['context']}")
+        sys.stderr.write(
+            f"  {_c('context:', 'dim', color=color)} "
+            f"{_sanitize_text(data['context'], color=color, tty=tty)}\n")
     # Plan / verdict artifacts the human should read before answering.
     if data.get("plan"):
-        print(f"  plan: {data['plan']}")
+        sys.stderr.write(
+            f"  {_c('plan:', 'dim', color=color)} "
+            f"{_sanitize_text(data['plan'], color=color, tty=tty)}\n")
     if data.get("final"):
-        print(f"  final: {data['final']}")
+        sys.stderr.write(
+            f"  {_c('final:', 'dim', color=color)} "
+            f"{_sanitize_text(data['final'], color=color, tty=tty)}\n")
     batches = data.get("batches")
     if isinstance(batches, list) and batches:
-        print("  batches:")
+        sys.stderr.write(f"  {_c('batches:', 'dim', color=color)}\n")
         for b in batches:
-            print(f"    - {b}")
+            sys.stderr.write(
+                f"    - {_sanitize_text(b, color=color, tty=tty)}\n")
     options = _options_from_data(data)
     if options:
-        print("  choices:")
+        sys.stderr.write(f"  {_c('choices:', 'dim', color=color)}\n")
         hint = data.get("hint")
         for opt in options:
-            key = opt.get("key", "")
-            label = opt.get("label", "")
-            marker = "  (recommended)" if key == hint else ""
-            print(f"    {key}{marker} — {label}")
-    print(f"  action: ./run.py resume {task_id} --answer \"<choice>\"")
+            key = _sanitize_text(opt.get("key", ""), color=color, tty=tty)
+            label = _sanitize_text(opt.get("label", ""), color=color, tty=tty)
+            marker = (_c("  (recommended)", "dim", color=color)
+                      if opt.get("key") == hint else "")
+            sys.stderr.write(
+                f"    {_c(key, 'cyan', color=color)}{marker} — {label}\n")
+    sys.stderr.write(
+        f"  {_c('action:', 'dim', color=color)} "
+        f"./run.py resume {task_id} --answer \"<choice>\"\n")
 
 
 def _pending_options(snap) -> list[dict] | None:
@@ -343,36 +458,55 @@ def _validate_answer(answer, options, *, free_text_allowed=False,
             f"(stop, no, abort, cancel)")
 
 
-def _tty_pick(options: list[dict], data: dict) -> str:
+def _tty_pick(options: list[dict], data: dict, *, color: bool = False) -> str:
     """Interactive picker: list the pending options and read a choice from stdin.
 
     Returns the chosen option's canonical key. Falls back to the hint (or
     ``"ok"``) on an empty line so a bare Enter takes the recommended path.
+
+    The prompt is written to ``sys.stderr`` (C9 — not via ``input()`` to
+    stdout) and stdin is read via ``sys.stdin.readline()`` so the prompt and
+    the answer stay on the same stream. Every human-facing field is run through
+    ``_sanitize_text`` (D10/Delta A): ``stage``, ``reason``, option
+    ``key``/``label``. Colour is gated by the ``color`` flag threaded in from
+    ``main()`` so ``resume --no-color`` / ``NO_COLOR`` / ``TERM=dumb`` / non-TTY
+    stderr all suppress ANSI in the pause chrome (C5/C9).
     """
     from pipeline_graph.nodes.common import _canonical_key
 
-    stage = str(data.get("stage", "?"))
-    reason = str(data.get("reason", "")).strip()
+    tty = sys.stderr.isatty()
+    stage = _sanitize_text(str(data.get("stage", "?")), color=color, tty=tty)
+    reason = _sanitize_text(str(data.get("reason", "")).strip(),
+                            color=color, tty=tty)
     hint = str(data.get("hint", "")).strip()
-    print(f"\n=== PAUSED: {stage} ===")
+    sys.stderr.write(f"\n{_c('=== PAUSED:', 'bold', color=color)} "
+                     f"{_c(stage, 'cyan', color=color)} "
+                     f"{_c('===', 'bold', color=color)}\n")
     if reason:
-        print(f"  {reason}")
+        sys.stderr.write(f"  {reason}\n")
     if not options:
         # Free-text pause (plan approval): read a raw line.
-        print("  type your answer and press Enter (empty = approve):")
+        sys.stderr.write(
+            f"  {_c('type your answer and press Enter (empty = approve):', 'dim', color=color)}\n")
+        sys.stderr.write("> ")
         try:
-            line = input("> ").strip()
+            line = sys.stdin.readline().strip()
         except EOFError:
             line = ""
         return line or "ok"
-    print("  choices:")
+    sys.stderr.write(f"  {_c('choices:', 'dim', color=color)}\n")
     for i, opt in enumerate(options, 1):
-        key = opt.get("key", "?")
-        label = opt.get("label", "")
-        marker = "  (recommended)" if key == hint else ""
-        print(f"    [{i}] {key}{marker} — {label}")
+        key = _sanitize_text(opt.get("key", "?"), color=color, tty=tty)
+        label = _sanitize_text(opt.get("label", ""), color=color, tty=tty)
+        marker = (_c("  (recommended)", "dim", color=color)
+                  if opt.get("key") == hint else "")
+        sys.stderr.write(
+            f"    {_c(f'[{i}]', 'dim', color=color)} "
+            f"{_c(key, 'cyan', color=color)}{marker} — {label}\n")
+    sys.stderr.write(
+        f"  {_c(f'pick [1-{len(options)}] or type a key:', 'dim', color=color)} ")
     try:
-        line = input(f"  pick [1-{len(options)}] or type a key: ").strip()
+        line = sys.stdin.readline().strip()
     except EOFError:
         line = ""
     if not line:
@@ -428,117 +562,259 @@ def _mark_idle(task_id: str, why: str) -> None:
         pass
 
 
-def _render_council_events(task_id: str, cursor: int,
-                           step_end_buffer: dict[str, str]) -> int:
-    """Render newly-arrived ``step_start``/``step_end`` events since ``cursor``.
+# --- Council-log rendering infrastructure (D2/D6/D8/D9/D12/D13) ------------
+# A single module-level lock serialises every stderr write that touches the
+# in-place progress line: the UI thread's heartbeat refresh, the synchronous
+# step-event hook's dispatch/return rendering, the crash path's finish+print,
+# and the permanent-line emission (pause/finished/stall). The lock is a plain
+# (non-reentrant) ``threading.Lock``; the rendering helpers below are
+# lock-HELD — they never acquire ``_progress_lock`` themselves, the caller
+# must already hold it (D12). This avoids the self-deadlock a reentrant
+# helper would mask.
+_progress_lock = threading.Lock()
 
-    ``step_start`` lines print immediately (with the node's role display name).
-    ``step_end`` return lines are buffered by node name in ``step_end_buffer``
-    and only emitted by the caller upon the next ``step_start`` or stream end
-    — the dedup buffer is keyed strictly by node name (not event index), so
-    fast-alternating nodes cannot cross-contaminate buffered return lines, and
-    a node that fires multiple ``step_end`` events collapses to one line.
+# Mutable state shared between the main thread, the synchronous step-event
+# hook (which runs on the graph thread), and the UI daemon thread.
+#   dispatched_node : the node a dispatch line was last printed for (D8
+#                     nested-suppression guard), or None after a real return.
+#   last_phase      : the last coarse phase a section header was emitted for.
+#   events_offset   : shared byte cursor into events.jsonl (D13 tail read).
+#   disabled        : set True at shutdown so a late UI iteration cannot print
+#                     after === FINISHED === (D11).
+#   color / tty     : cached gate values for the current drive.
+ui_state: dict = {
+    "dispatched_node": None,
+    "last_phase": "",
+    "events_offset": 0,
+    "disabled": False,
+    "color": False,
+    "tty": False,
+}
 
-    Returns the new event cursor.
+# Drop the instrument's ``[outcome] `` prefix from a return msg in favour of
+# the ✓/⛔ symbol rendered by ``_emit_return``.
+_OUTCOME_PREFIX_RE = re.compile(r"^\[(ok|blocked|failed|degraded)\]\s*")
+
+
+def _finish_progress(*, color: bool, tty: bool) -> None:
+    """Clear the in-place progress line (D6). Caller MUST hold ``_progress_lock``.
+
+    TTY + colour on ⇒ ``\\r\\x1b[K``; TTY + colour off ⇒ ``\\r`` + space-padding
+    to a fixed width then ``\\r`` (no ``\\x1b``); non-TTY ⇒ nothing.
     """
-    events = ev.read_events(task_id)[cursor:]
+    if not tty:
+        return
+    if color:
+        sys.stderr.write("\r\x1b[K")
+    else:
+        sys.stderr.write("\r" + " " * 80 + "\r")
+
+
+def _emit_dispatch(node: str, *, msg: str, color: bool) -> None:
+    """Render a dispatch (step_start) line (D4/D8). Caller MUST hold
+    ``_progress_lock`` (D12) — this helper never acquires it.
+
+    Suppresses nested re-entry: a ``step_start`` for a node already equal to
+    ``dispatched_node`` (the implement.py test-baseline nested emit) prints
+    nothing. Otherwise finishes the progress line, emits a section header on a
+    real phase transition, prints the dispatch line, and records the node.
+    """
+    if ui_state["disabled"] or node == ui_state["dispatched_node"]:
+        return
+    tty = ui_state["tty"]
+    _finish_progress(color=color, tty=tty)
+    phase = NODE_TO_PHASE.get(node, "")
+    if phase and phase != ui_state["last_phase"]:
+        sys.stderr.write("\n")
+        sys.stderr.write(_c(_PHASE_HEADER[phase], "dim", color=color) + "\n")
+        ui_state["last_phase"] = phase
+    name = _sanitize_text(_role_display_name(node), color=color, tty=tty)
+    body = _sanitize_text(msg, color=color, tty=tty)
+    sys.stderr.write(f"  {_c(name, 'cyan', color=color)} · {body}\n")
+    ui_state["dispatched_node"] = node
+
+
+def _emit_return(node: str, msg: str, outcome: str, *, color: bool) -> None:
+    """Render a return (step_end) line (D8). Caller MUST hold ``_progress_lock``
+    (D12) — this helper never acquires it.
+
+    Only called for events carrying an ``outcome`` field (the instrument always
+    sets it; manual emits do not and are dropped by ``_drain_events``). Drops
+    the ``[outcome] `` prefix from ``msg`` in favour of ✓/⛔.
+    """
+    if ui_state["disabled"]:
+        return
+    tty = ui_state["tty"]
+    _finish_progress(color=color, tty=tty)
+    name = _sanitize_text(_role_display_name(node), color=color, tty=tty)
+    body = _sanitize_text(msg, color=color, tty=tty)
+    body = _OUTCOME_PREFIX_RE.sub("", body)
+    if outcome == "ok":
+        sym, code = "✓", "green"
+    elif outcome == "failed":
+        sym, code = "⛔", "red"
+    else:  # blocked / degraded / unknown → yellow
+        sym, code = "⛔", "yellow"
+    sys.stderr.write(f"  {_c(sym, code, color=color)} "
+                     f"{_c(name, 'cyan', color=color)} · {body}\n")
+
+
+def _drain_events(task_id: str) -> None:
+    """Read new events since the shared cursor and render them in true
+    chronological order (D9/D13). Caller MUST hold ``_progress_lock`` (D12).
+
+    Uses ``ev.read_events_since`` (a tail byte-read, O(new lines)) so a hook
+    firing on every ``step_start``/``step_end`` cannot grow dispatch latency
+    with log size (Delta B). Applies D8 nested filtering: a ``step_start`` for
+    a node already dispatched is suppressed; a ``step_end`` without an
+    ``outcome`` field (manual auto-fix / test-baseline events) is silently
+    dropped; a real ``step_end`` clears ``dispatched_node``.
+    """
+    color = ui_state["color"]
+    events, new_offset = ev.read_events_since(task_id, ui_state["events_offset"])
+    ui_state["events_offset"] = new_offset
     for e in events:
         kind = e.get("kind")
         node = e.get("step", "")
         if not node:
             continue
         if kind == "step_start":
-            # Flush every buffered step_end return line from prior nodes before
-            # announcing the next step — the return line for node N appears when
-            # node N+1 starts (or at stream end), never inline with the event.
-            for _prev, line in step_end_buffer.items():
-                print(line, flush=True)
-            step_end_buffer.clear()
-            print(f"  [{_role_display_name(node)}] {e.get('msg', '')}", flush=True)
+            _emit_dispatch(node, msg=e.get("msg", ""), color=color)
         elif kind == "step_end":
-            step_end_buffer[node] = (
-                f"  [{_role_display_name(node)}] {e.get('msg', '')}"
-            )
-    return cursor + len(events)
+            if "outcome" in e:
+                _emit_return(node, e.get("msg", ""), e.get("outcome", "ok"),
+                             color=color)
+                ui_state["dispatched_node"] = None
 
 
-def _start_working_line_thread(task_id: str, stop_event: threading.Event
-                               ) -> threading.Thread:
-    """Start a daemon thread that prints a live working-elapsed line.
+def _refresh_progress(task_id: str) -> None:
+    """Refresh the in-place progress line from the ``current.json`` heartbeat
+    (D2). Caller MUST hold ``_progress_lock`` (D12). TTY-only: non-TTY stderr
+    emits no ``\\r`` animation (C4). A partial/non-atomic ``current.json`` write
+    raises ``ValueError`` (``JSONDecodeError``) — caught and skipped so one bad
+    read cannot kill progress for the rest of the run (D7).
+    """
+    color = ui_state["color"]
+    tty = ui_state["tty"]
+    if not tty:
+        return
+    cur_path = C.METRICS / "current.json"
+    if not cur_path.exists():
+        return
+    try:
+        cur = json.loads(cur_path.read_text())
+    except (OSError, ValueError):
+        return  # D7: partial write — skip this iteration, keep the thread alive
+    if cur.get("task") != task_id or cur.get("phase") == "agent done":
+        return
+    started = cur.get("started")
+    if not started:
+        return
+    try:
+        started_dt = datetime.fromisoformat(started)
+    except ValueError:
+        return
+    elapsed = int((datetime.now(timezone.utc) - started_dt).total_seconds())
+    role = cur.get("role", "")
+    name = _sanitize_text(_role_name_for_role(role), color=color, tty=tty)
+    step = _sanitize_text(cur.get("step", ""), color=color, tty=tty)
+    body = f"{_c('…', 'dim', color=color)} {_c(name, 'cyan', color=color)} · {step} · {elapsed}s"
+    if color:
+        sys.stderr.write(f"\r\x1b[K{body}")
+    else:
+        sys.stderr.write(f"\r{body.ljust(80)}")
 
-    Reads ``C.METRICS / "current.json"`` (the heartbeat ``run_agent`` writes
-    while an agent step runs) and, when it points at this drive's task and the
-    step is not yet ``"agent done"``, prints a ``... <role> working on <step>
-    (<N>s elapsed)`` line. Daemonized so it never blocks process exit; stopped
-    via ``stop_event`` set in the driver's ``finally`` block.
+
+def _start_ui_thread(task_id: str, stop_event: threading.Event
+                     ) -> threading.Thread:
+    """Start the UI daemon thread (D2).
+
+    One thread does both jobs: refresh the in-place progress line from
+    ``current.json`` (~10 Hz) and, as a safety net, drain any ``events.jsonl``
+    events the synchronous step-event hook has not already rendered. The sync
+    hook (D9) advances the shared cursor on every ``step_start``/``step_end``,
+    so the poller's event read is normally a no-op; the poller's real job is
+    the heartbeat. The thread checks ``stop_event`` at the TOP of its loop,
+    BEFORE acquiring ``_progress_lock``, so a crash path that sets
+    ``stop_event`` then joins (without holding the lock) lets the thread exit
+    without contending. Every per-iteration stderr write is wrapped in
+    ``try/except (BrokenPipeError, OSError, ValueError)`` (D7) so a closed
+    pipe or a partial ``current.json`` cannot kill the thread.
     """
     def _loop():
         while not stop_event.is_set():
             try:
-                cur_path = C.METRICS / "current.json"
-                if cur_path.exists():
-                    cur = json.loads(cur_path.read_text())
-                    # Item 34: only render this drive's task — a stale
-                    # current.json from a different run must not leak in.
-                    if cur.get("task") == task_id:
-                        # Item 35: "agent done" marks the post-step heartbeat;
-                        # no working line while between steps.
-                        if cur.get("phase") != "agent done":
-                            started = cur.get("started")
-                            # Item 36: ``started`` is an ISO-8601 timestamp
-                            # written by run_agent, not a numeric epoch.
-                            if started:
-                                try:
-                                    started_dt = datetime.fromisoformat(started)
-                                except ValueError:
-                                    started_dt = None
-                                if started_dt is not None:
-                                    elapsed = int((datetime.now(timezone.utc)
-                                                   - started_dt).total_seconds())
-                                    role = cur.get("role", "")
-                                    name = _role_name_for_role(role)
-                                    step = cur.get("step", "")
-                                    print(f"  ... {name} working on {step} "
-                                          f"({elapsed}s elapsed)", flush=True)
-            except (OSError, ValueError):
+                with _progress_lock:
+                    if not ui_state["disabled"]:
+                        _refresh_progress(task_id)
+                        _drain_events(task_id)
+            except (BrokenPipeError, OSError, ValueError):
                 pass
-            stop_event.wait(10)
+            stop_event.wait(0.1)
 
-    t = threading.Thread(target=_loop, name="mf-working-line", daemon=True)
+    t = threading.Thread(target=_loop, name="mf-ui", daemon=True)
     t.start()
     return t
 
 
-def _drive(graph, task_id, payload) -> int:
-    """Run until the graph ends or hits an interrupt; print what happened."""
+def _step_event_hook(task_id: str, step: str, msg: str, **extra) -> None:
+    """Synchronous step-event callback (D9): render dispatch/return
+    immediately on the calling thread. Registered on ``ev`` via
+    ``ev.set_step_hook``; fires inside ``ev.emit`` right after the event is
+    persisted to ``events.jsonl`` and before the notify push, so dispatch
+    prints before the agent blocks (C8) and return for N prints before
+    dispatch for N+1 (C6). Drains from the shared cursor in event order.
+    """
+    with _progress_lock:
+        _drain_events(task_id)
+
+
+def _drive(graph, task_id, payload, args=None) -> int:
+    """Run until the graph ends or hits an interrupt; print what happened.
+
+    ``args`` is the parsed CLI namespace (or ``None`` when called directly from
+    tests) so ``--no-color`` / ``NO_COLOR`` / ``TERM=dumb`` / non-TTY stderr all
+    gate colour. Council-log narration, progress, pause chrome, the finished
+    banner and the stall line all print to ``sys.stderr`` (C1); machine output
+    (``status --json``, help, ``--version``, ``metrics``) stays on stdout (C2).
+    """
     cfg = _thread(task_id)
     seen_updates = False
-    # Item 29: event-cursor baseline captured before consuming any events, so
-    # historical events from earlier runs on the same task id are skipped —
-    # only events emitted by THIS drive are rendered in the council log.
-    cursor = len(ev.read_events(task_id))
-    step_end_buffer: dict[str, str] = {}
-    stop_event = threading.Event()
-    _start_working_line_thread(task_id, stop_event)
+    color = _use_color(args, stream=sys.stderr)
     try:
-        # Item 27: stream_mode is updates-only — the "debug" mode that printed
-        # bare ``[<node>] ...`` lines (and a ``[?]`` placeholder when a debug
-        # chunk lacked a name) is gone.
+        tty = sys.stderr.isatty()
+    except (AttributeError, ValueError, OSError):
+        tty = False
+    # Reset the shared UI state for this drive.
+    ui_state["dispatched_node"] = None
+    ui_state["last_phase"] = ""
+    ui_state["disabled"] = False
+    ui_state["color"] = color
+    ui_state["tty"] = tty
+    # Event-cursor baseline (D13): capture the current byte offset so historical
+    # events from earlier runs on the same task id are skipped — only events
+    # emitted by THIS drive are rendered.
+    ui_state["events_offset"] = (
+        ev.EVENTS_LOG.stat().st_size if ev.EVENTS_LOG.exists() else 0)
+    stop_event = threading.Event()
+    ui_thread = _start_ui_thread(task_id, stop_event)
+    ev.set_step_hook(_step_event_hook)
+    try:
+        # stream_mode is updates-only — the "debug" mode that printed bare
+        # ``[<node>] ...`` lines (and a ``[?]`` placeholder when a debug chunk
+        # lacked a name) is gone. Dispatch/return are rendered synchronously by
+        # the step-event hook as events are emitted, NOT after the chunk yields.
         for mode, chunk in graph.stream(payload, cfg, stream_mode=["updates"]):
             if mode == "updates":
                 for node, delta in chunk.items():
                     if node == "__interrupt__":
                         continue
                     seen_updates = True
-            # Render any step_start/step_end events the instrumented nodes
-            # emitted since the last chunk. step_end return lines are buffered
-            # by node name and flushed on the next step_start or at stream end.
-            cursor = _render_council_events(task_id, cursor, step_end_buffer)
     except KeyboardInterrupt:
         ev.emit("run_stalled", task_id, "driver", "interrupted from the keyboard")
         raise
     except BrokenPipeError:
-        # stdout pipe closed (parent terminal died during a background run).
+        # stderr pipe closed (parent terminal died during a background run).
         # Redirect BOTH stdout and stderr to /dev/null so remaining prints (and
         # any traceback on stderr) don't re-raise, then continue to the
         # post-stream logic — the pipeline state is still valid.
@@ -553,28 +829,65 @@ def _drive(graph, task_id, payload) -> int:
     except Exception as exc:
         # Something outside any node — the checkpointer, the stream itself.
         # instrument() cannot see this, so it is caught and announced here.
-        ev.emit("run_stalled", task_id, "driver",
-                f"driver crashed: {type(exc).__name__}: {exc}")
-        raise
-    finally:
-        # Item 33: the working-line thread is daemonized and stopped via the
-        # event set here, so a KeyboardInterrupt during graph.stream still
-        # exits cleanly without a lingering background thread.
+        # D11/C10: FIRST stop+join the UI thread WITHOUT holding the lock, THEN
+        # under the lock clear the in-place line and print a human one-liner +
+        # journal/raw path on stderr (no traceback body). The report itself is
+        # wrapped in try/except (BrokenPipeError, OSError, ValueError): a
+        # closed/invalid stderr can raise ValueError as well as pipe errors —
+        # catch all three, skip the print, still return 2 / still attempt the
+        # emit in its own try. The reporter must never raise and must never let
+        # Python print a traceback. KeyboardInterrupt still re-raises (above).
         stop_event.set()
+        try:
+            ui_thread.join(timeout=1.0)
+        except Exception:
+            pass
+        ui_state["disabled"] = True
+        try:
+            with _progress_lock:
+                _finish_progress(color=color, tty=tty)
+                one_liner = _sanitize_text(
+                    f"driver crashed: {type(exc).__name__}: {exc}",
+                    color=color, tty=tty)
+                sys.stderr.write(f"\n{one_liner}\n")
+                sys.stderr.write(
+                    f"  journal: {C.METRICS / f'journal-{task_id}.log'}\n")
+                sys.stderr.write(f"  events: {ev.EVENTS_LOG}\n")
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        try:
+            ev.emit("run_stalled", task_id, "driver",
+                    f"driver crashed: {type(exc).__name__}: {exc}")
+        except Exception:
+            pass
+        return 2
+    finally:
+        stop_event.set()
+        ev.set_step_hook(None)
+        try:
+            ui_thread.join(timeout=1.0)
+        except Exception:
+            pass
 
-    # Drain any events emitted after the last chunk (the final node's step_end
-    # lands here), then flush the remaining buffered return lines at stream end.
-    cursor = _render_council_events(task_id, cursor, step_end_buffer)
-    for _node, line in step_end_buffer.items():
-        print(line, flush=True)
-    step_end_buffer.clear()
+    # Final event drain on the main thread under the lock: any trailing
+    # step_end (the last node's return) lands here. The crash path returned
+    # early above; KeyboardInterrupt re-raised; BrokenPipe fell through to a
+    # /dev/null stderr. D11: a late UI iteration cannot race this because
+    # ``stop_event`` is set and the thread is joined. ``disabled`` is set
+    # AFTER the drain so the trailing step_end is actually rendered (the
+    # emit helpers early-return on ``disabled``).
+    with _progress_lock:
+        _drain_events(task_id)
+    ui_state["disabled"] = True
 
     snap = graph.get_state(cfg)
     if not seen_updates and payload is None and snap.next:
-        print(f"  (resuming — next node: {snap.next[0]})")
+        sys.stderr.write(f"  (resuming — next node: {snap.next[0]})\n")
     if snap.interrupts:
         data = snap.interrupts[0].value
-        _print_pause(data, task_id)
+        with _progress_lock:
+            _finish_progress(color=color, tty=tty)
+        _print_pause(data, task_id, color=color)
         # Carry the answer menu (and, for a visual escalation, where the
         # screenshots are) in the event so the optional Discord bot can build
         # one button per valid answer without querying the graph internals.
@@ -602,13 +915,17 @@ def _drive(graph, task_id, payload) -> int:
     elif snap.next:
         # Neither finished nor waiting for anyone: this is a stall, and it used
         # to be reported with the same quiet one-liner as a clean pause.
-        print(f"\nstopped at: {snap.next}")
+        with _progress_lock:
+            _finish_progress(color=color, tty=tty)
+            sys.stderr.write(f"\nstopped at: {snap.next}\n")
         ev.emit("run_stalled", task_id, str(snap.next[0]),
                 f"run stopped at {snap.next} without finishing or asking anything")
         _mark_idle(task_id, "stalled")
         return 1
     else:
-        print("\n=== FINISHED ===")
+        with _progress_lock:
+            _finish_progress(color=color, tty=tty)
+            sys.stderr.write("\n=== FINISHED ===\n")
         _mark_idle(task_id, "finished")
         return 0
 
@@ -912,25 +1229,37 @@ def _metrics(args) -> int:
     return 0
 
 
-def _use_color(args) -> bool:
-    """Return True iff colour output should be emitted.
+def _use_color(args, *, stream=None) -> bool:
+    """Return True iff colour output should be emitted on ``stream``.
 
-    Colour is gated on ALL of:
-      * stdout is a TTY (no colour when piped/redirected), AND
+    ``stream`` defaults to ``sys.stderr`` — the council-log stream — so the
+    gate tests the TTY-ness of the stream the human messaging actually goes
+    to, not stdout. Colour is gated on ALL of:
+
+      * ``stream`` is a TTY (no colour when piped/redirected), AND
       * ``--no-color`` was not passed on the CLI, AND
-      * the ``NO_COLOR`` environment variable is unset/empty
-        (the de-facto https://no-color.org convention).
+      * the ``NO_COLOR`` environment variable is unset (tested by *presence*
+        via ``"NO_COLOR" in os.environ`` so an empty-but-set ``NO_COLOR=``
+        disables colour per https://no-color.org), AND
+      * ``TERM`` is not ``dumb``.
 
-    The pipeline currently emits no ANSI codes, so this is the single
-    gate any future colour-aware print must consult — keeping the
-    contract (``--no-color`` / ``NO_COLOR`` / non-TTY ⇒ plain text)
+    This is the single gate every colour-aware council-log / pause-chrome
+    print consults — keeping the contract
+    (``--no-color`` / ``NO_COLOR`` / non-TTY / ``TERM=dumb`` ⇒ plain text)
     in one place.
     """
-    if not sys.stdout.isatty():
+    if stream is None:
+        stream = sys.stderr
+    try:
+        if not stream.isatty():
+            return False
+    except (AttributeError, ValueError):
         return False
     if getattr(args, "no_color", False):
         return False
-    if os.environ.get("NO_COLOR"):
+    if "NO_COLOR" in os.environ:
+        return False
+    if os.environ.get("TERM") == "dumb":
         return False
     return True
 
@@ -1122,6 +1451,10 @@ def main(argv=None) -> int:
         if not C.CHECKPOINT_DB.exists():
             print(f"no checkpoint DB found at {C.CHECKPOINT_DB}", file=sys.stderr)
             return 1
+        # Compute the colour gate once for the resume pause-handling block so
+        # ``resume --no-color`` / ``NO_COLOR`` / ``TERM=dumb`` / non-TTY stderr
+        # all suppress ANSI in the interactive picker chrome (C5/C9).
+        _resume_color = _use_color(args, stream=sys.stderr)
         with open_checkpointer() as _cp:
             _graph = build_graph(_cp)
             _snap = _graph.get_state(_thread(args.task_id))
@@ -1146,7 +1479,7 @@ def main(argv=None) -> int:
                       "rerun with an answer from the pause menu", file=sys.stderr)
                 return 2
             else:
-                args.answer = _tty_pick(_options or [], _data)
+                args.answer = _tty_pick(_options or [], _data, color=_resume_color)
         # No pending interrupt: args.answer stays None; the resume handler
         # below treats that as "continue at the next node".
 
@@ -1300,7 +1633,7 @@ def main(argv=None) -> int:
                     f"re-running from {args.from_phase} (reusing {reuse})")
             print(f"  re-entering at {nxt}, reusing {reuse}")
             payload = None
-            return _drive(graph, args.task_id, payload)
+            return _drive(graph, args.task_id, payload, args=args)
 
         if args.cmd == "start":
             request = args.request
@@ -1343,7 +1676,7 @@ def main(argv=None) -> int:
                         f"no open question; continuing at "
                         f"{snap.next[0] if snap.next else 'END'}")
 
-        return _drive(graph, args.task_id, payload)
+        return _drive(graph, args.task_id, payload, args=args)
     return 0
 
 
