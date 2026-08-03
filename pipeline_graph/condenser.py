@@ -321,9 +321,31 @@ def condense(text: str, keep_recent: int) -> str:
 # status. Pure text-in/string-out — no LLM, no IO, no events (C1).
 
 
+# Fold typographic quotes into ASCII so raise/reply claim keys match when an
+# LLM (or paste) uses curly apostrophes/quotes in one place and straight in
+# another. Seen on TASK-022: critic raised `C8's` (U+2019) and proposer
+# resolved `C8's` (ASCII) → ledger left the blocker OPEN through verification.
+_CLAIM_QUOTE_FOLD = str.maketrans({
+    "\u2018": "'",  # ‘ left single quotation mark
+    "\u2019": "'",  # ’ right single quotation mark
+    "\u201a": "'",  # ‚ single low-9 quotation mark
+    "\u2032": "'",  # ′ prime
+    "\u00b4": "'",  # ´ acute accent
+    "\u201c": '"',  # “ left double quotation mark
+    "\u201d": '"',  # ” right double quotation mark
+    "\u201e": '"',  # „ double low-9 quotation mark
+    "\u2033": '"',  # ″ double prime
+})
+
+
 def _normalize_claim(claim: str) -> str:
-    r"""Strip surrounding ``*``/``\```` and collapse internal whitespace."""
-    norm = claim.strip().strip("*`").strip()
+    r"""Strip surrounding ``*``/``\````, fold smart quotes, collapse whitespace.
+
+    Matching key only — display text keeps the first-raise wording. Quote
+    folding is load-bearing for ledger RESOLVED status when critics and
+    proposers disagree on apostrophe glyphs.
+    """
+    norm = claim.strip().strip("*`").strip().translate(_CLAIM_QUOTE_FOLD)
     return re.sub(r"\s+", " ", norm).strip()
 
 

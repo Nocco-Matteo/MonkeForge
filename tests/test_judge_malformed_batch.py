@@ -62,3 +62,45 @@ class TestJudgeMalformedBatch:
         assert not d.get("escalation"), f"valid batches must not escalate: {d.get('escalation')}"
         assert d["batch_idx"] == 0
         assert [b["n"] for b in d["batches"]] == [1, 2]
+
+
+class TestJudgeEscalateNoneIsNoop:
+    """TASK-022: ``ESCALATE: none — …`` must not pause the run."""
+
+    def _run(self, monkeypatch, tmp_path, first_line: str):
+        monkeypatch.setattr(C, "FINAL", tmp_path)
+        batches = [{"n": 1, "scope": "s", "checklist": [1]}]
+        out = (
+            f"{first_line}\n\n"
+            "Judge report body with rulings.\n"
+            "HAS_UI: NO\n"
+        )
+        state = _state("je")
+        with patch.object(N, "run_agent", return_value=(0, out)), \
+                patch.object(_finalize, "_extract_json", return_value=batches), \
+                patch.object(_finalize, "_write_progress"):
+            return _finalize.judge(state)
+
+    def test_none_emdash_is_noop(self, monkeypatch, tmp_path):
+        d = self._run(
+            monkeypatch, tmp_path,
+            "ESCALATE: none — both contested items are verifiable from the repo",
+        )
+        assert not d.get("escalation"), d.get("escalation")
+        assert len(d.get("batches", [])) == 1
+
+    def test_bare_none_is_noop(self, monkeypatch, tmp_path):
+        d = self._run(monkeypatch, tmp_path, "ESCALATE: none")
+        assert not d.get("escalation"), d.get("escalation")
+
+    def test_no_issues_is_noop(self, monkeypatch, tmp_path):
+        d = self._run(monkeypatch, tmp_path, "ESCALATE: no issues")
+        assert not d.get("escalation"), d.get("escalation")
+
+    def test_real_escalate_still_fires(self, monkeypatch, tmp_path):
+        d = self._run(
+            monkeypatch, tmp_path,
+            "ESCALATE: product trade-off on notify defaults — needs human",
+        )
+        assert d.get("escalation", "").startswith("judge escalated:")
+        assert "product trade-off" in d["escalation"]

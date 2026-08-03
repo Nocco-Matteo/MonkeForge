@@ -35,7 +35,8 @@ instead of ruling ONLY if: the fact cannot be verified from the repo; the call
 is a product trade-off rather than a technical one; both options are defensible
 and the losing one is irreversible or expensive to undo; or ruling would change
 the task's scope. To escalate, write ESCALATE: <reason> as the first line of
-your final message and stop.
+your final message and stop. If you are NOT escalating, omit the ESCALATE line
+entirely — do not write "ESCALATE: none" or similar.
 
 PRINT the FINAL-{task_id}.md content to stdout (the pipeline files it automatically):
 1. Rulings — one line per open point: decision + the criterion that decided it.

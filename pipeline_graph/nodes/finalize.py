@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from langgraph.types import interrupt
 
@@ -24,6 +25,25 @@ from .common import (
     _trust_output,
     _write_progress,
 )
+
+
+def _is_noop_judge_escalate(reason: str) -> bool:
+    """True when the judge wrote ``ESCALATE:`` but meant "I am not escalating".
+
+    Exact denylist plus prefix forms like ``none — both contested items…``
+    (TASK-022: first-line ``ESCALATE: none — …`` was treated as a real
+    escalation because only the bare token ``none`` was ignored). Bare
+    ``no <arbitrary>`` is NOT a noop — that can be a real reason
+    ("no way to verify without a product call").
+    """
+    r = (reason or "").strip().lower()
+    if not r or r in ("none", "no", "n/a", "na", "nothing", "ok", "false"):
+        return True
+    if re.match(r"^(none|n/a|na|nothing)\b", r):
+        return True
+    if re.match(r"^no(\s+issues?|\s+escalation|\s+problems?)\b", r):
+        return True
+    return False
 
 # --- Step 3 ---------------------------------------------------------------
 
@@ -58,13 +78,13 @@ def judge(state):
 
     # The judge may print "ESCALATE: <reason>" to signal a problem. Match it
     # only on the first non-blank line (a real escalation is at the top of the
-    # output, not buried in prose). Ignore empty/none/no reasons — the judge
-    # sometimes writes "ESCALATE: none" or "ESCALATE: no issues" in a checklist
-    # self-check, which is NOT an escalation.
+    # output, not buried in prose). Ignore empty/none/"no issues" reasons —
+    # the judge sometimes writes "ESCALATE: none — …" as a self-check, which
+    # is NOT an escalation (see ``_is_noop_judge_escalate``).
     first_line = next((ln for ln in out.splitlines() if ln.strip()), "")
     if first_line.strip().startswith("ESCALATE:"):
         reason = first_line.split("ESCALATE:", 1)[1].strip()
-        if reason.lower() not in ("", "none", "no", "n/a", "nothing"):
+        if not _is_noop_judge_escalate(reason):
             return {"escalation": f"judge escalated: {reason}", "journal": ["judge: escalated"]}
 
     health, _signal = classify_output(code, out)

@@ -426,6 +426,22 @@ class TestClaimNormalization:
         # Displayed claim is trimmed.
         assert foo_lines[0].endswith(" foo")
 
+    def test_curly_apostrophe_matches_ascii_resolution(self):
+        """Critic curly quote vs proposer ASCII must still resolve (TASK-022)."""
+        # U+2019 RIGHT SINGLE QUOTATION MARK in the raise; ASCII in the reply.
+        raise_claim = "defeats C8\u2019s legacy-record guarantee"
+        reply_claim = "defeats C8's legacy-record guarantee"
+        text = (
+            _round_reviewer(1, f"VERDICT: REJECT\n[BLOCKER] {raise_claim}")
+            + _round_reply(
+                1, f"[BLOCKER] {reply_claim}\nACCEPTED  — fixed\nRESOLVED"
+            )
+        )
+        lines = _ledger_lines(text)
+        assert len(lines) == 1
+        assert "RESOLVED" in lines[0]
+        assert "OPEN" not in lines[0]
+
 
 # --- trailing — RESOLVED on raise line --------------------------------------
 
