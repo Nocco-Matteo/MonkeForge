@@ -896,8 +896,75 @@ def _metrics(args) -> int:
     return 0
 
 
+def _use_color(args) -> bool:
+    """Return True iff colour output should be emitted.
+
+    Colour is gated on ALL of:
+      * stdout is a TTY (no colour when piped/redirected), AND
+      * ``--no-color`` was not passed on the CLI, AND
+      * the ``NO_COLOR`` environment variable is unset/empty
+        (the de-facto https://no-color.org convention).
+
+    The pipeline currently emits no ANSI codes, so this is the single
+    gate any future colour-aware print must consult — keeping the
+    contract (``--no-color`` / ``NO_COLOR`` / non-TTY ⇒ plain text)
+    in one place.
+    """
+    if not sys.stdout.isatty():
+        return False
+    if getattr(args, "no_color", False):
+        return False
+    if os.environ.get("NO_COLOR"):
+        return False
+    return True
+
+
+def _status_json(args) -> int:
+    """``status --json``: emit a single JSON object on stdout.
+
+    Wraps the entire checkpointer-open / graph-build / state-read sequence
+    in a try/except so a failure (missing/corrupt DB, graph build error)
+    surfaces as a JSON ``{"error": ...}`` object on stdout with a non-zero
+    exit code — never a traceback. The "no run found" case is also a JSON
+    error object, not the plain-text ``print("no run found for this task")``
+    the non-``--json`` branch uses. Exactly one ``json.dumps(...)`` call
+    reaches stdout on every path here; nothing else prints to stdout.
+    """
+    task_id = args.task_id
+    try:
+        with open_checkpointer() as cp:
+            graph = build_graph(cp)
+            snap = graph.get_state(_thread(task_id))
+    except Exception as exc:  # noqa: BLE001 — surface any failure as JSON
+        print(json.dumps({"error": f"could not read state: {exc}",
+                          "task": task_id}))
+        return 1
+    if not snap.created_at:
+        print(json.dumps({"error": "no run found", "task": task_id}))
+        return 1
+    v = snap.values
+    payload = {
+        "next": snap.next or "END",
+        "batches": [
+            {"n": b.get("n"), "status": b.get("status"),
+             "scope": b.get("scope")}
+            for b in v.get("batches", [])
+        ],
+        "paused": bool(snap.interrupts),
+        "options": _pending_options(snap) or [],
+    }
+    print(json.dumps(payload))
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
+    # Global flag: colour output is gated on TTY + --no-color + NO_COLOR
+    # (see ``_use_color``). Declared on the top-level parser so it is read
+    # once and available to every subcommand via ``args.no_color``.
+    p.add_argument("--no-color", dest="no_color", action="store_true",
+                   help="disable ANSI colour output (also disabled when "
+                        "NO_COLOR is set or stdout is not a TTY)")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("start"); s.add_argument("task_id")
@@ -932,6 +999,10 @@ def main() -> int:
                                      "so it can be started fresh again")
     rs.add_argument("task_id")
     st = sub.add_parser("status"); st.add_argument("task_id")
+    st.add_argument("--json", dest="json", action="store_true",
+                    help="emit a single JSON object on stdout "
+                         "(next/batches/paused/options); errors surface as "
+                         "a JSON {\"error\": ...} object with a non-zero exit")
     dr = sub.add_parser("doctor", help="what went wrong: failures, degradations, "
                                        "unhealthy agents, notification & liveness")
     dr.add_argument("task_id")
@@ -1001,11 +1072,21 @@ def main() -> int:
             print(f"no checkpoint DB found at {C.CHECKPOINT_DB}")
             return 1
 
+    # status --json: handle before preflight / open_checkpointer so its own
+    # try/except wraps the entire checkpointer-open + graph-build + state-read
+    # sequence (item 41) and it never touches the plain-text status branch
+    # (item 44 — that branch is left unchanged further below).
+    if args.cmd == "status" and getattr(args, "json", False):
+        return _status_json(args)
+
     problems = C.preflight()
     if problems and args.cmd in ("start", "resume"):
-        print("preflight failed:")
+        # Preflight diagnostics are setup-time problems, not run output —
+        # route them to stderr so a captured stdout stream stays clean
+        # (item 46). The non-JSON status branch is NOT touched here.
+        print("preflight failed:", file=sys.stderr)
         for x in problems:
-            print(" -", x)
+            print(" -", x, file=sys.stderr)
         return 2
 
     if args.cmd in ("start", "resume", "redo"):
