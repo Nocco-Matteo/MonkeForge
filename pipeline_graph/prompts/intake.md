@@ -81,7 +81,13 @@ exactly:
        frontend/AGENTS.md for UI, the matching {docs_dir}/<subsystem>.md for a backend
        domain, {docs_dir}/UX-MANIFESTO.md for UI behaviour. List only the relevant
        ones, so the implementer reads what governs this work, not all of them.
-    5. Definition of done — observable, one line each.
+    5. Definition of done — observable, one line each. Each item must state
+       its verification method (the command, check, or human action that
+       proves it met) inline, e.g. "X — verified by `pytest tests/test_x.py`"
+       or "Y — verified by opening /route and confirming Z". A DoD item that
+       names no verification method is itself a REQUIREMENTS blocker: the
+       proposer cannot prove it done, so the plan debate will reject the brief
+       and re-escalate here. Do not leave verification implicit.
     6. Scope: in / out — explicit non-goals, not silence.
     7. Manual acceptance — the scenarios a human should walk, including one that
        exercises each exception found under section 2.
