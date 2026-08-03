@@ -531,6 +531,11 @@ def _escalation_options(reason: str) -> dict:
             "ok": "retry the routing (the failure was infrastructure — see journal)",
             "stop": "stop the run — fix the issue, then resume",
         }
+    if "judge escalated" in r or "judge did not produce" in r or "batches json" in r:
+        return {
+            "ok": "retry the judge (re-parse the verdict output, or re-run if needed)",
+            "stop": "stop the run — inspect the verdict log, then resume or redo",
+        }
     return {
         "ok": "retry / continue from here",
         "skip / close / force": "force-close the current batch (approve, clear blockers)",
@@ -683,6 +688,7 @@ def escalate(state):
         delta.update(
             {
                 "debate_round": 0,
+                "debate_round_bonus": 0,
                 "reviewer_verdict": "",
                 "open_blockers": 0,
                 "ux_verdict": "",
@@ -813,6 +819,28 @@ def escalate(state):
         delta["journal"] = [
             f"escalation resolved: {answer} (proceeding with UX blockers UNRESOLVED)"
         ]
+    elif (
+        "judge escalated" in r_low
+        or "judge did not produce" in r_low
+        or "batches json" in r_low
+    ):
+        if ans in ("stop", "no", "abort", "cancel"):
+            delta["finished"] = True
+            delta["journal"] = [
+                f"escalation resolved: {answer} (run stopped at judge gate)"
+            ]
+        else:
+            delta["retry_judge"] = True
+            delta["journal"] = [
+                f"escalation resolved: {answer} (retrying judge)"
+            ]
+        ev.emit(
+            "escalation_resolved",
+            tid,
+            "escalate",
+            f"answered {answer!r}; was: {reason}",
+        )
+        return delta
     else:
         delta["journal"] = [f"escalation resolved: {answer}"]
     ev.emit(

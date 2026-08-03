@@ -208,7 +208,7 @@ def route_render_review(state):
 # listing it here (the drift that left "summary" unmapped) fails a test instead
 # of crashing that one path at runtime. END is handled separately (not a node).
 ESCALATION_RETURNS = frozenset({
-    "init", "plan", "intake_ask", "intake_wait", "summary",
+    "init", "plan", "intake_ask", "intake_wait", "summary", "judge",
     "implement", "code_review", "close_batch", "ux_render", "render_measure",
     "final_check", "debate_tech",
     # Self-loop: route_escalation_return is itself a _safe_router, so a crash
@@ -225,6 +225,8 @@ def route_escalation_return(state):
     """
     if state.get("finished"):
         return END
+    if state.get("retry_judge"):
+        return "judge"
     if not state.get("branch"):
         return "init"
     if not state.get("intake_done") and N.intake_enabled(state):

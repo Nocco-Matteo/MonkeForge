@@ -95,6 +95,7 @@ class PipelineState(TypedDict, total=False):
     # --- control
     db_degraded: bool              # last test run had the e2e DB unreachable
     escalation: str                # non-empty -> escalate node
+    retry_judge: bool              # human answered ok to a judge escalation — re-run judge
     finished: bool
 
     # --- append-only degradation ledger (every compromise, unified for wrap_up)

@@ -402,6 +402,18 @@ class EscalateStopIsUniversal(unittest.TestCase):
         d = self._escalate("ok", self.DEBATE)
         self.assertFalse(d.get("finished"))
 
+    def test_judge_escalation_ok_retries_judge(self):
+        reason = "judge escalated: none — false positive"
+        d = self._escalate("ok", reason)
+        self.assertTrue(d.get("retry_judge"))
+        self.assertFalse(d.get("finished"))
+
+    def test_judge_escalation_stop_ends_run(self):
+        reason = "judge escalated: scope change needed"
+        d = self._escalate("stop", reason)
+        self.assertTrue(d.get("finished"))
+        self.assertFalse(d.get("retry_judge"))
+
 
 if __name__ == "__main__":
     unittest.main()

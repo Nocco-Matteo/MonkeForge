@@ -720,14 +720,14 @@ def main() -> int:
             # state, so it re-enters the chosen phase reusing existing artifacts.
             if args.from_phase == "visual":
                 # Reuse the built + committed UI; redo only render + visual gate.
-                reset = {"escalation": "", "ux_render_cycle": 0,
+                reset = {"escalation": "", "finished": False, "ux_render_cycle": 0,
                          "visual_verdict": "", "visual_blockers": 0,
                          "render_facts": "{}", "visual_shipped_blocked": False}
                 as_node, nxt = "close_batch", "ux_render"
                 reuse = "the built UI"
             else:
-                reset = {"escalation": "", "debate_round": 0,
-                         "reviewer_verdict": "", "open_blockers": 0,
+                reset = {"escalation": "", "finished": False, "debate_round": 0,
+                         "debate_round_bonus": 0, "reviewer_verdict": "", "open_blockers": 0,
                          "ux_verdict": "", "ux_blockers": 0,
                          "tech_limits": [], "debate_next": "",
                          "ux_shipped_blocked": False,

@@ -13,6 +13,8 @@
 """
 import unittest
 
+from langgraph.graph import END
+
 from pipeline_graph import nodes as N, agents as A
 from pipeline_graph import graph as G
 from pipeline_graph.nodes import debate as D
@@ -126,6 +128,17 @@ class EscalationReturnToJudge(unittest.TestCase):
         state = {"branch": "b", "intake_done": True, "debate_round": 2,
                  "batches": [{"n": 1}], "batch_idx": 0}
         self.assertNotEqual(G.route_escalation_return(state), "summary")
+
+    def test_finished_after_stop_routes_to_end(self):
+        """stop sets finished=True; redo must clear it or resume ok goes to END."""
+        state = {"finished": True, "branch": "b", "intake_done": True,
+                 "batches": [], "debate_round": 6}
+        self.assertEqual(G.route_escalation_return(state), END)
+
+    def test_retry_judge_routes_to_judge(self):
+        state = {"retry_judge": True, "branch": "b", "intake_done": True,
+                 "batches": [], "debate_round": 6}
+        self.assertEqual(G.route_escalation_return(state), "judge")
 
 
 if __name__ == "__main__":
