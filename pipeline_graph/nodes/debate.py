@@ -110,6 +110,47 @@ def _section_title_keys(line: str) -> set[str]:
     return keys
 
 
+def _resolve_section_header(
+    result_lines: list[str],
+    headers: list[int],
+    title: str,
+    body_first_line: str = "",
+) -> int | None:
+    """Locate the plan header index for a ``@@@ REPLACE section: "…"`` title.
+
+    Resolution order (first unique hit wins):
+    1. Exact key match via ``_section_title_keys`` (``Goal`` / ``1. Goal`` /
+       ``## 1. Goal``).
+    2. The replacement body's first line equals a header line verbatim
+       (prompt contract: body starts with the exact header).
+    3. Same section number — e.g. title ``2. Constraints`` against header
+       ``## 2. Constraints (each testable)``. Plan numbers are unique anchors;
+       proposers often drop parenthetical suffixes from ``plan.md`` variants.
+    """
+    title_key = (title or "").strip()
+    if not title_key:
+        return None
+    for h in headers:
+        if title_key in _section_title_keys(result_lines[h]):
+            return h
+    first = (body_first_line or "").strip()
+    if first:
+        hits = [h for h in headers if result_lines[h].strip() == first]
+        if len(hits) == 1:
+            return hits[0]
+    tm = _SECTION_HEADER_LINE_RE.match(title_key)
+    if tm:
+        want_num = tm.group(2)
+        hits = []
+        for h in headers:
+            hm = _SECTION_HEADER_LINE_RE.match(result_lines[h].strip())
+            if hm and hm.group(2) == want_num:
+                hits.append(h)
+        if len(hits) == 1:
+            return hits[0]
+    return None
+
+
 def _extract_plan_or_patch(text: str) -> tuple[str | None, str | None]:
     """Classify a proposer reply into one of four outcomes.
 
@@ -203,12 +244,12 @@ def _apply_section_patch(plan: str, patch_body: str) -> str | None:
         headers = [
             i for i in range(len(result_lines)) if _is_plan_section_header(result_lines, i)
         ]
-        target_idx = None
-        title_key = title.strip()
-        for h in headers:
-            if title_key in _section_title_keys(result_lines[h]):
-                target_idx = h
-                break
+        target_idx = _resolve_section_header(
+            result_lines,
+            headers,
+            title,
+            body_first_line=body_lines[0] if body_lines else "",
+        )
         if target_idx is None:
             return None
         next_idx = len(result_lines)

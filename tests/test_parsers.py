@@ -482,6 +482,31 @@ class TestApplySectionPatch:
         assert "- C1 rewritten" in result
         assert "- C1: keep per-item blocks" not in result
 
+    def test_shortened_numbered_title_matches_parenthetical_header(self):
+        # Live TASK-020 failure: plan has ``## 2. Constraints (each testable)``
+        # but the proposer cited ``2. Constraints`` (dropped the parenthetical).
+        # Same section number + body first-line must still apply.
+        plan = (
+            "## 1. Goal\n"
+            "goal body\n"
+            "## 2. Constraints (each testable)\n"
+            "- old C1\n"
+            "## 3. Architecture decisions\n"
+            "arch body\n"
+        )
+        body = (
+            '@@@ REPLACE section: "2. Constraints"\n'
+            "## 2. Constraints (each testable)\n"
+            "- new C1\n"
+            "@@@ END\n"
+        )
+        result = _apply_section_patch(plan, body)
+        assert result is not None
+        assert "- new C1" in result
+        assert "- old C1" not in result
+        assert "## 1. Goal" in result
+        assert "## 3. Architecture decisions" in result
+
 
 # --- _latest_section -------------------------------------------------------
 
