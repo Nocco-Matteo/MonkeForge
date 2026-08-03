@@ -9,7 +9,7 @@
   ./run.py graph            # print the graph as mermaid
 """
 from __future__ import annotations
-import argparse, contextlib, json, os, re, shutil, subprocess, sys, threading
+import argparse, contextlib, json, os, re, shutil, subprocess, sys, threading, tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -499,7 +499,7 @@ def _start_working_line_thread(task_id: str, stop_event: threading.Event
     return t
 
 
-def _drive(graph, task_id, payload):
+def _drive(graph, task_id, payload) -> int:
     """Run until the graph ends or hits an interrupt; print what happened."""
     cfg = _thread(task_id)
     seen_updates = False
@@ -585,6 +585,7 @@ def _drive(graph, task_id, payload):
                         if "screenshot" in reason.lower()
                         or "visual" in reason.lower() else "")
         _mark_idle(task_id, "paused")
+        return 0
     elif snap.next:
         # Neither finished nor waiting for anyone: this is a stall, and it used
         # to be reported with the same quiet one-liner as a clean pause.
@@ -592,9 +593,11 @@ def _drive(graph, task_id, payload):
         ev.emit("run_stalled", task_id, str(snap.next[0]),
                 f"run stopped at {snap.next} without finishing or asking anything")
         _mark_idle(task_id, "stalled")
+        return 1
     else:
         print("\n=== FINISHED ===")
         _mark_idle(task_id, "finished")
+        return 0
 
 
 def _warn_stale_task_files(task_id: str) -> None:
@@ -856,8 +859,8 @@ def _metrics(args) -> int:
     # events.jsonl, so checking "empty log" first would mask the usage error
     # (FINAL-001 ruling 4).
     if not args.all and args.task_id is None:
-        print("usage: ./run.py metrics <task_id> | --all")
-        print("error: provide a task id or --all")
+        print("usage: ./run.py metrics <task_id> | --all", file=sys.stderr)
+        print("error: provide a task id or --all", file=sys.stderr)
         return 2
 
     if args.all:
@@ -957,17 +960,55 @@ def _status_json(args) -> int:
     return 0
 
 
-def main() -> int:
-    p = argparse.ArgumentParser()
-    # Global flag: colour output is gated on TTY + --no-color + NO_COLOR
-    # (see ``_use_color``). Declared on the top-level parser so it is read
-    # once and available to every subcommand via ``args.no_color``.
-    p.add_argument("--no-color", dest="no_color", action="store_true",
-                   help="disable ANSI colour output (also disabled when "
-                        "NO_COLOR is set or stdout is not a TTY)")
+def _read_version() -> str:
+    try:
+        with open(_MF_ROOT / "pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+        return data["project"]["version"]
+    except (OSError, KeyError, ValueError, TypeError):
+        return "0.0.0"
+
+
+_VERSION = _read_version()
+_SUPPORT_URL = "https://github.com/Nocco-Matteo/MonkeForge"
+
+# Shared parent parser carrying --no-color (with ``default=argparse.SUPPRESS``
+# so the attribute is absent when the flag is not passed — ``_use_color`` then
+# treats absence as "colour allowed"). Inherited by both the top-level parser
+# and every subparser so ``--no-color`` works before OR after the subcommand.
+_no_color_parent = argparse.ArgumentParser(add_help=False)
+_no_color_parent.add_argument("--no-color", dest="no_color", action="store_true",
+                              default=argparse.SUPPRESS,
+                              help="disable ANSI colour output (also disabled when "
+                                   "NO_COLOR is set or stdout is not a TTY)")
+
+
+def _print_top_help() -> None:
+    """Print the concise, examples-first top-level help (no-args + ``help``)."""
+    print("MonkeForge pipeline CLI — examples:")
+    print()
+    print("  ./run.py start 005 \"rendere pubblicabile la classe Mystic\"")
+    print("  ./run.py start 006 --file docs/tasks/TASK-006-brief.md --auto")
+    print("  ./run.py resume 005                       # resume after crash/suspend")
+    print("  ./run.py resume 005 --answer ok           # answer a pending pause")
+    print("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts")
+    print("  ./run.py status 005                       # current node / batch / pause")
+    print("  ./run.py status 005 --json | jq           # machine-readable status")
+    print("  ./run.py doctor 005                       # failures, degradations, liveness")
+    print("  ./run.py graph                            # print the graph definition")
+    print("  ./run.py metrics 005                      # durations, retries, escalations")
+    print()
+    print("Run `./run.py <command> -h` for per-command options.")
+    print(f"Source & issues: {_SUPPORT_URL}")
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(parents=[_no_color_parent])
+    p.add_argument("--version", action="version",
+                   version=f"monkeforge {_VERSION}")
     sub = p.add_subparsers(dest="cmd", required=False)
 
-    s = sub.add_parser("start"); s.add_argument("task_id")
+    s = sub.add_parser("start", parents=[_no_color_parent]); s.add_argument("task_id")
     s.add_argument("request", nargs="?", default=None)
     s.add_argument("--file", dest="file", default=None, help="read request from a file")
     s.add_argument("--auto", action="store_true")
@@ -979,7 +1020,7 @@ def main() -> int:
     s.add_argument("--effort", dest="effort", default=None,
                    choices=["scout-monke", "troop-monke", "barrel-monke"],
                    help="force an effort level (skips the effort checkpoint)")
-    r = sub.add_parser("resume",
+    r = sub.add_parser("resume", parents=[_no_color_parent],
                        help="resume a paused or interrupted run, optionally "
                             "answering the pending pause")
     r.add_argument("task_id")
@@ -987,8 +1028,9 @@ def main() -> int:
                    help="answer to the pending pause (required on non-TTY / --no-input)")
     r.add_argument("--no-input", action="store_true",
                    help="never prompt; --answer is required")
-    rd = sub.add_parser("redo", help="re-run a phase reusing existing artifacts "
-                                     "(e.g. redo the debate after fixing an agent)")
+    rd = sub.add_parser("redo", parents=[_no_color_parent],
+                        help="re-run a phase reusing existing artifacts "
+                        "(e.g. redo the debate after fixing an agent)")
     rd.add_argument("task_id")
     rd.add_argument("--from", dest="from_phase",
                     choices=["plan", "debate", "visual"], default="debate",
@@ -998,49 +1040,54 @@ def main() -> int:
     rd.add_argument("--effort", dest="effort", default=None,
                     choices=["scout-monke", "troop-monke", "barrel-monke"],
                     help="force an effort level for the redo (plan/debate only)")
-    rs = sub.add_parser("reset", help="delete the checkpoint state for a task "
-                                     "so it can be started fresh again")
+    rs = sub.add_parser("reset", parents=[_no_color_parent],
+                        help="delete the checkpoint state for a task "
+                        "so it can be started fresh again")
     rs.add_argument("task_id")
-    st = sub.add_parser("status"); st.add_argument("task_id")
+    st = sub.add_parser("status", parents=[_no_color_parent]); st.add_argument("task_id")
     st.add_argument("--json", dest="json", action="store_true",
                     help="emit a single JSON object on stdout "
                          "(next/batches/paused/options); errors surface as "
                          "a JSON {\"error\": ...} object with a non-zero exit")
-    dr = sub.add_parser("doctor", help="what went wrong: failures, degradations, "
-                                       "unhealthy agents, notification & liveness")
+    dr = sub.add_parser("doctor", parents=[_no_color_parent],
+                        help="what went wrong: failures, degradations, "
+                        "unhealthy agents, notification & liveness")
     dr.add_argument("task_id")
-    sub.add_parser("graph")
-    nd = sub.add_parser("notify-daemon", help="persistent notification daemon "
-                                      "(priority queue + rate limiter)")
+    sub.add_parser("graph", parents=[_no_color_parent])
+    nd = sub.add_parser("notify-daemon", parents=[_no_color_parent],
+                        help="persistent notification daemon "
+                        "(priority queue + rate limiter)")
     nd.add_argument("--status", action="store_true", help="check daemon heartbeat + queue")
     nd.add_argument("--stop", action="store_true", help="send SIGTERM for clean shutdown")
-    mt = sub.add_parser("metrics", help="aggregate events.jsonl into a metrics report "
-                                        "(durations, failures, retries, escalations)")
+    mt = sub.add_parser("metrics", parents=[_no_color_parent],
+                        help="aggregate events.jsonl into a metrics report "
+                        "(durations, failures, retries, escalations)")
     mt.add_argument("task_id", nargs="?", default=None,
                     help="task id to report on; omit with --all for a cross-task summary")
     mt.add_argument("--all", dest="all", action="store_true",
                     help="aggregate every task into a single summary")
-    args = p.parse_args()
+    hp = sub.add_parser("help", parents=[_no_color_parent],
+                        help="show help for a command or the examples")
+    hp.add_argument("topic", nargs="?", default=None,
+                    help="command name to show help for")
+    args = p.parse_args(argv)
 
-    # No subcommand: print concise, examples-first help (item 48).
+    # No subcommand: print concise, examples-first help.
     # ``required=False`` on the subparsers lets ``./run.py`` with no args
     # reach here instead of argparse erroring out — friendlier entry point.
     if args.cmd is None:
-        print("MonkeForge pipeline CLI — examples:")
-        print()
-        print("  ./run.py start 005 \"rendere pubblicabile la classe Mystic\"")
-        print("  ./run.py start 006 --file docs/tasks/TASK-006-brief.md --auto")
-        print("  ./run.py resume 005                       # resume after crash/suspend")
-        print("  ./run.py resume 005 --answer ok           # answer a pending pause")
-        print("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts")
-        print("  ./run.py status 005                       # current node / batch / pause")
-        print("  ./run.py status 005 --json | jq           # machine-readable status")
-        print("  ./run.py doctor 005                       # failures, degradations, liveness")
-        print("  ./run.py graph                            # print the graph definition")
-        print("  ./run.py metrics 005                      # durations, retries, escalations")
-        print()
-        print("Run `./run.py <command> -h` for per-command options.")
+        _print_top_help()
         return 0
+
+    if args.cmd == "help":
+        if args.topic is None:
+            _print_top_help()
+            return 0
+        if args.topic in sub.choices:
+            sub.choices[args.topic].print_help()
+            return 0
+        print(f"error: unknown help topic {args.topic!r}", file=sys.stderr)
+        return 2
 
     if args.cmd == "notify-daemon":
         from pipeline_graph import notify_daemon as nd_mod
@@ -1060,7 +1107,7 @@ def main() -> int:
     # processes for an answer that will be rejected at the CLI edge.
     if args.cmd == "resume":
         if not C.CHECKPOINT_DB.exists():
-            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}")
+            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}", file=sys.stderr)
             return 1
         with open_checkpointer() as _cp:
             _graph = build_graph(_cp)
@@ -1079,11 +1126,11 @@ def main() -> int:
                     free_text_allowed=_free_text,
                     router_error=_router_error, intake=_intake)
                 if _err:
-                    print(_err)
+                    print(_err, file=sys.stderr)
                     return 2
             elif args.no_input or not sys.stdin.isatty():
                 print("error: --answer is required on a non-TTY (or with --no-input); "
-                      "rerun with an answer from the pause menu")
+                      "rerun with an answer from the pause menu", file=sys.stderr)
                 return 2
             else:
                 args.answer = _tty_pick(_options or [], _data)
@@ -1092,7 +1139,7 @@ def main() -> int:
 
     if args.cmd == "redo":
         if not C.CHECKPOINT_DB.exists():
-            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}")
+            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}", file=sys.stderr)
             return 1
 
     # status --json: handle before preflight / open_checkpointer so its own
@@ -1121,7 +1168,7 @@ def main() -> int:
         import sqlite3 as _sqlite3
         thread = f"task-{args.task_id}"
         if not C.CHECKPOINT_DB.exists():
-            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}")
+            print(f"no checkpoint DB found at {C.CHECKPOINT_DB}", file=sys.stderr)
             return 0
         conn = _sqlite3.connect(str(C.CHECKPOINT_DB))
         try:
@@ -1191,8 +1238,8 @@ def main() -> int:
         if args.cmd == "redo":
             snap = graph.get_state(cfg)
             if not snap.created_at:
-                print("no run found for this task")
-                return 0
+                print("no run found for this task", file=sys.stderr)
+                return 1
             # Reposition the graph as if the upstream node had just produced this
             # state, so it re-enters the chosen phase reusing existing artifacts.
             if args.from_phase == "visual":
@@ -1240,8 +1287,7 @@ def main() -> int:
                     f"re-running from {args.from_phase} (reusing {reuse})")
             print(f"  re-entering at {nxt}, reusing {reuse}")
             payload = None
-            _drive(graph, args.task_id, payload)
-            return 0
+            return _drive(graph, args.task_id, payload)
 
         if args.cmd == "start":
             request = args.request
@@ -1249,7 +1295,8 @@ def main() -> int:
                 with open(args.file, "r", encoding="utf-8") as f:
                     request = f.read().strip()
             if not request:
-                print("error: provide a request as argument or via --file <path>")
+                print("error: provide a request as argument or via --file <path>",
+                      file=sys.stderr)
                 return 2
             _warn_stale_task_files(args.task_id)
             staged = _stage_refs(args.task_id, args.refs)
@@ -1268,6 +1315,9 @@ def main() -> int:
         else:
             cfg = _thread(args.task_id)
             snap = graph.get_state(cfg)
+            if not snap.created_at:
+                print(f"error: no run found for task {args.task_id}", file=sys.stderr)
+                return 1
             if snap.interrupts:
                 iv = snap.interrupts[0].value
                 payload = Command(resume=args.answer)
@@ -1280,7 +1330,7 @@ def main() -> int:
                         f"no open question; continuing at "
                         f"{snap.next[0] if snap.next else 'END'}")
 
-        _drive(graph, args.task_id, payload)
+        return _drive(graph, args.task_id, payload)
     return 0
 
 

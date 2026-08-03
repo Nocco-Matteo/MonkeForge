@@ -11,10 +11,15 @@ Covers the conformance checklist items 27–39:
   - Unknown-role fallback: a node/role not in ``NODE_TO_ROLE`` /
     ``AGENT_IDENTITIES`` renders as the raw role string, never a bare ``?``.
 """
+import argparse
+import contextlib
 import io
 import json
-from contextlib import redirect_stdout
+import re
+import tomllib
+from contextlib import redirect_stdout, redirect_stderr
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -210,3 +215,228 @@ class TestEventCursorBaseline:
         # The new drive's events ARE rendered.
         assert "starting plan" in out
         assert "[ok] plan done" in out
+
+
+# ---------------------------------------------------------------------------
+# FINAL-018 batch 1: --no-color / --version / help / stderr routing /
+# resume guard / _drive exit codes
+# ---------------------------------------------------------------------------
+
+def _open_checkpointer_cm():
+    """Shared callable returning a nullcontext, used everywhere
+    ``run_mod.open_checkpointer`` is monkeypatched in the new test classes."""
+    return contextlib.nullcontext(None)
+
+
+class _FakeSnapNoState:
+    """Snapshot with no created_at — simulates a task with no checkpoint."""
+    created_at = None
+    next = []
+    interrupts = []
+    values = {}
+
+
+class _FakeSnapStall:
+    """Snapshot with non-empty next and no interrupts — a stall."""
+    created_at = "2026-01-01T00:00:00Z"
+    next = ["stalled_node"]
+    interrupts = []
+    values = {}
+
+
+class _FakeGraphNoState:
+    """Graph whose ``get_state`` returns a snapshot with ``created_at=None``."""
+    def stream(self, payload, cfg, stream_mode=None):
+        yield from []
+
+    def get_state(self, cfg):
+        return _FakeSnapNoState()
+
+
+class _FakeGraphStall:
+    """Graph whose ``get_state`` returns a snapshot with non-empty ``next``
+    and empty ``interrupts`` — a stall that ``_drive`` must report as such."""
+    def stream(self, payload, cfg, stream_mode=None):
+        assert stream_mode == ["updates"]
+        yield from []
+
+    def get_state(self, cfg):
+        return _FakeSnapStall()
+
+
+def _mock_side_effects(monkeypatch, *, mock_drive=False, mock_emit=True):
+    """Mock run.py side-effect functions that must not fire during tests.
+
+    Mocks ``_sleep_inhibitor``, ``open_checkpointer``, the notify/bot daemon
+    starters, ``_warn_if_notifications_off``, ``_warn_stale_task_files``, and
+    ``C.preflight``.  When ``mock_drive`` is True, ``_drive`` is replaced with
+    a no-op returning 0.  When ``mock_emit`` is True, ``ev.emit`` is silenced.
+    """
+    monkeypatch.setattr(run_mod, "_sleep_inhibitor",
+                        lambda: contextlib.nullcontext())
+    monkeypatch.setattr(run_mod, "open_checkpointer", _open_checkpointer_cm)
+    monkeypatch.setattr(run_mod, "_ensure_notify_daemon", lambda: None)
+    monkeypatch.setattr(run_mod, "_ensure_bot", lambda: None)
+    monkeypatch.setattr(run_mod, "_warn_if_notifications_off", lambda: None)
+    monkeypatch.setattr(run_mod, "_warn_stale_task_files", lambda *a: None)
+    monkeypatch.setattr(C, "preflight", lambda: [])
+    if mock_drive:
+        monkeypatch.setattr(run_mod, "_drive", lambda *a, **k: 0)
+    if mock_emit:
+        monkeypatch.setattr(ev, "emit", lambda *a, **k: None)
+
+
+def _main_capturing(argv):
+    """Run ``main(argv)`` and return ``(rc, stdout, stderr)``.
+
+    Catches ``SystemExit`` (raised by ``--version``) and uses its code as rc.
+    """
+    out = io.StringIO()
+    err = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        try:
+            rc = run_mod.main(argv)
+        except SystemExit as e:
+            rc = e.code
+    return rc, out.getvalue(), err.getvalue()
+
+
+def _spy_parse_args(monkeypatch):
+    """Spy on ``argparse.ArgumentParser.parse_args`` to capture the namespace."""
+    captured = {}
+    real = argparse.ArgumentParser.parse_args
+
+    def spy(self, argv=None):
+        ns = real(self, argv)
+        captured["ns"] = ns
+        return ns
+
+    monkeypatch.setattr(argparse.ArgumentParser, "parse_args", spy)
+    return captured
+
+
+# --- --no-color before/after subcommand (items 31-32) ----------------------
+
+class TestNoColorAfterSubcommand:
+    def _setup(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(run_mod, "build_graph",
+                            lambda *a, **k: _FakeGraphNoState())
+        return _spy_parse_args(monkeypatch)
+
+    def test_no_color_after_start(self, monkeypatch):
+        captured = self._setup(monkeypatch)
+        _main_capturing(["start", "001", "req", "--no-color"])
+        assert getattr(captured["ns"], "no_color", False) is True
+
+    def test_no_color_before_start(self, monkeypatch):
+        captured = self._setup(monkeypatch)
+        _main_capturing(["--no-color", "start", "001", "req"])
+        assert getattr(captured["ns"], "no_color", False) is True
+
+    def test_no_color_absent_without_flag(self, monkeypatch):
+        captured = self._setup(monkeypatch)
+        _main_capturing(["start", "001", "req"])
+        assert not hasattr(captured["ns"], "no_color")
+
+
+# --- --version flag (item 33) -----------------------------------------------
+
+class TestVersionFlag:
+    def test_version_flag_exits_zero_with_version(self):
+        rc, out, _ = _main_capturing(["--version"])
+        assert rc == 0
+        assert re.match(r"monkeforge \d+\.\d+\.\d+", out.strip())
+
+    def test_version_matches_pyproject(self):
+        with open(run_mod._MF_ROOT / "pyproject.toml", "rb") as f:
+            data = tomllib.load(f)
+        expected = data["project"]["version"]
+        rc, out, _ = _main_capturing(["--version"])
+        assert rc == 0
+        assert expected in out
+
+
+# --- help subcommand (items 34-35) ------------------------------------------
+
+class TestHelpSubcommand:
+    def test_help_no_topic_prints_examples(self):
+        rc, out, err = _main_capturing(["help"])
+        assert rc == 0
+        assert "MonkeForge pipeline CLI — examples:" in out
+        assert run_mod._SUPPORT_URL in out
+        assert "https://github.com/Nocco-Matteo/MonkeForge" in out
+
+    def test_help_known_topic_prints_subparser_help(self):
+        rc, out, err = _main_capturing(["help", "resume"])
+        assert rc == 0
+        assert "usage:" in out
+        assert "resume" in out
+
+    def test_help_unknown_topic_returns_2(self):
+        rc, out, err = _main_capturing(["help", "bogus"])
+        assert rc == 2
+        assert "unknown help topic" in err
+        assert "bogus" in err
+
+
+# --- errors routed to stderr (items 36-38) ----------------------------------
+
+class TestErrorsToStderr:
+    def test_metrics_no_arg_error_on_stderr(self):
+        rc, out, err = _main_capturing(["metrics"])
+        assert rc == 2
+        assert "usage" in err
+        assert "provide a task id" in err
+        assert "usage" not in out
+
+    def test_start_no_request_error_on_stderr(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        rc, out, err = _main_capturing(["start", "001"])
+        assert rc == 2
+        assert "provide a request" in err
+        assert "provide a request" not in out
+
+    def test_redo_unknown_task_error_on_stderr(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(C, "CHECKPOINT_DB", Path(__file__))
+        monkeypatch.setattr(run_mod, "build_graph", lambda cp: _FakeGraphNoState())
+        rc, out, err = _main_capturing(["redo", "999"])
+        assert rc == 1
+        assert "no run found for this task" in err
+        assert "no run found for this task" not in out
+
+
+# --- resume unknown task guard (item 39) ------------------------------------
+
+class TestResumeUnknownTask:
+    def test_resume_unknown_task_no_traceback(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(C, "CHECKPOINT_DB", Path(__file__))
+        monkeypatch.setattr(run_mod, "build_graph", lambda cp: _FakeGraphNoState())
+        rc, out, err = _main_capturing(["resume", "999"])
+        assert rc == 1
+        assert "no run found for task 999" in err
+        assert "EmptyInputError" not in out
+        assert "=== FINISHED ===" not in out
+
+
+# --- finished/stalled exit codes (item 40) ----------------------------------
+
+class TestFinishedRunExitZero:
+    def test_finished_run_returns_zero(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _mock_side_effects(monkeypatch, mock_drive=False, mock_emit=False)
+        graph = _FakeGraph([("plan", {"journal": ["p"]})], "tf")
+        monkeypatch.setattr(run_mod, "build_graph", lambda cp: graph)
+        rc, out, err = _main_capturing(["start", "001", "test request"])
+        assert rc == 0
+        assert "=== FINISHED ===" in out
+
+    def test_stalled_run_returns_nonzero(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _mock_side_effects(monkeypatch, mock_drive=False, mock_emit=False)
+        graph = _FakeGraphStall()
+        monkeypatch.setattr(run_mod, "build_graph", lambda cp: graph)
+        rc, out, err = _main_capturing(["start", "001", "test request"])
+        assert rc == 1

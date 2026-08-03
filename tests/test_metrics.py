@@ -240,7 +240,7 @@ class TestCliMetrics(unittest.TestCase):
         ruling 4: validate args before empty-log check)."""
         assert not self._log.exists()
         buf = io.StringIO()
-        with redirect_stdout(buf):
+        with redirect_stderr(buf):
             rc = run_mod._metrics(_Args(task_id=None, all=False))
         self.assertEqual(rc, 2)
         self.assertIn("usage", buf.getvalue().lower())
