@@ -521,12 +521,14 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
         # TASK-022: thrashing early escalation — the debate is churning
         # (blockers not decreasing AND new claims appearing). Same 4 keys as
         # "debate stuck:" (continue/redo/stop/ok) with thrashing-specific
-        # labels that warn the human that more rounds will not converge.
+        # labels. continue raises the cap by 2 AND sets debate_grace_until so
+        # stuck/thrashing early-stop cannot re-fire until those rounds run.
         return [
             _opt("continue",
-                 "extend the debate by 2 more rounds — WARNING: the trend shows "
-                 "the debate is churning (blockers not decreasing, new claims "
-                 "appearing), so more rounds may not converge"),
+                 "extend the debate by 2 more rounds (early thrashing/stuck "
+                 "pause suppressed for those rounds) — WARNING: the trend "
+                 "shows the debate is churning (blockers not decreasing, new "
+                 "claims appearing), so more rounds may still not converge"),
             _opt("redo",
                  "re-run the debate from round 1 on the SAME plan (use when the "
                  "debate itself derailed — a fresh start may break the churn)"),
@@ -767,7 +769,14 @@ def escalate(state):
     # would silently reappear on an unrelated later pause (e.g. a UX/render
     # escalation showing a leftover "recommended: ok" button highlight). The
     # redo branch's later delta.update(...) does NOT re-add either key.
-    delta = {"escalation": "", "test_fix_attempt": 0, "triage": None, "hint": ""}
+    delta = {
+        "escalation": "",
+        "test_fix_attempt": 0,
+        "triage": None,
+        "hint": "",
+        # Cleared on every resolution except continue (which sets it below).
+        "debate_grace_until": 0,
+    }
     # Canonicalize composite answers ("skip / done" → "skip") so the behavioural
     # branches below (forced / INTAKE_END_ANSWERS / visual force) fire on the
     # first token rather than the literal composite, which never matched.
@@ -879,12 +888,22 @@ def escalate(state):
         # file), "continue" keeps all prior rounds so the proposer can iterate
         # on the remaining blockers with full context. The bonus is additive
         # and persists in state across resumes.
+        #
+        # Also set debate_grace_until so stuck/thrashing early-escalation cannot
+        # re-fire on the very next critic pass (TASK-023: continue promised +2
+        # rounds but thrashing paused again after a single tech round).
+        # Requirements early-escalation is NOT suppressed — brief blockers are
+        # still unfixable by more plan rounds.
         bonus = state.get("debate_round_bonus") or 0
+        cur_round = int(state.get("debate_round") or 0)
         delta["debate_round_bonus"] = bonus + 2
+        delta["debate_grace_until"] = cur_round + 2
         delta["escalation"] = ""
         delta["journal"] = [
             f"escalation resolved: {answer} "
-            f"(extending debate by 2 rounds, cap now {C.resolved_debate_rounds({**state, 'debate_round_bonus': bonus + 2})})"
+            f"(extending debate by 2 rounds, cap now "
+            f"{C.resolved_debate_rounds({**state, 'debate_round_bonus': bonus + 2})}; "
+            f"early thrash/stuck suppressed through round {cur_round + 2})"
         ]
         ev.emit(
             "escalation_resolved",

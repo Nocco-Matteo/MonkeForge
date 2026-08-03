@@ -224,6 +224,13 @@ class TestThrashingReport(unittest.TestCase):
 
 
 class TestCheckThrashingEscalation(unittest.TestCase):
+    def test_grace_window_covers_promised_rounds(self):
+        self.assertTrue(D._in_debate_grace({"debate_grace_until": 6}, 5))
+        self.assertTrue(D._in_debate_grace({"debate_grace_until": 6}, 6))
+        self.assertFalse(D._in_debate_grace({"debate_grace_until": 6}, 7))
+        self.assertFalse(D._in_debate_grace({}, 4))
+        self.assertFalse(D._in_debate_grace({"debate_grace_until": 0}, 1))
+
     def test_non_thrashing_returns_none(self):
         text = _debate(_round(1, "Reviewer", _REJECT))
         self.assertIsNone(D._check_thrashing_escalation(text, 1))
@@ -381,6 +388,8 @@ class TestEscalationOptionsTriage(unittest.TestCase):
             "debate thrashing: blockers not decreasing")
         labels = " ".join(o["label"] for o in opts)
         self.assertIn("churning", labels.lower())
+        continue_label = next(o["label"] for o in opts if o["key"] == "continue")
+        self.assertIn("suppressed", continue_label.lower())
 
     def test_exhausted_default_labels_without_triage(self):
         opts = _common._escalation_options("debate exhausted 5 rounds")
@@ -452,6 +461,33 @@ class TestResolutionWipe(unittest.TestCase):
         d = self._escalate("continue", "debate thrashing: x", state=state)
         self.assertIsNone(d["triage"])
         self.assertEqual(d["hint"], "")
+
+    def test_continue_sets_grace_until_current_round_plus_two(self):
+        """continue must suppress stuck/thrashing for the promised +2 rounds."""
+        state = {
+            "task_id": "rw",
+            "escalation": "debate thrashing: x",
+            "journal": [],
+            "triage": {"mode": "thrashing"},
+            "hint": "ok",
+            "debate_round": 4,
+            "debate_round_bonus": 2,
+        }
+        d = self._escalate("continue", "debate thrashing: x", state=state)
+        self.assertEqual(d.get("debate_grace_until"), 6)
+        self.assertEqual(d.get("debate_round_bonus"), 4)
+
+    def test_ok_clears_grace_until(self):
+        state = {
+            "task_id": "rw",
+            "escalation": "debate thrashing: x",
+            "journal": [],
+            "triage": {"mode": "thrashing"},
+            "hint": "ok",
+            "debate_grace_until": 6,
+        }
+        d = self._escalate("ok", "debate thrashing: x", state=state)
+        self.assertEqual(d.get("debate_grace_until"), 0)
 
     def test_redo_clears_triage_and_hint(self):
         state = {"task_id": "rw", "escalation": "debate thrashing: x",

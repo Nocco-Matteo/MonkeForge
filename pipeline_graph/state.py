@@ -41,6 +41,10 @@ class PipelineState(TypedDict, total=False):
     # --- debate (two critics in parallel: technical + UX)
     debate_round: int
     debate_round_bonus: int        # extra rounds added by a human "continue" answer on a debate-cap escalation
+    # After a human "continue" on a debate escalation, stuck/thrashing early
+    # escalation is suppressed while debate_round <= this value so the promised
+    # +2 rounds are actually usable (TASK-023: continue → immediate re-thrash).
+    debate_grace_until: int
     reviewer_verdict: str          # PLAN_REVIEWER (technical): APPROVE | APPROVE_WITH_CHANGES | REJECT
     open_blockers: int             # technical blockers still open
     ux_verdict: str                # UX_REVIEWER: APPROVE | APPROVE_WITH_CHANGES | REJECT

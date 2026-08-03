@@ -118,6 +118,21 @@ def _check_early_escalation(debate_text: str, rnd: int) -> dict | None:
     }
 
 
+def _in_debate_grace(state: dict, rnd: int) -> bool:
+    """True while a human ``continue`` grace window still covers this round.
+
+    ``escalate()`` sets ``debate_grace_until = debate_round + 2`` on continue so
+    stuck/thrashing early-escalation cannot steal the promised +2 rounds
+    (TASK-023: continue → immediate re-thrash on the next critic pass).
+    Requirements early-escalation ignores this window.
+    """
+    try:
+        until = int(state.get("debate_grace_until") or 0)
+    except (TypeError, ValueError):
+        until = 0
+    return until > 0 and rnd <= until
+
+
 def _check_thrashing_escalation(debate_text: str, rnd: int) -> dict | None:
     """Detect a churning debate and escalate before the round cap is wasted.
 
@@ -350,8 +365,11 @@ def debate_tech(state):
         # unfixable by debate iteration, so the "debate requirements:" menu
         # (stop/ok) is the one the human needs, not the continue/redo/stop/ok
         # stuck menu.
-        early = _check_early_escalation(text, rnd)
-        thrash = _check_thrashing_escalation(text, rnd)
+        # Grace window: after human continue, skip stuck/thrashing early-stop
+        # until debate_grace_until (requirements still fire).
+        grace = _in_debate_grace({**state, **delta}, rnd)
+        early = None if grace else _check_early_escalation(text, rnd)
+        thrash = None if grace else _check_thrashing_escalation(text, rnd)
         req = _check_requirements_escalation(text)
         if req:
             decision = req
@@ -503,8 +521,11 @@ def debate_ux(state):
     # Item 30: _check_requirements_escalation takes precedence over
     # _check_early_escalation when both fire (same precedence rule as
     # debate_tech).
-    early = _check_early_escalation(debate_text, rnd)
-    thrash = _check_thrashing_escalation(debate_text, rnd)
+    # Grace window: after human continue, skip stuck/thrashing early-stop
+    # until debate_grace_until (requirements still fire).
+    grace = _in_debate_grace(state, rnd)
+    early = None if grace else _check_early_escalation(debate_text, rnd)
+    thrash = None if grace else _check_thrashing_escalation(debate_text, rnd)
     req = _check_requirements_escalation(debate_text)
     if req:
         delta.update(req)
