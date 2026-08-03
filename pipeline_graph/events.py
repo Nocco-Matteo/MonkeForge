@@ -29,23 +29,27 @@ from pathlib import Path
 from typing import Callable
 
 from . import config as C
+from .discord_format import format_discord_line, humanize_error
 from .event_types import Event
 
 EVENTS_LOG = C.METRICS / "events.jsonl"
 PIPELINE_LOG = C.METRICS / "pipeline.log"
 
 # silent    — never push (logs still written)
-# milestones— only what a human must act on
-# all       — every step boundary too (default: you asked to see each one)
-NOTIFY_LEVEL = os.environ.get("PIPELINE_NOTIFY_LEVEL", "all").lower()
+# milestones— only what a human must act on (DEFAULT: the safe direction is
+#             not to flood a phone with step_start/step_end noise)
+# all       — every step boundary too (debug opt-in: you asked to see each one)
+NOTIFY_LEVEL = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
 
 # Events that always push, whatever the level (except `silent`): either the run
-# needs a human, or it has stopped being a run.
+# needs a human, or it has stopped being a run. ``agent_start`` / ``agent_end``
+# are milestones (C2): the four-beat narration (convene → send → return → close)
+# is what a human wants on the phone, not per-step noise.
 MILESTONES = {
     "run_start", "run_end", "run_paused", "run_stalled",
     "step_error", "escalation_open", "escalation_resolved",
     "batch_done", "degraded", "intake_questions", "intake_complete",
-    "agent_unhealthy",
+    "agent_unhealthy", "agent_start", "agent_end",
 }
 
 PRIORITY = {
@@ -88,10 +92,43 @@ def _journal_file(task: str) -> Path:
     return C.METRICS / f"journal-{task}.log"
 
 
-def _should_notify(kind: str, override: bool | None) -> bool:
+def _bot_alive() -> bool:
+    """True only if the Discord bot is BOTH running AND ready.
+
+    Checks ``os.kill(pid, 0)`` on the pid read from ``C.METRICS / ".bot.pid"``
+    AND that the readiness sentinel ``C.METRICS / ".bot.ready"`` exists. The
+    sentinel is written by the bot's poller only after its first catch-up
+    iteration commits the cursor (C17) — so a bot that has spawned but not
+    yet drained the log is NOT alive from the webhook's perspective, and the
+    webhook keeps posting ``run_paused`` itself (safe direction: over-notify).
+
+    Any OSError / ValueError (missing pidfile, stale pid, unreadable file)
+    maps to ``False`` — the webhook posts, never silently drops.
+    """
+    try:
+        pid = int((C.METRICS / ".bot.pid").read_text())
+        os.kill(pid, 0)
+        return (C.METRICS / ".bot.ready").exists()
+    except (OSError, ValueError):
+        return False
+
+
+def _should_notify(kind: str, override: bool | None,
+                   step: str = "") -> bool:
     if override is not None:
         return override and NOTIFY_LEVEL != "silent"
     if NOTIFY_LEVEL == "silent":
+        return False
+    # The internal ``escalate`` node's own step_start/step_end is bookkeeping
+    # noise — the human-facing surface is the ``run_paused`` that follows.
+    if kind in ("step_start", "step_end") and step == "escalate":
+        return False
+    # If the interactive bot is up and ready, it posts the escalation card
+    # with buttons — the webhook's ``run_paused`` push would be a duplicate
+    # card with no buttons. Suppress the webhook side (C9). The bot is the
+    # single urgent surface when it is alive; the webhook stays as the
+    # fallback when it is not.
+    if kind == "run_paused" and _bot_alive():
         return False
     if kind in MILESTONES:
         return True
@@ -166,12 +203,20 @@ def emit(kind: str, task: str = "?", step: str = "", msg: str = "",
         except Exception:
             pass
 
-    if _should_notify(kind, notify):
+    if _should_notify(kind, notify, step=step):
         role = extra.get("role", "")
         if not role:
             role = _KIND_ROLE.get(kind, "")
-        _push(f"TASK-{task} · {step or kind}",
-              msg or kind, prio or PRIORITY.get(kind, "default"),
+        display_msg = msg
+        if kind in ("run_stalled", "agent_unhealthy", "step_error"):
+            display_msg = humanize_error(msg)
+        # Pass extra without ``role`` (already extracted above) so
+        # format_discord_line does not get a duplicate ``role`` kwarg.
+        fmt_extra = {k: v for k, v in extra.items() if k != "role"}
+        title, description = format_discord_line(
+            kind, task, role, step, display_msg, **fmt_extra)
+        _push(title, description,
+              prio or PRIORITY.get(kind, "default"),
               role=role)
 
 

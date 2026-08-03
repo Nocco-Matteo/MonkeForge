@@ -34,6 +34,20 @@ MonkeForge stays standalone: the pipeline never imports this and runs fine witho
 ./venv/bin/python bot/bot.py
 ```
 
+> **Standalone launches:** the bot reads `PIPELINE_DOCS_DIR` (or
+> `PIPELINE_REPO`) to find the per-repo `docs/<repo>/metrics/` directory it
+> tails. When `run.py` auto-starts the bot (`PIPELINE_BOT_AUTOSTART=1`) it
+> passes `PIPELINE_DOCS_DIR` explicitly in the child env, so the two always
+> agree. If you launch the bot by hand **outside** of `run.py`, export the
+> same `PIPELINE_DOCS_DIR` (or `PIPELINE_REPO`) the pipeline is using, or
+> the bot will watch the wrong metrics directory and its escalation cards
+> will be silently absent while the webhook keeps posting (the safe
+> direction — over-notify — but you lose the interactive buttons).
+> ```bash
+> export PIPELINE_DOCS_DIR=/path/to/MonkeForge/docs/<repo-name>
+> ./venv/bin/python bot/bot.py
+> ```
+
 Under systemd so it survives (and keep the machine awake for runs):
 
 ```ini

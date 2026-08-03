@@ -366,8 +366,8 @@ Il volume delle notifiche si regola con `PIPELINE_NOTIFY_LEVEL`:
 
 | Valore | Cosa arriva sul telefono |
 |---|---|
-| `all` (default) | anche inizio e fine di ogni step |
-| `milestones` | escalation, errori, domande, batch chiusi, fine run, stalli |
+| `milestones` (default) | escalation, errori, domande, batch chiusi, fine run, stalli, convene/return degli agenti |
+| `all` (debug opt-in) | anche inizio e fine di ogni step — verbose, da usare solo per diagnosticare |
 | `silent` | niente push; i log restano completi |
 
 Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
@@ -377,7 +377,7 @@ Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
 | Variabile | Default | Effetto |
 |---|---|---|
 | `PIPELINE_DRY_RUN` | — | `1` = nessun agente, git intatto |
-| `PIPELINE_NOTIFY_LEVEL` | `all` | `all` / `milestones` / `silent` |
+| `PIPELINE_NOTIFY_LEVEL` | `milestones` | `all` / `milestones` / `silent` |
 | `PIPELINE_MAX_INTAKE_ROUNDS` | `4` | giri di intervista prima di escalare |
 | `PIPELINE_AGENT_TIMEOUT` | nessuno | secondi; `0` o assente = nessun tetto |
 | `PIPELINE_TEST_TIMEOUT` | vedi `config.py` | timeout del gate dei test |

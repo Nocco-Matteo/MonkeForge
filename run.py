@@ -1048,7 +1048,7 @@ def _doctor(graph, task_id: str) -> None:
                     print(f"\n  ⚠ LIVENESS: {dead}")
         except (OSError, ValueError):
             pass
-    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "all").lower()
+    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
     has_webhook = bool(os.environ.get("DISCORD_WEBHOOK")) or (C.REPO / ".discord-webhook").exists()
     if level != "silent" and not has_webhook:
         print("\n  ⚠ NOTIFICATIONS OFF: no webhook — this run pushed nothing.")
@@ -1068,6 +1068,28 @@ def _ensure_bot() -> None:
     an escalation needs relaying. Idempotent via a pidfile so repeated
     start/resume calls don't spawn duplicates. Opt-in and a no-op unless
     configured.
+
+    Known limitation (FINAL-020 §1 item 1): the check-then-act pattern below
+    (``os.kill`` read → ``Popen`` → pidfile write) has no interprocess lock,
+    so concurrent ``start``/``resume`` invocations against the same repo can
+    both pass the liveness check and both spawn a bot. The impact is bounded
+    (duplicate escalation cards, not silent drops — both processes tail the
+    same ``events.jsonl`` faithfully). Do not fire concurrent auto-starting
+    invocations against the same repo; if this surfaces in practice the fix
+    is an ``O_EXCL`` lockfile around the check-Popen-write sequence.
+
+    The ``.bot.ready`` sentinel is cleared BEFORE the spawn so a stale
+    sentinel from a previous bot does not make the webhook suppress
+    ``run_paused`` pushes while the new bot is still in its catch-up
+    iteration (C15/C17). The new bot's poller writes the sentinel itself
+    once its first iteration commits the cursor.
+
+    ``PIPELINE_DOCS_DIR`` (resolved absolute) is passed explicitly in the
+    child env so a bot auto-started by ``run.py`` reads the same per-repo
+    docs directory the pipeline is using, even when the operator's shell
+    did not export it (C14). Without this, the bot could resolve
+    ``DOCS`` to a different repo's docs and never see the events the
+    pipeline writes.
     """
     if os.environ.get("PIPELINE_BOT_AUTOSTART", "").strip().lower() not in ("1", "true", "yes"):
         return
@@ -1083,9 +1105,17 @@ def _ensure_bot() -> None:
     except (OSError, ValueError):
         pass
     C.METRICS.mkdir(parents=True, exist_ok=True)
+    # Clear any stale readiness sentinel BEFORE spawning so the webhook does
+    # not suppress run_paused pushes while the new bot is still catching up
+    # on its first poller iteration (C15/C17). The bot's poller writes the
+    # sentinel itself once its first iteration's cursor commit completes.
+    (C.METRICS / ".bot.ready").unlink(missing_ok=True)
     log = (C.METRICS / "bot.log").open("a")
+    child_env = os.environ.copy()
+    child_env["PIPELINE_DOCS_DIR"] = str(C.DOCS.resolve())
     proc = subprocess.Popen([sys.executable, str(bot_py)], cwd=str(_MF_ROOT),
-                            stdout=log, stderr=log, start_new_session=True)
+                            stdout=log, stderr=log, start_new_session=True,
+                            env=child_env)
     pidfile.write_text(str(proc.pid))
     print(f"  bot: launched detached (pid {proc.pid}, log {C.METRICS / 'bot.log'}")
 
@@ -1098,7 +1128,7 @@ def _ensure_notify_daemon() -> None:
     Idempotent via the heartbeat file's pid — repeated calls don't spawn
     duplicates. No-op if no webhook is configured.
     """
-    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "all").lower()
+    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
     if level == "silent":
         return
     has_webhook = bool(os.environ.get("DISCORD_WEBHOOK")) \
@@ -1133,7 +1163,7 @@ def _warn_if_notifications_off() -> None:
 
     .env is already loaded into os.environ by the time this runs.
     """
-    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "all").lower()
+    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
     if level == "silent":
         return
     has_webhook = bool(os.environ.get("DISCORD_WEBHOOK")) \

@@ -111,7 +111,16 @@ async def _post_escalation(channel, rec: dict):
         title = f"⏱ TASK-{tid}: choose effort"
     else:
         title = f"⛔ TASK-{tid} needs you"
+    # Embed field order (C5/FINAL-020 item 28):
+    #   description(reason) → task-id → where/context → optional
+    #   hint/plan/final/batches → blockers → triage sub-fields → options →
+    #   resume command. No field implies a default/implicit answer without an
+    #   explicit ``--answer`` flag (item 29): the resume field always shows
+    #   ``--answer <choice>``.
     embed = discord.Embed(title=title, description=reason, color=0xE74C3C)
+    embed.add_field(name="task", value=f"TASK-{tid}", inline=False)
+    if rec.get("context"):
+        embed.add_field(name="where", value=str(rec["context"])[:1024], inline=False)
     if rec.get("hint"):
         embed.add_field(name="recommended", value=str(rec["hint"]), inline=False)
     if rec.get("plan"):
@@ -125,8 +134,6 @@ async def _post_escalation(channel, rec: dict):
             value="\n".join(f"- {b}" for b in batches)[:1024],
             inline=False,
         )
-    if rec.get("context"):
-        embed.add_field(name="where", value=str(rec["context"])[:1024], inline=False)
     if blockers:
         embed.add_field(name="blockers", value=blockers[:1024], inline=False)
     # TASK-022 item 21: triage embed fields (mode/blocker trend/repeated-new/
@@ -153,9 +160,12 @@ async def _post_escalation(channel, rec: dict):
         rationale = str(triage.get("rationale", "") or "").strip()
         if rationale:
             embed.add_field(name="rationale", value=rationale[:1024], inline=False)
-    embed.add_field(name="answers",
+    embed.add_field(name="options",
                     value="\n".join(f"**{o.get('key', '?')}** — {o.get('label', '')}"
                                     for o in options)[:1024],
+                    inline=False)
+    embed.add_field(name="resume",
+                    value=f"`./run.py resume {tid} --answer <choice>`",
                     inline=False)
     files = []
     screens = rec.get("screens")
@@ -178,7 +188,24 @@ async def _post_end(channel, rec: dict):
 
 
 async def _poller():
-    """Tail events.jsonl from EOF; relay escalations and completions."""
+    """Tail events.jsonl from EOF; relay escalations and completions.
+
+    Readiness sentinel + first-iteration suppression (C17 / C21):
+      The poller writes ``.bot.ready`` only AFTER its first iteration commits
+      the cursor (``f.seek(offset)`` + ``STATE_FILE.write_text``). Until then
+      ``_bot_alive()`` (in ``events.py``) is False for the ENTIRE first
+      iteration, which means the webhook has already posted any
+      ``run_paused`` in that window — so the poller MUST NOT re-post it
+      (C21). Posting resumes normally from the second iteration once the
+      sentinel is written. ``run_end`` / ``_post_end`` is NOT suppressed
+      (dual-channel run_end coverage is pre-existing, D2).
+
+      COUPLING: if a future change moves the sentinel write earlier (e.g.
+      optimistically before the catch-up read), the invariant that
+      ``_bot_alive()`` is false for the whole first iteration breaks, and
+      C21 breaks silently with it. Keep the sentinel write after the cursor
+      commit.
+    """
     await client.wait_until_ready()
     channel = client.get_channel(C.CHANNEL_ID)
     if channel is None and client.guilds:
@@ -211,6 +238,8 @@ async def _poller():
     except (OSError, ValueError):
         offset = C.EVENTS_LOG.stat().st_size if C.EVENTS_LOG.exists() else 0
     await channel.send("🤖 pipeline bot online — I'll post escalations here.")
+    _first_iter = True
+    _ready_sentinel = C.EVENTS_LOG.parent / ".bot.ready"
     while not client.is_closed():
         try:
             if C.EVENTS_LOG.exists():
@@ -224,12 +253,37 @@ async def _poller():
                             rec = json.loads(line)
                         except ValueError:
                             continue
-                        if rec.get("kind") == "run_paused":
+                        if rec.get("kind") == "run_paused" and (
+                            not _first_iter or _crash_restart
+                        ):
+                            # C21: skip run_paused during the sentinel-
+                            # establishing catch-up iteration on a FRESH
+                            # start — the webhook already posted it
+                            # (_bot_alive() was false for the whole window).
+                            # On a crash-restart the previous bot was ready,
+                            # so the webhook SUPPRESSED run_paused in this
+                            # window (never posted) — the catch-up MUST post
+                            # it or the escalation is lost (C21 BLOCKER).
+                            # run_end below is NOT guarded (dual-channel
+                            # run_end is pre-existing, D2).
                             await _post_escalation(channel, rec)
                         elif rec.get("kind") == "run_end":
                             await _post_end(channel, rec)
                     offset = f.tell()
                 C.STATE_FILE.write_text(str(offset))
+                if _first_iter:
+                    # C17: write the readiness sentinel only after the
+                    # catch-up iteration's cursor is committed. The webhook's
+                    # _bot_alive() stays false for the ENTIRE first iteration
+                    # (sentinel not yet written), so any run_paused in this
+                    # window was already posted by the webhook — don't re-post
+                    # it (C21). COUPLING: moving this write earlier breaks C21
+                    # silently; keep it after STATE_FILE.write_text.
+                    try:
+                        _ready_sentinel.write_text("")
+                    except OSError:
+                        pass
+                    _first_iter = False
         except Exception as exc:            # a poll error must never kill the bot
             print("poller error:", exc)
         await asyncio.sleep(C.POLL_SECONDS)
@@ -350,14 +404,80 @@ async def debate(interaction: discord.Interaction, task_id: str):
         await interaction.channel.send(page)
 
 
+@tree.command(name="help", description="Help, examples and support links")
+async def _help(interaction: discord.Interaction):
+    # Support URL: import lazily from run.py so the bot does not hardcode a
+    # second copy of the URL; fall back to the literal if run.py is not on
+    # the path (standalone launch without the pipeline root).
+    try:
+        import run as _run  # noqa: E402
+        url = getattr(_run, "_SUPPORT_URL", "https://github.com/Nocco-Matteo/MonkeForge")
+    except ImportError:
+        url = "https://github.com/Nocco-Matteo/MonkeForge"
+    text = (
+        "**MonkeForge pipeline bot**\n"
+        f"Support & issues: {url}\n\n"
+        "Slash commands:\n"
+        "- `/status <task_id>` — current node / batch / pause\n"
+        "- `/doctor <task_id>` — what went wrong (failures, degradations)\n"
+        "- `/resume <task_id> answer: <choice>` — resume a paused task\n"
+        "- `/stop <task_id>` — SIGTERM the running pipeline\n"
+        "- `/debate <task_id>` — latest debate blockers\n\n"
+        "From the CLI: `./run.py resume <task_id> --answer <choice>`\n"
+        "Buttons on an escalation card run `resume --answer` for you."
+    )
+    await interaction.response.send_message(text, ephemeral=True)
+
+
+# Module-level singleton poller task (C16): on_ready fires on every (re)connect,
+# so without a guard a reconnect would spawn a second poller that double-posts
+# every escalation. The guard also relaunches the poller if a previous task
+# exited early (poller error / channel-not-found return).
+_poller_task = None
+# Whether the current poller launch is a crash-restart (a stale .bot.ready
+# sentinel existed when on_ready launched it). Set by on_ready, read by
+# _poller: on a crash-restart the webhook was suppressing run_paused while
+# the previous bot was alive, so the catch-up iteration MUST post those
+# records instead of skipping them (C21 BLOCKER).
+_crash_restart = False
+
+
 @client.event
 async def on_ready():
+    global _poller_task, _crash_restart
     import os as _os
-    _pidfile = C.REPO / "docs" / "metrics" / ".bot.pid"
+    # Pidfile lives next to events.jsonl (the per-repo metrics dir), not the
+    # old hardcoded REPO/docs/metrics path — the two diverge when
+    # PIPELINE_DOCS_DIR points outside the repo (C18). Written unconditionally
+    # on every on_ready so a stale pid from a crashed bot is refreshed.
+    _pidfile = C.EVENTS_LOG.parent / ".bot.pid"
     _pidfile.parent.mkdir(parents=True, exist_ok=True)
     _pidfile.write_text(str(_os.getpid()))
+    # Singleton poller: decide and launch BEFORE any await. on_ready can fire
+    # on overlapping callbacks; if tree.sync() (an await) ran first, two
+    # callbacks could both observe no live task and spawn duplicate pollers
+    # (BLOCKER). create_task is synchronous, so the check+launch is atomic
+    # with respect to the event loop. A live task (reconnect) keeps running
+    # and keeps its .bot.ready sentinel — do NOT unlink it or spawn a second
+    # poller (C16/C19).
+    if _poller_task is None or _poller_task.done():
+        _sentinel = C.EVENTS_LOG.parent / ".bot.ready"
+        # A pre-existing sentinel means a previous bot was ready and the
+        # webhook was suppressing run_paused in that window — those records
+        # were never posted, so the new poller's catch-up must post them
+        # (C21 BLOCKER). A missing sentinel means a fresh start, where the
+        # webhook posted everything (C21 normal case).
+        _crash_restart = _sentinel.exists()
+        # Clear the sentinel BEFORE launching a fresh poller so the webhook
+        # does not suppress run_paused while the new poller is still in its
+        # catch-up iteration (C15/C17). The poller writes the sentinel
+        # itself once its first iteration commits the cursor.
+        _sentinel.unlink(missing_ok=True)
+        _poller_task = client.loop.create_task(_poller())
+    # tree.sync() runs on every (re)connect so slash commands stay registered
+    # after a gateway resume — unconditionally, outside the poller guard,
+    # and after the guard has already been decided atomically.
     await tree.sync()
-    client.loop.create_task(_poller())
     print(f"bot ready as {client.user} (pid {_os.getpid()})")
 
 

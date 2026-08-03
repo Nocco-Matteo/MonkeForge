@@ -93,7 +93,8 @@ effort:
 #   gemini_trust_workspace: true
 
 # Optional notification settings.
+# level: milestones (default) | all (debug opt-in) | silent (never push)
 # notifications:
-#   enabled: true
+#   level: milestones
 #   rate: 30
 #   window: 60
