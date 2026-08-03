@@ -56,9 +56,16 @@ def judge(state):
     conv = Conversation.from_state(state)
     code, out = _N.run_agent("JUDGE", conv, "verdict", template="judge", docs_dir=C.DOCS_REL)
 
-    if out.strip().startswith("ESCALATE:") or "\nESCALATE:" in out:
-        reason = out.split("ESCALATE:", 1)[1].strip().splitlines()[0]
-        return {"escalation": f"judge escalated: {reason}", "journal": ["judge: escalated"]}
+    # The judge may print "ESCALATE: <reason>" to signal a problem. Match it
+    # only on the first non-blank line (a real escalation is at the top of the
+    # output, not buried in prose). Ignore empty/none/no reasons — the judge
+    # sometimes writes "ESCALATE: none" or "ESCALATE: no issues" in a checklist
+    # self-check, which is NOT an escalation.
+    first_line = next((ln for ln in out.splitlines() if ln.strip()), "")
+    if first_line.strip().startswith("ESCALATE:"):
+        reason = first_line.split("ESCALATE:", 1)[1].strip()
+        if reason.lower() not in ("", "none", "no", "n/a", "nothing"):
+            return {"escalation": f"judge escalated: {reason}", "journal": ["judge: escalated"]}
 
     health, _signal = classify_output(code, out)
     if not _trust_output(code, out, health):
@@ -136,7 +143,8 @@ def judge(state):
     # has_ui was decided at plan-time (before the debate) and is not the judge's
     # to reset; the UX critique already happened during the debate.
     _write_progress(tid, batches)
-    return {"batches": batches, "batch_idx": 0, "journal": [f"judge: {len(batches)} batches"]}
+    return {"batches": batches, "batch_idx": 0, "retry_judge": False,
+            "journal": [f"judge: {len(batches)} batches"]}
 
 
 def checkpoint_plan(state):
