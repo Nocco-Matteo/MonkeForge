@@ -41,24 +41,73 @@ SECTION_REPLACE_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-# Numbered plan section header: ``N. <title>`` on its own line, NOT immediately
-# followed by another ``N. `` header (so a numbered sub-list line under a
-# header is not itself mistaken for a header).
-_SECTION_HEADER_LINE_RE = re.compile(r"^(\d+)\.\s+(.+)$")
-_NEXT_HEADER_LINE_RE = re.compile(r"^\d+\.\s+")
+# Numbered plan section header. Real PLAN-*.md files use ATX markdown
+# (``## 1. Goal``); tests/fixtures may use the bare ``1. Goal`` form from
+# ``plan.md``. Group 1 = optional ``## `` prefix, group 2 = number, group 3 =
+# title text after ``N. ``.
+_SECTION_HEADER_LINE_RE = re.compile(r"^(#{1,6}\s+)?(\d+)\.\s+(.+)$")
+# Bare numbered line (no ``#``) — used only to reject list items under a bare
+# ``N. Title`` header. Markdown ATX headers (``## N.``) are never rejected
+# for a following bare ``1. item`` list — that was the TASK-023 ship-blocker
+# against real plans (``## 5. File-by-file`` + ``1. do X`` looked like a list).
+_BARE_NUMBERED_RE = re.compile(r"^\d+\.\s+")
+
+
+def _plan_uses_atx_section_headers(lines: list[str]) -> bool:
+    """True when any line looks like a production ``## N. Title`` anchor."""
+    for ln in lines:
+        m = _SECTION_HEADER_LINE_RE.match(ln)
+        if m and m.group(1):
+            return True
+    return False
 
 
 def _is_plan_section_header(lines: list[str], i: int) -> bool:
-    """True only when ``lines[i]`` is a ``N. <title>`` header line whose next
-    line is NOT another ``N. `` header (so a numbered list item directly under
-    a header is not itself treated as a header)."""
+    """True when ``lines[i]`` is a plan section header.
+
+    Accepts ``## N. Title`` (production PLAN-*.md) and bare ``N. Title``
+    (fixture / plan.md style).
+
+    Rules:
+    - Markdown ATX ``## N.`` lines are always section anchors.
+    - When the plan already uses ATX section headers, bare ``N.`` lines are
+      never anchors (they are list items under ``## 5. File-by-file`` etc.).
+    - Bare-only plans: a ``N.`` line is an anchor unless it sits in a
+      contiguous bare-numbered run (next or previous line also bare-numbered).
+    """
     if i < 0 or i >= len(lines):
         return False
-    if not _SECTION_HEADER_LINE_RE.match(lines[i]):
+    m = _SECTION_HEADER_LINE_RE.match(lines[i])
+    if not m:
         return False
-    if i + 1 < len(lines) and _NEXT_HEADER_LINE_RE.match(lines[i + 1]):
+    if m.group(1):
+        return True  # ## N. Title — always a section header
+    if _plan_uses_atx_section_headers(lines):
+        return False
+    # Bare N. Title in a bare-only plan: reject list runs.
+    if i + 1 < len(lines) and _BARE_NUMBERED_RE.match(lines[i + 1]):
+        return False
+    if i > 0 and _BARE_NUMBERED_RE.match(lines[i - 1]):
         return False
     return True
+
+
+def _section_title_keys(line: str) -> set[str]:
+    """Match keys for a header line against a ``@@@ REPLACE section: "..."`` title.
+
+    A proposer may cite ``Goal``, ``1. Goal``, or ``## 1. Goal`` — all must
+    resolve to the same ``## 1. Goal`` line in a real plan.
+    """
+    stripped = (line or "").strip()
+    keys = {stripped}
+    m = _SECTION_HEADER_LINE_RE.match(stripped)
+    if not m:
+        return keys
+    num, rest = m.group(2), m.group(3).strip()
+    keys.add(rest)
+    keys.add(f"{num}. {rest}")
+    keys.add(f"## {num}. {rest}")
+    return keys
 
 
 def _extract_plan_or_patch(text: str) -> tuple[str | None, str | None]:
@@ -155,9 +204,9 @@ def _apply_section_patch(plan: str, patch_body: str) -> str | None:
             i for i in range(len(result_lines)) if _is_plan_section_header(result_lines, i)
         ]
         target_idx = None
+        title_key = title.strip()
         for h in headers:
-            hm = _SECTION_HEADER_LINE_RE.match(result_lines[h])
-            if hm and hm.group(2).strip() == title:
+            if title_key in _section_title_keys(result_lines[h]):
                 target_idx = h
                 break
         if target_idx is None:

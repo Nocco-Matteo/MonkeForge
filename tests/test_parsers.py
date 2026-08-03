@@ -322,6 +322,26 @@ class TestIsPlanSectionHeader:
         assert _is_plan_section_header(["x"], -1) is False
         assert _is_plan_section_header(["x"], 5) is False
 
+    def test_markdown_atx_header_with_body(self):
+        # Production PLAN-*.md: ``## 1. Goal`` followed by prose.
+        lines = ["## 1. Goal", "Cut LLM token burn", "## 2. Constraints"]
+        assert _is_plan_section_header(lines, 0) is True
+        assert _is_plan_section_header(lines, 2) is True
+
+    def test_markdown_header_followed_by_numbered_list_is_still_header(self):
+        # Ship-blocker: ``## 5. File-by-file`` then ``1. do X`` must stay a
+        # section header (the following bare numbered lines are list items).
+        lines = [
+            "## 5. File-by-file changes",
+            "1. do X",
+            "2. do Y",
+            "## 6. Edge cases",
+        ]
+        assert _is_plan_section_header(lines, 0) is True
+        assert _is_plan_section_header(lines, 1) is False
+        assert _is_plan_section_header(lines, 2) is False
+        assert _is_plan_section_header(lines, 3) is True
+
 
 # --- _apply_section_patch (TASK-023) ---------------------------------------
 
@@ -335,6 +355,24 @@ class TestApplySectionPatch:
         "second section body\n"
         "3. Third Section\n"
         "third body\n"
+    )
+
+    # Production shape (PLAN-*.md from the plan node): ATX + numbered title.
+    MD_PLAN = (
+        "# TASK-023 — Lean debate plan updates\n"
+        "\n"
+        "## 1. Goal\n"
+        "Cut LLM token burn.\n"
+        "\n"
+        "## 2. Constraints\n"
+        "- C1: keep per-item blocks\n"
+        "\n"
+        "## 5. File-by-file changes\n"
+        "1. MODIFY debate.py\n"
+        "2. MODIFY condenser.py\n"
+        "\n"
+        "## 6. Edge cases considered\n"
+        "Some edge.\n"
     )
 
     def test_no_at_at_at_returns_plan_unchanged(self):
@@ -403,6 +441,46 @@ class TestApplySectionPatch:
         assert "new first" in result
         assert "new third" in result
         assert "2. Second Section" in result
+
+    def test_markdown_plan_replace_by_short_title(self):
+        body = (
+            '@@@ REPLACE section: "Goal"\n'
+            "## 1. Goal\n"
+            "New goal text.\n"
+            "@@@ END\n"
+        )
+        result = _apply_section_patch(self.MD_PLAN, body)
+        assert result is not None
+        assert "New goal text." in result
+        assert "## 2. Constraints" in result
+        assert "Cut LLM token burn." not in result
+
+    def test_markdown_plan_replace_by_full_header(self):
+        body = (
+            '@@@ REPLACE section: "## 5. File-by-file changes"\n'
+            "## 5. File-by-file changes\n"
+            "- only condenser.py\n"
+            "@@@ END\n"
+        )
+        result = _apply_section_patch(self.MD_PLAN, body)
+        assert result is not None
+        assert "- only condenser.py" in result
+        # Numbered list under section 5 must not truncate the replace.
+        assert "1. MODIFY debate.py" not in result
+        assert "## 6. Edge cases considered" in result
+        assert "## 1. Goal" in result
+
+    def test_markdown_plan_replace_by_numbered_title(self):
+        body = (
+            '@@@ REPLACE section: "2. Constraints"\n'
+            "## 2. Constraints\n"
+            "- C1 rewritten\n"
+            "@@@ END\n"
+        )
+        result = _apply_section_patch(self.MD_PLAN, body)
+        assert result is not None
+        assert "- C1 rewritten" in result
+        assert "- C1: keep per-item blocks" not in result
 
 
 # --- _latest_section -------------------------------------------------------

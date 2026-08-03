@@ -77,29 +77,33 @@ automatically) under "## Round {round} — Proposer", in this order:
 
 PLAN PATCH FORMAT (primary, required):
 Print exactly one envelope per reply, with one or more section-replace blocks
-inside it. Each block names the section by its exact numbered header title as
-it appears in the plan today, and prints the FULL replacement text for that
+inside it. Real `PLAN-*.md` section anchors look like `## 1. Goal` (ATX
+markdown + number + title). In `@@@ REPLACE section: "<title>"`, `<title>`
+may be the short title (`Goal`), the numbered form (`1. Goal`), or the full
+header line (`## 1. Goal`) — the pipeline accepts all three. The replacement
+body MUST still start with the exact header line as it appears in the plan
+today (usually `## N. Title`). Print the FULL replacement text for that
 section between `@@@ REPLACE section: "<title>"` and `@@@ END`:
 
 === PLAN PATCH START ===
-@@@ REPLACE section: "<exact existing section title>"
-<exact existing section title>
+@@@ REPLACE section: "Goal"
+## 1. Goal
 <the new body of that section, verbatim, as it should now appear>
 @@@ END
-@@@ REPLACE section: "<another section title>"
-<exact existing section title>
+@@@ REPLACE section: "5. File-by-file changes"
+## 5. File-by-file changes
 <the new body>
 @@@ END
 === PLAN PATCH END ===
 
 CRITICAL PATCH RULES:
 - The text you print inside each `@@@ REPLACE section: "<title>"` … `@@@ END`
-  block MUST start with the exact header line `<title>` (verbatim, as it
-  appears in the plan today) as its own first line, followed by the new body.
-  The pipeline replaces the whole section — header included — with what you
-  print here; omitting the header deletes that section's anchor from the plan,
-  so the next round's `@@@ REPLACE section: "<title>"` for that section will
-  fail to find it.
+  block MUST start with the exact header line as it appears in the plan today
+  (e.g. `## 1. Goal`, not bare `1. Goal` and not only `Goal`) as its own first
+  line, followed by the new body. The pipeline replaces the whole section —
+  header included — with what you print here; omitting the header deletes that
+  section's anchor from the plan, so the next round's REPLACE for that section
+  will fail to find it.
 - A `@@@ REPLACE` opened without a matching `@@@ END`, or any `@@@` text
   outside a complete `=== PLAN PATCH START/END ===` envelope, is treated as a
   MALFORMED patch and escalates — it does NOT silently fall back to "no

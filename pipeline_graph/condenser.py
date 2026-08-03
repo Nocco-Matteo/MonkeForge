@@ -729,18 +729,17 @@ def plan_diff(old: str, new: str) -> str:
 def plan_section_titles(plan: str) -> list[str]:
     """Return the numbered section header titles of a plan.
 
-    A header is any line matching ``^(\\d+)\\.\\s+(.+)$`` — every matching
-    line is included, even when the following line is itself another numbered
-    header (adjacent numbered sections are real section anchors, not list
-    items, and must not be dropped from the title list). Titles are returned
-    in first-seen order.
+    Accepts ATX markdown (``## 1. Goal``, production PLAN-*.md) and bare
+    ``1. Goal`` (fixture / plan.md style). Titles are the text after
+    ``N. `` (e.g. ``Goal``), in first-seen order. Every matching header line
+    is included — adjacent numbered sections are real anchors, not list items.
     """
     plan = plan or ""
     titles: list[str] = []
     for line in plan.split("\n"):
-        m = re.match(r"^(\d+)\.\s+(.+)$", line)
+        m = re.match(r"^(#{1,6}\s+)?(\d+)\.\s+(.+)$", line)
         if not m:
             continue
-        titles.append(m.group(2).strip())
+        titles.append(m.group(3).strip())
     return titles
 
