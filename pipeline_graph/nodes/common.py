@@ -455,11 +455,37 @@ def _get_router_error(tid: str) -> str:
     return _router_errors.get(tid, "")
 
 
-def _escalation_options(reason: str) -> dict:
+def _canonical_key(key: str) -> str:
+    """Reduce a composite option key to its single canonical answer token.
+
+    Display keys like ``"skip / done"`` or ``"skip / force"`` advertise several
+    names to the human, but the behaviour they trigger is the first token
+    (``"skip"``). Passing the literal composite as the answer never matched the
+    ``forced`` / ``INTAKE_END_ANSWERS`` checks below, so intake's ``skip / done``
+    and the visual gate's ``skip / force`` silently failed to skip/force. Keys
+    without ``" / "`` are returned unchanged (already canonical).
+    """
+    return str(key).split(" / ")[0].strip().lower()
+
+
+def _opt(key: str, label: str, *, free_text: bool = False) -> dict:
+    """Build one structured escalation option entry.
+
+    ``key`` is the answer string passed to ``resume --answer`` (or ``"ok"`` for
+    free-text wildcards, where any typed text waives). ``label`` is the
+    human-readable description shown in the CLI pause and on the Discord button.
+    ``free_text`` marks wildcard options that accept arbitrary typed input.
+    """
+    return {"key": key, "label": label, "free_text": free_text}
+
+
+def _escalation_options(reason: str) -> list[dict]:
     """What the valid answers mean for THIS escalation — the payload's menu.
 
-    'ok' vs 'skip' do different things per escalation type; advertising them
-    stops the human from rubber-stamping 'ok' without knowing what it does.
+    Returns a list of structured option dicts (``key``/``label``/``free_text``)
+    so the CLI and the Discord bot render identical labels from a single source
+    of truth. 'ok' vs 'skip' do different things per escalation type; advertising
+    them stops the human from rubber-stamping 'ok' without knowing what it does.
     """
     r = reason.lower()
     if r.startswith("debate stuck:"):
@@ -469,17 +495,21 @@ def _escalation_options(reason: str) -> dict:
         # critics keep blocking. "ok" proceeds to the verdict with the plan as
         # it stands; "continue" extends the cap; "redo" restarts from round 1;
         # "stop" ends the run (the blockers may be in the REQUIREMENTS).
-        return {
-            "continue": "extend the debate by 2 more rounds, keeping the existing "
-            "history (the proposer keeps iterating on the stuck blocker)",
-            "redo": "re-run the debate from round 1 on the SAME plan (use when the "
-            "debate itself derailed — it cannot fix a plan that is wrong)",
-            "stop": "stop the run — the stuck blocker may be in the REQUIREMENTS, "
-            "not the plan: amend the brief, then ./run.py redo <id> --from plan "
-            "to regenerate the plan",
-            "ok": "proceed to the verdict with the plan as it stands (the stuck "
-            "blocker is recorded in the report)",
-        }
+        return [
+            _opt("continue",
+                 "extend the debate by 2 more rounds, keeping the existing "
+                 "history (the proposer keeps iterating on the stuck blocker)"),
+            _opt("redo",
+                 "re-run the debate from round 1 on the SAME plan (use when the "
+                 "debate itself derailed — it cannot fix a plan that is wrong)"),
+            _opt("stop",
+                 "stop the run — the stuck blocker may be in the REQUIREMENTS, "
+                 "not the plan: amend the brief, then ./run.py redo <id> --from plan "
+                 "to regenerate the plan"),
+            _opt("ok",
+                 "proceed to the verdict with the plan as it stands (the stuck "
+                 "blocker is recorded in the report)"),
+        ]
     if r.startswith("debate requirements:"):
         # Item 33: a REQUIREMENTS-provenanced blocker is unfixable by debate
         # iteration — the issue lives in the brief, not the plan. Only two
@@ -488,64 +518,80 @@ def _escalation_options(reason: str) -> dict:
         # No "skip"/"continue"/"redo": continuing or redoing the debate on the
         # same brief cannot fix a brief-level issue, and force-closing would
         # rubber-stamp a plan the critics flagged as built on wrong requirements.
-        return {
-            "stop": "stop the run — the blocker is in the REQUIREMENTS (the brief), "
-            "not the plan: amend the brief, then ./run.py redo <id> --from plan "
-            "to regenerate the plan from the corrected requirements",
-            "ok": "proceed to the verdict with the plan as it stands (the "
-            "REQUIREMENTS blocker is recorded in the report) — the bonus is "
-            "cleared so a later redo starts from the default cap",
-        }
+        return [
+            _opt("stop",
+                 "stop the run — the blocker is in the REQUIREMENTS (the brief), "
+                 "not the plan: amend the brief, then ./run.py redo <id> --from plan "
+                 "to regenerate the plan from the corrected requirements"),
+            _opt("ok",
+                 "proceed to the verdict with the plan as it stands (the "
+                 "REQUIREMENTS blocker is recorded in the report) — the bonus is "
+                 "cleared so a later redo starts from the default cap"),
+        ]
     if "intake" in r or "interviewer" in r:
-        return {
-            "ok": "answer the questions in the intake file, then resume",
-            "skip / done": "stop interviewing; plan from the brief as it stands",
-        }
+        return [
+            _opt("ok", "answer the questions in the intake file, then resume"),
+            _opt("skip / done", "stop interviewing; plan from the brief as it stands"),
+        ]
     if "tests still failing" in r:
-        return {
-            "<any text>": "waive the in-graph test gate for this batch and continue",
-            "skip": "force-close this batch (mark it approved) and move on",
-        }
+        return [
+            _opt("ok",
+                 "waive the in-graph test gate for this batch and continue",
+                 free_text=True),
+            _opt("skip", "force-close this batch (mark it approved) and move on"),
+        ]
     if ("ux" in r or "designer" in r) and "blocker" in r:
-        return {
-            "ok": "PROCEED past the designer, shipping the UX blockers unresolved "
-            "(recorded in the report) — prefer fixing them or accepting a "
-            "verified technical limit",
-            "skip": "same as ok here — proceed past the debate",
-            "redo": "re-run the debate from round 1, reusing the existing plan "
-            "(e.g. after fixing an agent or the UX reviewer prompt)",
-        }
+        return [
+            _opt("ok",
+                 "PROCEED past the designer, shipping the UX blockers unresolved "
+                 "(recorded in the report) — prefer fixing them or accepting a "
+                 "verified technical limit"),
+            _opt("skip", "same as ok here — proceed past the debate"),
+            _opt("redo",
+                 "re-run the debate from round 1, reusing the existing plan "
+                 "(e.g. after fixing an agent or the UX reviewer prompt)"),
+        ]
     if "debate hit the round cap" in r or "debate exhausted" in r:
-        return {
-            "ok": "proceed to the verdict with the plan as it stands",
-            "skip": "same — proceed past the debate",
-            "continue": "extend the debate by 2 more rounds, keeping the existing "
-            "history (the proposer keeps iterating on the remaining blockers)",
-            "redo": "re-run the debate from round 1 on the SAME plan (use when the "
-            "debate itself derailed — it cannot fix a plan that is wrong)",
-            "stop": "stop the run — the blockers are in the REQUIREMENTS, not the "
-            "plan: amend the brief, then ./run.py redo <id> --from plan to "
-            "regenerate the plan (no number of debate rounds can fix a brief "
-            "the proposer is not allowed to change)",
-        }
-    if "could not render" in r or "render command" in r or "render timed out" in r:
-        return {
-            "ok": "re-render (after fixing the browser/stack/fixtures)",
-            "skip / force": "give up on the visual gate; ship without it",
-        }
+        return [
+            _opt("ok", "proceed to the verdict with the plan as it stands"),
+            _opt("skip", "same — proceed past the debate"),
+            _opt("continue",
+                 "extend the debate by 2 more rounds, keeping the existing "
+                 "history (the proposer keeps iterating on the remaining blockers)"),
+            _opt("redo",
+                 "re-run the debate from round 1 on the SAME plan (use when the "
+                 "debate itself derailed — it cannot fix a plan that is wrong)"),
+            _opt("stop",
+                 "stop the run — the blockers are in the REQUIREMENTS, not the "
+                 "plan: amend the brief, then ./run.py redo <id> --from plan to "
+                 "regenerate the plan (no number of debate rounds can fix a brief "
+                 "the proposer is not allowed to change)"),
+        ]
+    # Item 5: the render predicate matches the same 4 substrings as the
+    # ``render_failed`` flag in escalate() — "render the ui", "render command",
+    # "no screenshots", "cannot render" — NOT "render timed out" / "could not
+    # render", which are not retryable render failures.
+    if ("render the ui" in r or "render command" in r
+            or "no screenshots" in r or "cannot render" in r):
+        return [
+            _opt("ok", "re-render (after fixing the browser/stack/fixtures)"),
+            _opt("skip / force", "give up on the visual gate; ship without it"),
+        ]
     if "visual issues remain" in r or "visual reviewer produced no" in r:
-        return {
-            "any answer": "SHIPS the remaining visual blockers to the final gate "
-            "(recorded in the report); the auto-fix cycles are spent. "
-            "To fix more: stop, edit the UI, then "
-            "./run.py redo <id> --from visual"
-        }
+        return [
+            _opt("ok",
+                 "SHIPS the remaining visual blockers to the final gate "
+                 "(recorded in the report); the auto-fix cycles are spent. "
+                 "To fix more: stop, edit the UI, then "
+                 "./run.py redo <id> --from visual",
+                 free_text=True),
+        ]
     if "final test gate" in r:
-        return {
-            "retry": "re-run the fix loop (e.g. after manual fixes)",
-            "ok": "ship with the known failures (recorded in the report)",
-            "stop": "stop the run — fix the failing tests manually, then restart",
-        }
+        return [
+            _opt("retry", "re-run the fix loop (e.g. after manual fixes)"),
+            _opt("ok", "ship with the known failures (recorded in the report)"),
+            _opt("stop", "stop the run — fix the failing tests manually, then restart"),
+        ]
     # A crash (OOM, signal kill, daemon death) is infrastructure, not a code
     # fault — the only sane options are retry or stop. Force-closing a batch
     # on a crash would rubber-stamp work the agent never produced.
@@ -553,27 +599,57 @@ def _escalation_options(reason: str) -> dict:
     # happens to contain one of these substrings non-crash-related would be
     # mis-routed here. No collision exists today (verified).
     if "crashed" in r or "killed by signal" in r or "agent-daemon crash" in r:
-        return {
-            "ok": "retry the step (the crash was infrastructure — OOM, signal, daemon death)",
-            "stop": "stop the run — fix the environment, then resume",
-        }
+        return [
+            _opt("ok",
+                 "retry the step (the crash was infrastructure — OOM, signal, daemon death)"),
+            _opt("stop", "stop the run — fix the environment, then resume"),
+        ]
     # A router crash is infrastructure, not a code fault — the only sane options
     # are retry or stop. Force-closing a batch on a routing failure would
     # rubber-stamp work the router never got to adjudicate.
     if "routing failed" in r:
-        return {
-            "ok": "retry the routing (the failure was infrastructure — see journal)",
-            "stop": "stop the run — fix the issue, then resume",
-        }
+        return [
+            _opt("ok", "retry the routing (the failure was infrastructure — see journal)"),
+            _opt("stop", "stop the run — fix the issue, then resume"),
+        ]
     if "judge escalated" in r or "judge did not produce" in r or "batches json" in r:
-        return {
-            "ok": "retry the judge (re-parse the verdict output, or re-run if needed)",
-            "stop": "stop the run — inspect the verdict log, then resume or redo",
-        }
-    return {
-        "ok": "retry / continue from here",
-        "skip / close / force": "force-close the current batch (approve, clear blockers)",
-    }
+        return [
+            _opt("ok", "retry the judge (re-parse the verdict output, or re-run if needed)"),
+            _opt("stop", "stop the run — inspect the verdict log, then resume or redo"),
+        ]
+    return [
+        _opt("ok", "retry / continue from here"),
+        _opt("skip / close / force", "force-close the current batch (approve, clear blockers)"),
+    ]
+
+
+def button_specs(options: list[dict]) -> list[dict]:
+    """Translate structured escalation options into Discord button specs.
+
+    Each returned spec carries the short ``key`` for the button face, the long
+    ``label`` for the tooltip / embed field, and the ``answer`` string to pass
+    to ``resume --answer``. Free-text wildcard options (``free_text=True``)
+    collapse to ``"ok"`` — any typed text waives, and the escalate() validator
+    accepts ``"ok"`` for those branches.
+
+    This is a pure-data function with no Discord import so it can live in the
+    pipeline package and be imported by ``bot/bot.py`` without pulling the
+    bot's dependencies into the graph.
+    """
+    specs: list[dict] = []
+    for opt in options:
+        key = opt.get("key", "ok")
+        specs.append({
+            "key": key,
+            "label": opt.get("label", ""),
+            # Composite display keys ("skip / done", "skip / force") collapse to
+            # their canonical first token so the answer sent to ``resume`` actually
+            # triggers the skip/force branch in escalate() instead of falling
+            # through as an unrecognized literal.
+            "answer": "ok" if opt.get("free_text") else _canonical_key(key),
+            "free_text": bool(opt.get("free_text", False)),
+        })
+    return specs
 
 
 def escalate(state):
@@ -602,20 +678,29 @@ def escalate(state):
             journal=state.get("journal", [])[-5:],
         )
 
+    # router_error is computed here (before the interrupt) so it can be
+    # included in the interrupt payload — the CLI pause renderer and the
+    # Discord bot read it to decide whether to enforce the option menu.
+    router_error = not state.get("escalation")
+    options = _escalation_options(reason)
     answer = interrupt(
         {
             "stage": "escalation",
             "task": tid,
             "reason": reason,
             "context": _context(state),
-            "answers": _escalation_options(reason),
+            "options": options,
+            "router_error": router_error,
             "journal": state.get("journal", [])[-10:],
         }
     )
 
     ev.close_escalation(tid)
     delta = {"escalation": "", "test_fix_attempt": 0}
-    ans = str(answer).strip().lower()
+    # Canonicalize composite answers ("skip / done" → "skip") so the behavioural
+    # branches below (forced / INTAKE_END_ANSWERS / visual force) fire on the
+    # first token rather than the literal composite, which never matched.
+    ans = _canonical_key(str(answer).strip())
     test_escalation = "tests still failing" in reason.lower()
     intake_escalation = "intake" in reason.lower() or "interviewer" in reason.lower()
     r_low = reason.lower()
@@ -656,15 +741,16 @@ def escalate(state):
     # routes here). Checked first so the plain-language router reason (which may
     # contain a router name like "route_intake") is not mis-routed into the
     # intake / debate / render branches below on a substring collision.
-    router_error = not state.get("escalation")
+    # (router_error was computed above, before the interrupt, so it could be
+    # included in the interrupt payload.)
     # Validate the answer against the known options for this escalation. A
     # fat-fingered or unrecognized answer must NOT default to "proceed" — it
     # re-opens the escalation so the human gets the menu again. Router errors
     # are exempt (any non-stop answer retries the router — there is no
     # domain-specific menu to enforce).
     if not router_error:
-        valid_options = _escalation_options(reason)
-        if valid_options and ans not in valid_options and ans not in (
+        valid_keys = {_canonical_key(o["key"]) for o in options}
+        if options and ans not in valid_keys and ans not in (
             "stop", "no", "abort", "cancel",  # universal stop keys
         ):
             ev.emit(
@@ -677,7 +763,7 @@ def escalate(state):
                 "escalation": reason,
                 "journal": [
                     f"escalation: answer {answer!r} not recognized — "
-                    f"valid options: {', '.join(sorted(valid_options))}"
+                    f"valid options: {', '.join(sorted(valid_keys))}"
                 ],
             }
     forced = ans in ("skip", "close", "force close", "force")

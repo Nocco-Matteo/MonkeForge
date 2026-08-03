@@ -288,25 +288,25 @@ class EscalationOptionsCrashBranch(unittest.TestCase):
 
     def test_crashed_matches(self):
         opts = self._options("step crashed in code_review")
-        self.assertEqual(set(opts.keys()), {"ok", "stop"})
+        self.assertEqual({o["key"] for o in opts}, {"ok", "stop"})
 
     def test_killed_by_signal_matches(self):
         opts = self._options("implementer process killed by signal 9 (infrastructure)")
-        self.assertEqual(set(opts.keys()), {"ok", "stop"})
+        self.assertEqual({o["key"] for o in opts}, {"ok", "stop"})
 
     def test_agent_daemon_crash_matches(self):
         opts = self._options("implementer process killed by signal 13 (agent-daemon crash), batch 1")
-        self.assertEqual(set(opts.keys()), {"ok", "stop"})
+        self.assertEqual({o["key"] for o in opts}, {"ok", "stop"})
 
     def test_no_skip_close_force_keys(self):
         opts = self._options("step crashed in something")
         for banned in ("skip", "close", "force"):
-            self.assertNotIn(banned, " ".join(opts.keys()))
+            self.assertNotIn(banned, " ".join(o["key"] for o in opts))
 
     def test_non_crash_does_not_match_crash_branch(self):
         # A generic escalation must NOT get the concise ok/stop menu.
         opts = self._options("some random escalation reason")
-        self.assertIn("skip / close / force", " ".join(opts.keys()))
+        self.assertIn("skip / close / force", " ".join(o["key"] for o in opts))
 
 
 # ---------------------------------------------------------------------------
@@ -389,8 +389,10 @@ class EscalateStopIsUniversal(unittest.TestCase):
         in-graph fix; the menu must say so instead of only offering answers
         that replay the same plan."""
         opts = _common._escalation_options(self.DEBATE)
-        self.assertIn("stop", opts)
-        self.assertIn("--from plan", opts["stop"])
+        keys = {o["key"] for o in opts}
+        self.assertIn("stop", keys)
+        stop_label = next(o["label"] for o in opts if o["key"] == "stop")
+        self.assertIn("--from plan", stop_label)
 
     def test_intake_stop_ends_interview_not_the_run(self):
         """Exempt: for the intake interview "stop" is an INTAKE_END_ANSWERS

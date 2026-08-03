@@ -132,8 +132,18 @@ def _pause_reason(data: dict) -> str:
     return "waiting for a human"
 
 
-def _pause_answers(data: dict) -> dict:
-    """Normalize interrupt choices for logs and the Discord control bot."""
+def _pause_answers(data: dict) -> dict | list:
+    """Normalize interrupt choices for logs and the Discord control bot.
+
+    Reads the structured ``options`` list (Batch 1 escalation shape) when
+    present and non-empty, falling back to the legacy ``answers`` dict (effort
+    level / intake pauses) or the ``levels`` list. Truthiness — not mere
+    presence — guards against an empty ``options`` list silently shadowing a
+    populated legacy ``answers`` dict.
+    """
+    options = data.get("options")
+    if isinstance(options, list) and options:
+        return options
     answers = data.get("answers")
     if isinstance(answers, dict) and answers:
         return answers
@@ -150,12 +160,22 @@ def _print_pause(data: dict, task_id: str) -> None:
     print(f"  what to do: {_pause_reason(data)}")
     if data.get("context"):
         print(f"  context: {data['context']}")
-    answers = _pause_answers(data)
-    if answers:
+    options = data.get("options")
+    if isinstance(options, list) and options:
         print("  choices:")
-        for key, meaning in answers.items():
+        for opt in options:
+            key = opt.get("key", "?")
+            label = opt.get("label", "")
             marker = "  (recommended)" if key == data.get("hint") else ""
-            print(f"    {key}{marker} — {meaning}")
+            print(f"    {key}{marker} — {label}")
+    else:
+        answers = _pause_answers(data)
+        if answers:
+            print("  choices:")
+            if isinstance(answers, dict):
+                for key, meaning in answers.items():
+                    marker = "  (recommended)" if key == data.get("hint") else ""
+                    print(f"    {key}{marker} — {meaning}")
     print(f"  action: ./run.py resume {task_id} --answer \"<choice>\"")
 
 
@@ -252,11 +272,16 @@ def _drive(graph, task_id, payload):
         # one button per valid answer without querying the graph internals.
         reason = _pause_reason(data)
         answers = _pause_answers(data)
+        options = data.get("options") or []
+        router_error = bool(data.get("router_error", False))
         blockers = ""
         if "debate" in reason.lower():
             blockers = _extract_debate_blockers(task_id)
         ev.emit("run_paused", task_id, str(data.get("stage", "?")), reason,
-                answers=answers, hint=data.get("hint", ""),
+                answers=answers if isinstance(answers, dict) else None,
+                options=options or None,
+                router_error=router_error,
+                hint=data.get("hint", ""),
                 context=data.get("context", ""), blockers=blockers,
                 screens=str(C.SCREENS / f"task-{task_id}")
                         if "screenshot" in reason.lower()

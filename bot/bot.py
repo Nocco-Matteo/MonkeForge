@@ -20,7 +20,13 @@ import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Also add the MonkeForge root so `pipeline_graph` is importable for
+# button_specs (the shared option→button-spec translator).
+_MF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _MF_ROOT not in sys.path:
+    sys.path.insert(0, _MF_ROOT)
 import config as C  # noqa: E402
+from pipeline_graph.nodes.common import button_specs  # noqa: E402
 
 try:
     import discord
@@ -51,22 +57,15 @@ async def _cli(*args: str) -> str:
     return (out or b"").decode("utf-8", "replace")
 
 
-def _answer_for(key: str) -> str:
-    """Map a menu key to the string to pass to `resume --answer`."""
-    k = key.strip().lower()
-    if k.startswith("<") or k.startswith("any"):
-        return "ok"                       # wildcard "type anything to waive"
-    return key.split("/")[0].strip()      # "skip / done" -> "skip"
-
-
 class AnswerButton(discord.ui.Button):
-    def __init__(self, task_id: str, key: str, meaning: str, recommended: str = ""):
-        answer = _answer_for(key)
-        super().__init__(label=key.split("/")[0].strip()[:80] or "ok",
+    def __init__(self, task_id: str, spec: dict, recommended: str = ""):
+        answer = spec.get("answer") or spec.get("key", "ok")
+        label = (spec.get("key") or "ok")[:80]
+        super().__init__(label=label,
                          style=(discord.ButtonStyle.success
                                 if answer == recommended else discord.ButtonStyle.primary),
                          custom_id=f"resume:{task_id}:{answer}")
-        self.task_id, self.answer, self.meaning = task_id, answer, meaning
+        self.task_id, self.answer, self.meaning = task_id, answer, spec.get("label", "")
 
     async def callback(self, interaction: discord.Interaction):
         if not _allowed(interaction.user.id):
@@ -86,17 +85,27 @@ class AnswerButton(discord.ui.Button):
 
 
 class AnswerView(discord.ui.View):
-    def __init__(self, task_id: str, answers: dict, recommended: str = ""):
+    def __init__(self, task_id: str, options: list, recommended: str = ""):
         super().__init__(timeout=None)
-        for key, meaning in list(answers.items())[:5]:   # Discord: 5 buttons/row
-            self.add_item(AnswerButton(task_id, key, str(meaning), recommended))
+        specs = button_specs(options)
+        for spec in specs[:5]:   # Discord: 5 buttons/row
+            self.add_item(AnswerButton(task_id, spec, recommended))
 
 
 async def _post_escalation(channel, rec: dict):
     tid = rec.get("task", "?")
     stage = str(rec.get("step", ""))
     reason = rec.get("msg") or "waiting for a human"
-    answers = rec.get("answers") or {"ok": "continue", "skip": "force-close"}
+    options = rec.get("options") or []
+    # Backward compat: older events.jsonl records carry a legacy ``answers``
+    # dict instead of the structured ``options`` list. Synthesize a minimal
+    # options list so button_specs always has something to render.
+    if not options and rec.get("answers"):
+        options = [{"key": k, "label": str(v), "free_text": False}
+                   for k, v in rec["answers"].items()]
+    if not options:
+        options = [{"key": "ok", "label": "continue", "free_text": False},
+                   {"key": "skip", "label": "force-close", "free_text": False}]
     blockers = rec.get("blockers") or ""
     if stage == "effort level":
         title = f"⏱ TASK-{tid}: choose effort"
@@ -110,7 +119,8 @@ async def _post_escalation(channel, rec: dict):
     if blockers:
         embed.add_field(name="blockers", value=blockers[:1024], inline=False)
     embed.add_field(name="answers",
-                    value="\n".join(f"**{k}** — {v}" for k, v in answers.items())[:1024],
+                    value="\n".join(f"**{o.get('key', '?')}** — {o.get('label', '')}"
+                                    for o in options)[:1024],
                     inline=False)
     files = []
     screens = rec.get("screens")
@@ -118,7 +128,7 @@ async def _post_escalation(channel, rec: dict):
         d = C.REPO / screens
         if d.is_dir():
             files = [discord.File(p) for p in sorted(d.glob("*.png"))[:4]]
-    await channel.send(embed=embed, view=AnswerView(tid, answers, str(rec.get("hint", ""))), files=files)
+    await channel.send(embed=embed, view=AnswerView(tid, options, str(rec.get("hint", ""))), files=files)
 
 
 async def _post_end(channel, rec: dict):

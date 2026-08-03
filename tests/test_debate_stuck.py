@@ -270,7 +270,7 @@ class TestDebateStuckMenu(unittest.TestCase):
     def test_debate_stuck_prefix_returns_correct_keys(self):
         # Item 14: exactly continue, redo, stop, ok (no skip).
         opts = _common._escalation_options("debate stuck: 1 blocker(s) repeated across 2 rounds")
-        self.assertEqual(set(opts.keys()), {"continue", "redo", "stop", "ok"})
+        self.assertEqual({o["key"] for o in opts}, {"continue", "redo", "stop", "ok"})
 
     def test_debate_stuck_tested_before_intake_branch(self):
         # Item 13: the "debate stuck:" prefix is tested before the intake branch.
@@ -279,12 +279,13 @@ class TestDebateStuckMenu(unittest.TestCase):
         opts = _common._escalation_options(
             "debate stuck: intake-related blocker repeated across 2 rounds"
         )
-        self.assertIn("continue", opts)
-        self.assertNotIn("skip / done", opts)
+        keys = {o["key"] for o in opts}
+        self.assertIn("continue", keys)
+        self.assertNotIn("skip / done", keys)
 
     def test_case_insensitive_prefix(self):
         opts = _common._escalation_options("Debate Stuck: something")
-        self.assertEqual(set(opts.keys()), {"continue", "redo", "stop", "ok"})
+        self.assertEqual({o["key"] for o in opts}, {"continue", "redo", "stop", "ok"})
 
 
 # --- escalate() prefix gate (items 15-17) ------------------------------------

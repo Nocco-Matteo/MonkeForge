@@ -168,7 +168,7 @@ class EscalateRouterErrorBranch(unittest.TestCase):
 
         def fake_interrupt(payload):
             captured["reason"] = payload["reason"]
-            captured["answers"] = payload["answers"]
+            captured["options"] = payload["options"]
             return "stop"
 
         with patch.object(_common, "interrupt", side_effect=fake_interrupt), \
@@ -179,11 +179,11 @@ class EscalateRouterErrorBranch(unittest.TestCase):
         self.assertNotEqual(captured["reason"], "unknown")
         self.assertIn("routing failed", captured["reason"])
         # The fallback reason routes into the "routing failed" options branch.
-        self.assertEqual(set(captured["answers"].keys()), {"ok", "stop"})
+        self.assertEqual({o["key"] for o in captured["options"]}, {"ok", "stop"})
 
     def test_routing_failed_options_branch(self):
         opts = _common._escalation_options("routing failed in route_x — see journal")
-        self.assertEqual(set(opts.keys()), {"ok", "stop"})
+        self.assertEqual({o["key"] for o in opts}, {"ok", "stop"})
 
     def test_state_escalation_takes_precedence_over_router_error(self):
         # When a node set state["escalation"], that wins over a stale stored

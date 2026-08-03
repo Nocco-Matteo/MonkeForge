@@ -369,7 +369,7 @@ class TestDebateRequirementsMenu(unittest.TestCase):
         opts = _common._escalation_options(
             "debate requirements: 1 blocker(s) tagged as belonging to the REQUIREMENTS"
         )
-        self.assertEqual(set(opts.keys()), {"stop", "ok"})
+        self.assertEqual({o["key"] for o in opts}, {"stop", "ok"})
 
     def test_debate_requirements_tested_before_intake_branch(self):
         # A reason that starts with "debate requirements:" but also contains
@@ -377,18 +377,20 @@ class TestDebateRequirementsMenu(unittest.TestCase):
         opts = _common._escalation_options(
             "debate requirements: intake brief is wrong"
         )
-        self.assertIn("stop", opts)
-        self.assertNotIn("skip / done", opts)
+        keys = {o["key"] for o in opts}
+        self.assertIn("stop", keys)
+        self.assertNotIn("skip / done", keys)
 
     def test_debate_requirements_no_skip_key(self):
         opts = _common._escalation_options("debate requirements: brief issue")
-        self.assertNotIn("skip", opts)
-        self.assertNotIn("continue", opts)
-        self.assertNotIn("redo", opts)
+        keys = {o["key"] for o in opts}
+        self.assertNotIn("skip", keys)
+        self.assertNotIn("continue", keys)
+        self.assertNotIn("redo", keys)
 
     def test_case_insensitive_prefix(self):
         opts = _common._escalation_options("Debate Requirements: something")
-        self.assertEqual(set(opts.keys()), {"stop", "ok"})
+        self.assertEqual({o["key"] for o in opts}, {"stop", "ok"})
 
 
 # --- escalate() prefix gate (items 34-35) -----------------------------------
