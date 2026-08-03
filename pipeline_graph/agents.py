@@ -35,6 +35,18 @@ FATAL_SIGNATURES = (
     "out of usage", "increase limits", "usage limit", "quota exceeded",
     "actionrequirederror",
 )
+# Terminal markers that are a complete, valid answer despite being far below
+# MIN_OUTPUT_BYTES: the intake interviewer writes the brief to a file and prints
+# only "INTAKE: COMPLETE"; a reviewer whose false-positive filter deletes every
+# item prints only "VERDICT: APPROVE". These are the exact outputs the prompts
+# mandate, so the length heuristic must not read them as a failure.
+TERMINAL_MARKERS = frozenset({
+    "INTAKE: COMPLETE",
+    "INTAKE: QUESTIONS",
+    "VERDICT: APPROVE",
+    "VERDICT: REJECT",
+    "VERDICT: APPROVE_WITH_CHANGES",
+})
 
 
 def classify_output(code: int, output: str) -> tuple[str, str]:
@@ -70,6 +82,13 @@ def classify_output(code: int, output: str) -> tuple[str, str]:
         return "transient", f"killed by signal {-code}"
     if code != 0:
         return "hard", f"exit {code}"
+    # Checked before the length heuristic (and after the exit-code checks, so a
+    # marker printed by a failing process is still hard): a bare terminal marker
+    # is a complete answer, not a near-empty one. Without this the health signal
+    # is wrong at the source and every clean intake completion or filtered-clean
+    # approval emits a spurious `agent_unhealthy` event on a correct run.
+    if (output or "").strip().upper() in TERMINAL_MARKERS:
+        return "ok", ""
     if len((output or "").strip()) < MIN_OUTPUT_BYTES:
         return "hard", f"near-empty output ({len((output or '').strip())}b)"
     return "ok", ""

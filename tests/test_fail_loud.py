@@ -179,16 +179,25 @@ class DebateTechGuard(unittest.TestCase):
 
 
 class DebateUxGuard(unittest.TestCase):
-    def test_untrustworthy_output_with_verdict_escalates(self):
-        # Output has a parseable VERDICT but is too short → untrustworthy.
+    def test_bare_verdict_marker_is_trusted(self):
+        # A bare "VERDICT: APPROVE" (16 bytes) is the expected output when the
+        # UX filter deletes all items — _trust_output whitelists terminal
+        # markers, so the guard must NOT fire.
         short_with_verdict = (0, "VERDICT: APPROVE\n")
         st = _base_state(debate_round=1, has_ui=True)
         with patch.object(_debate, "run_agent", return_value=short_with_verdict), \
              patch.object(N.ev, "emit"):
             d = _debate.debate_ux(st)
+        self.assertNotIn("escalation", d)
+
+    def test_short_garbage_without_marker_escalates(self):
+        # Short output with no terminal marker and no parseable verdict →
+        # still untrustworthy (the guard fires).
+        st = _base_state(debate_round=1, has_ui=True)
+        with patch.object(_debate, "run_agent", return_value=(0, "???\n")), \
+             patch.object(N.ev, "emit"):
+            d = _debate.debate_ux(st)
         self.assertIn("escalation", d)
-        self.assertNotIn("health=", d["escalation"])
-        self.assertIn("health=", d["journal"][-1])
 
     def test_healthy_output_passes_through(self):
         st = _base_state(debate_round=1, has_ui=True)
@@ -204,15 +213,22 @@ class DebateUxGuard(unittest.TestCase):
 
 
 class UxVisualReviewGuard(unittest.TestCase):
-    def test_untrustworthy_output_with_verdict_escalates(self):
+    def test_bare_verdict_marker_is_trusted(self):
+        # A bare "VERDICT: APPROVE" is a valid terminal marker — the guard
+        # must NOT fire (_trust_output whitelists it).
         short_with_verdict = (0, "VERDICT: APPROVE\n")
         st = _base_state(ux_render_cycle=0)
         with patch.object(N, "run_agent", return_value=short_with_verdict), \
              patch.object(N.ev, "emit"):
             d = _qg.ux_visual_review(st)
+        self.assertNotIn("escalation", d)
+
+    def test_short_garbage_without_marker_escalates(self):
+        st = _base_state(ux_render_cycle=0)
+        with patch.object(N, "run_agent", return_value=(0, "???\n")), \
+             patch.object(N.ev, "emit"):
+            d = _qg.ux_visual_review(st)
         self.assertIn("escalation", d)
-        self.assertNotIn("health=", d["escalation"])
-        self.assertIn("health=", d["journal"][-1])
 
     def test_healthy_output_passes_through(self):
         st = _base_state(ux_render_cycle=0)
@@ -329,6 +345,62 @@ class EscalateCrashBranch(unittest.TestCase):
         d = self._escalate("ok", "implementer killed by signal 9, batch 1")
         self.assertEqual(d.get("escalation"), "")
         self.assertIsNone(d.get("code_verdict"))
+
+
+class EscalateStopIsUniversal(unittest.TestCase):
+    """"stop" is accepted by the answer validator for every escalation, so it
+    must actually stop the run — not fall through to the generic tail and
+    proceed (the silent-approval class of bug)."""
+
+    DEBATE = "debate exhausted 3 rounds + verification: 2 technical blocker(s) confirmed"
+    UX = "the designer raised 2 UX blocker(s)"
+    VISUAL = "visual issues remain after 3 fix cycles"
+
+    def _escalate(self, answer, reason):
+        st = {"task_id": "fl", "escalation": reason, "journal": []}
+        with patch.object(_common, "interrupt", return_value=answer), \
+             patch.object(_common.ev, "emit"), \
+             patch.object(_common.ev, "open_escalation", return_value=True), \
+             patch.object(_common.ev, "close_escalation"):
+            return _common.escalate(st)
+
+    def test_stop_stops_debate_escalation(self):
+        d = self._escalate("stop", self.DEBATE)
+        self.assertTrue(d.get("finished"))
+
+    def test_stop_stops_ux_escalation(self):
+        d = self._escalate("stop", self.UX)
+        self.assertTrue(d.get("finished"))
+        # Must not record a "shipped with unresolved blockers" degradation:
+        # nothing shipped, the human stopped.
+        self.assertNotIn("degradations", d)
+
+    def test_stop_stops_visual_escalation(self):
+        d = self._escalate("stop", self.VISUAL)
+        self.assertTrue(d.get("finished"))
+
+    def test_stop_aliases_stop_the_run(self):
+        for alias in ("no", "abort", "cancel", "STOP", " stop "):
+            with self.subTest(alias=alias):
+                self.assertTrue(self._escalate(alias, self.DEBATE).get("finished"))
+
+    def test_debate_menu_offers_the_requirements_escape(self):
+        """A debate that cannot converge because the BRIEF is wrong has no
+        in-graph fix; the menu must say so instead of only offering answers
+        that replay the same plan."""
+        opts = _common._escalation_options(self.DEBATE)
+        self.assertIn("stop", opts)
+        self.assertIn("--from plan", opts["stop"])
+
+    def test_intake_stop_ends_interview_not_the_run(self):
+        """Exempt: for the intake interview "stop" is an INTAKE_END_ANSWERS
+        member meaning "stop interviewing"."""
+        d = self._escalate("stop", "intake still unresolved after 3 rounds")
+        self.assertFalse(d.get("finished"))
+
+    def test_non_stop_answer_still_proceeds(self):
+        d = self._escalate("ok", self.DEBATE)
+        self.assertFalse(d.get("finished"))
 
 
 if __name__ == "__main__":

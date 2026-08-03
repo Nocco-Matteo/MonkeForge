@@ -14,6 +14,7 @@ from langgraph.types import interrupt
 
 from .. import config as C
 from .. import events as ev
+from ..agents import TERMINAL_MARKERS as _TERMINAL_MARKERS
 from ..agents import read_if_exists
 
 
@@ -338,7 +339,19 @@ def _trust_output(code: int, out: str, health: str) -> bool:
 
     `health` is the value returned by ``agents.classify_output``; the caller
     computes it once and passes it in so this guard does not re-import agents.
+
+    A bare terminal marker (``INTAKE: COMPLETE``, ``VERDICT: APPROVE`` etc.) is
+    trustworthy: these are the exact signals the prompt mandates when the agent
+    has nothing else to say (the intake interviewer wrote the brief to a file;
+    the debate reviewer's filter deleted all items). ``classify_output`` already
+    classifies them ``ok``; the check is kept here so a caller that computed
+    ``health`` some other way still cannot false-fire on a clean approval or a
+    file-backed intake completion.
     """
+    if code == 0 and bool(out and out.strip()):
+        stripped = out.strip().upper()
+        if stripped in _TERMINAL_MARKERS:
+            return True
     return health == "ok" and code == 0 and bool(out and out.strip())
 
 
@@ -474,7 +487,12 @@ def _escalation_options(reason: str) -> dict:
             "skip": "same — proceed past the debate",
             "continue": "extend the debate by 2 more rounds, keeping the existing "
             "history (the proposer keeps iterating on the remaining blockers)",
-            "redo": "re-run the debate from round 1, reusing the existing plan",
+            "redo": "re-run the debate from round 1 on the SAME plan (use when the "
+            "debate itself derailed — it cannot fix a plan that is wrong)",
+            "stop": "stop the run — the blockers are in the REQUIREMENTS, not the "
+            "plan: amend the brief, then ./run.py redo <id> --from plan to "
+            "regenerate the plan (no number of debate rounds can fix a brief "
+            "the proposer is not allowed to change)",
         }
     if "could not render" in r or "render command" in r or "render timed out" in r:
         return {
@@ -615,6 +633,23 @@ def escalate(state):
         else:
             delta["journal"] = [f"escalation resolved: {answer} (retrying after routing failure)"]
         ev.emit("escalation_resolved", tid, "escalate", f"answered {answer!r}; was: {reason}")
+        return delta
+
+    # "stop" means stop the run. Only the router / final-gate / crash branches
+    # honoured it, so a debate, UX or visual escalation answered "stop" — a key
+    # the validator above explicitly accepts — fell through to the generic tail
+    # and PROCEEDED, the same silent-approval class as an unvalidated answer.
+    # The intake interview is exempt: there "stop" is one of INTAKE_END_ANSWERS
+    # and means "stop interviewing", handled by its own branch below.
+    if ans in ("stop", "no", "abort", "cancel") and not intake_escalation:
+        delta["finished"] = True
+        delta["journal"] = [f"escalation resolved: {answer} (run stopped by human)"]
+        ev.emit(
+            "escalation_resolved",
+            tid,
+            "escalate",
+            f"answered {answer!r} — run stopped; was: {reason}",
+        )
         return delta
 
     if ans == "continue" and debate_escalation:
