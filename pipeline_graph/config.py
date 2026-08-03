@@ -496,6 +496,24 @@ if CONDENSER_KEEP_RECENT < DEBATE_THRASH_ROUNDS:
 # (plateau detection — the fix loop is oscillating, not converging).
 PLATEAU_THRESHOLD = int(os.environ.get("PIPELINE_PLATEAU_THRESHOLD", "2"))
 
+# TASK-023: lean plan-view threshold for the critic rounds. When the current
+# plan is at least this many bytes AND the round is >= 2 AND a non-empty
+# plan_snapshot differs from the current plan, the critic is sent
+# condenser.plan_diff(snapshot, plan) (only the changed sections) instead of
+# the full plan. Below the threshold, or with no usable diff, the full plan is
+# sent. Validated parse mirrors CONDENSER_KEEP_RECENT: a non-integer falls back
+# to the default (8192) with a stderr warning.
+_raw_lean = os.environ.get("PIPELINE_LEAN_PLAN_FULL_THRESHOLD", "8192")
+try:
+    LEAN_PLAN_FULL_THRESHOLD = int(_raw_lean)
+except ValueError:
+    print(
+        f"PIPELINE_LEAN_PLAN_FULL_THRESHOLD={_raw_lean!r} not an int; "
+        f"using default 8192",
+        file=sys.stderr,
+    )
+    LEAN_PLAN_FULL_THRESHOLD = 8192
+
 # The "eyes": a Playwright spec renders the built UI to screenshots + a facts
 # JSON. The render node runs this command in the frontend; it must honour
 # UX_RENDER_OUT (output dir). Disable the whole visual phase with an empty value.

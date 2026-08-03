@@ -12,6 +12,7 @@ avoid an import-time cycle (D2).
 """
 from __future__ import annotations
 
+import difflib
 import re
 
 from .agents import parse_verdict
@@ -692,3 +693,54 @@ def _process_critic_section(
                 items_order.append(key)
             else:
                 items[key]["status"] = "OPEN"
+
+
+# --- TASK-023: plan diff / section titles -----------------------------------
+#
+# Lean plan-view helpers for the critic rounds. ``plan_diff`` produces a
+# unified diff between the snapshot the proposer last replied to and the
+# current plan, so a round-2+ critic sees only what changed instead of the
+# whole (possibly large) plan. ``plan_section_titles`` lists the numbered
+# section headers (``N. <title>``) the section-patch applier targets.
+
+
+def plan_diff(old: str, new: str) -> str:
+    """Unified diff between two plan snapshots.
+
+    Returns ``""`` when ``old == new`` or either side is empty — the caller
+    (``_build_plan_view``) treats an empty diff as "send the full plan
+    instead" so a no-op reply does not starve the critic of context. Pure
+    string-in/string-out, no IO.
+    """
+    old = old or ""
+    new = new or ""
+    if not old or not new or old == new:
+        return ""
+    diff = difflib.unified_diff(
+        old.splitlines(keepends=True),
+        new.splitlines(keepends=True),
+        fromfile="plan-snapshot",
+        tofile="plan",
+        lineterm="",
+    )
+    return "".join(diff)
+
+
+def plan_section_titles(plan: str) -> list[str]:
+    """Return the numbered section header titles of a plan.
+
+    A header is any line matching ``^(\\d+)\\.\\s+(.+)$`` — every matching
+    line is included, even when the following line is itself another numbered
+    header (adjacent numbered sections are real section anchors, not list
+    items, and must not be dropped from the title list). Titles are returned
+    in first-seen order.
+    """
+    plan = plan or ""
+    titles: list[str] = []
+    for line in plan.split("\n"):
+        m = re.match(r"^(\d+)\.\s+(.+)$", line)
+        if not m:
+            continue
+        titles.append(m.group(2).strip())
+    return titles
+

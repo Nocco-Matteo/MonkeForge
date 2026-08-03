@@ -23,16 +23,187 @@ PLAN_MARKER_RE = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
+# TASK-023: section-replace plan patches. The proposer prints one
+# ``=== PLAN PATCH START ===`` … ``=== PLAN PATCH END ===`` envelope per reply,
+# containing one or more ``@@@ REPLACE section: "<title>"`` … ``@@@ END``
+# blocks. Each block's body replaces the named plan section's span (header
+# line through the line before the next numbered header) verbatim. The body's
+# first line MUST be the section header itself — the applier replaces the
+# header-through-next-header span wholesale with what is printed here, so
+# omitting the header deletes that section's anchor from the plan.
+PLAN_PATCH_RE = re.compile(
+    r"===\s*PLAN\s*PATCH\s*START\s*===\s*\n(.*?)\n===\s*PLAN\s*PATCH\s*END\s*===",
+    re.DOTALL | re.IGNORECASE,
+)
 
-def _extract_plan(text: str) -> str | None:
-    """Extract the updated plan from debate_reply stdout (between markers).
+SECTION_REPLACE_RE = re.compile(
+    r'@@@\s+REPLACE\s+section:\s*"([^"]+)"\s*\n(.*?)@@@\s+END',
+    re.DOTALL | re.IGNORECASE,
+)
 
-    The proposer prints per-item notes AND the complete updated plan between
-    ``=== PLAN START ===`` / ``=== PLAN END ===`` markers.  This returns only the
-    plan text, or None if the markers are absent (backward compat).
+# Numbered plan section header: ``N. <title>`` on its own line, NOT immediately
+# followed by another ``N. `` header (so a numbered sub-list line under a
+# header is not itself mistaken for a header).
+_SECTION_HEADER_LINE_RE = re.compile(r"^(\d+)\.\s+(.+)$")
+_NEXT_HEADER_LINE_RE = re.compile(r"^\d+\.\s+")
+
+
+def _is_plan_section_header(lines: list[str], i: int) -> bool:
+    """True only when ``lines[i]`` is a ``N. <title>`` header line whose next
+    line is NOT another ``N. `` header (so a numbered list item directly under
+    a header is not itself treated as a header)."""
+    if i < 0 or i >= len(lines):
+        return False
+    if not _SECTION_HEADER_LINE_RE.match(lines[i]):
+        return False
+    if i + 1 < len(lines) and _NEXT_HEADER_LINE_RE.match(lines[i + 1]):
+        return False
+    return True
+
+
+def _extract_plan_or_patch(text: str) -> tuple[str | None, str | None]:
+    """Classify a proposer reply into one of four outcomes.
+
+    Returns:
+      - ``("patch", body)``: a well-formed ``=== PLAN PATCH START/END ===``
+        envelope was found; ``body`` is the text between the markers (one or
+        more ``@@@ REPLACE section: "..." … @@@ END`` blocks).
+      - ``("legacy", full_plan)``: a legacy ``=== PLAN START/END ===`` envelope
+        was found (the proposer printed the whole plan); ``full_plan`` is the
+        plan text. Discouraged — the caller records a degradation.
+      - ``("malformed", None)``: neither regex matched, but the raw text
+        contains (case-insensitive) ``=== PLAN PATCH START ===``,
+        ``=== PLAN PATCH END ===``, or any ``@@@`` token — a broken/partial
+        envelope or a stray patch token outside a well-formed block. The
+        caller escalates rather than silently no-op'ing.
+      - ``(None, None)``: a genuine no-patch, per-item-only reply (or a
+        direct-edit-only reply) — none of the patch/legacy/malformed markers
+        are present.
     """
-    m = PLAN_MARKER_RE.search(text or "")
-    return m.group(1).strip() if m else None
+    text = text or ""
+    m = PLAN_PATCH_RE.search(text)
+    if m:
+        # Reject stray patch markers / ``@@@`` tokens OUTSIDE the matched
+        # envelope — a second envelope, a dangling START/END, or a bare
+        # ``@@@`` block would otherwise be silently ignored while the
+        # matched block mutates the plan (partial application / bypassed
+        # escalation).
+        outside = text[:m.start()] + text[m.end():]
+        lower_out = outside.lower()
+        if (
+            "=== plan patch start ===" in lower_out
+            or "=== plan patch end ===" in lower_out
+            or "@@@" in lower_out
+        ):
+            return ("malformed", None)
+        return ("patch", m.group(1))
+    m = PLAN_MARKER_RE.search(text)
+    if m:
+        return ("legacy", m.group(1).strip())
+    lower = text.lower()
+    if (
+        "=== plan patch start ===" in lower
+        or "=== plan patch end ===" in lower
+        or "@@@" in lower
+    ):
+        return ("malformed", None)
+    return (None, None)
+
+
+def _apply_section_patch(plan: str, patch_body: str) -> str | None:
+    """Apply a section-replace patch body to ``plan``.
+
+    The patch body contains one or more ``@@@ REPLACE section: "<title>"`` …
+    ``@@@ END`` blocks. Each block's body replaces the named plan section's
+    span (the header line through the line before the next numbered section
+    header) verbatim — the body's first line MUST be the section header
+    itself, because the applier deletes the original header line as part of
+    the span.
+
+    Returns:
+      - the new plan string on success.
+      - the plan unchanged if ``patch_body`` contains no ``@@@`` token (a
+        no-op patch body — nothing to apply).
+      - ``None`` if ``patch_body`` contains ``@@@`` tokens but zero valid
+        ``@@@ REPLACE … @@@ END`` blocks, or if a cited section title is not
+        found among the headers identified by ``_is_plan_section_header``.
+    """
+    if "@@@" not in patch_body:
+        return plan
+    blocks = list(SECTION_REPLACE_RE.finditer(patch_body))
+    if not blocks:
+        return None
+    # Reject stray ``@@@`` tokens that are not part of a valid
+    # ``@@@ REPLACE … @@@ END`` block — otherwise a malformed block would
+    # be ignored while a valid one mutates the plan (partial application).
+    for am in re.finditer(r"@@@", patch_body):
+        if not any(b.start() <= am.start() < b.end() for b in blocks):
+            return None
+    result_lines = (plan or "").split("\n")
+    for m in blocks:
+        title = m.group(1).strip()
+        body = m.group(2)
+        # Strip exactly one trailing newline (the regex captures up to but
+        # not including ``@@@ END``, so a body ending in ``\n`` carries one
+        # artifact newline that would otherwise become a spurious blank line).
+        if body.endswith("\n"):
+            body = body[:-1]
+        body_lines = body.split("\n")
+        # Re-scan headers on the current result after every replacement, since
+        # earlier replacements shift the line indices of later sections.
+        headers = [
+            i for i in range(len(result_lines)) if _is_plan_section_header(result_lines, i)
+        ]
+        target_idx = None
+        for h in headers:
+            hm = _SECTION_HEADER_LINE_RE.match(result_lines[h])
+            if hm and hm.group(2).strip() == title:
+                target_idx = h
+                break
+        if target_idx is None:
+            return None
+        next_idx = len(result_lines)
+        for h in headers:
+            if h > target_idx:
+                next_idx = h
+                break
+        result_lines = (
+            result_lines[:target_idx] + body_lines + result_lines[next_idx:]
+        )
+    return "\n".join(result_lines)
+
+
+def _build_plan_view(state, conv, rnd: int) -> tuple[str, list[str]]:
+    """Build the plan input sent to a critic round.
+
+    Returns ``(plan_view, journal_lines)``.
+
+    - ``rnd < 2`` or the plan is smaller than
+      ``C.LEAN_PLAN_FULL_THRESHOLD`` → the full ``conv.plan`` verbatim (early
+      rounds and small plans always see the whole plan).
+    - a non-empty ``plan_snapshot`` (the pre-reply plan captured by the
+      previous ``debate_reply``) differs from ``conv.plan`` →
+      ``condenser.plan_diff(snapshot, plan)`` (the lean view: only the
+      changed sections).
+    - the computed diff is empty (a no-op reply, or the snapshot equals the
+      plan) or ``plan_snapshot`` is absent → the full plan, plus a journal
+      line containing ``sent full plan`` so the lean-path fallback is
+      observable.
+
+    The ``condenser`` import is function-local to avoid the
+    ``condenser``↔``nodes.debate`` import cycle (condenser imports
+    ``TECH_LIMIT_RE`` from this module at load time).
+    """
+    plan = conv.plan or ""
+    snapshot = state.get("plan_snapshot", "") if isinstance(state, dict) else ""
+    if rnd < 2 or len(plan) < C.LEAN_PLAN_FULL_THRESHOLD:
+        return plan, []
+    if snapshot and snapshot != plan:
+        from ..condenser import plan_diff
+        diff = plan_diff(snapshot, plan)
+        if diff:
+            return diff, []
+    return plan, [f"debate r{rnd}: sent full plan (no lean diff available)"]
 
 
 def _latest_section(debate_text: str, critic: str) -> str:
@@ -301,12 +472,16 @@ def debate_tech(state):
     rnd = state.get("debate_round", 0) + 1
     is_verification = rnd > C.resolved_debate_rounds(state)
     conv = Conversation.from_state(state)
+    # TASK-023: send a lean plan_view (only the changed sections) to round-2+
+    # critics once the plan is large; round 1 and small plans get the full plan.
+    plan_view, plan_view_journal = _build_plan_view(state, conv, rnd)
     code, out = run_agent(
         "PLAN_REVIEWER",
         conv,
         f"debate-r{rnd}-tech",
         template="debate_review",
         round=rnd,
+        plan_view=plan_view,
     )
     health, _signal = classify_output(code, out)
     # A bare "VERDICT: APPROVE" (17 bytes) is the expected output format when
@@ -343,6 +518,7 @@ def debate_tech(state):
         "redo_debate": False,
         "debate_text": text,
         "journal": [
+            *plan_view_journal,
             f"debate r{rnd} tech: {verdict}, {blockers} blockers, "
             f"{len(limits)} tech-limit(s) verified"
         ],
@@ -399,6 +575,9 @@ def debate_ux(state):
     tid = state["task_id"]
     rnd = state.get("debate_round", 0)
     conv = Conversation.from_state(state)
+    # TASK-023: lean plan_view for the designer too, keyed on the current
+    # debate_round (the round the UX critic is re-reviewing).
+    plan_view, plan_view_journal = _build_plan_view(state, conv, rnd)
 
     # The UX reviewer is print-only (gemini): it prints the review, WE file it.
     # Asking it to write files itself makes its CLI attempt a tool call and
@@ -421,6 +600,7 @@ def debate_ux(state):
             round=rnd,
             tech_limits="; ".join(state.get("tech_limits", [])) or "none",
             docs_dir=C.DOCS_REL,
+            plan_view=plan_view,
         )
         verdict = parse_verdict(out)
         if verdict != "UNKNOWN":
@@ -510,7 +690,10 @@ def debate_ux(state):
         "ux_verdict": verdict,
         "ux_blockers": blockers,
         "debate_text": debate_text,
-        "journal": [f"debate r{rnd} ux: {verdict}, {blockers} blockers{delta_note}"],
+        "journal": [
+            *plan_view_journal,
+            f"debate r{rnd} ux: {verdict}, {blockers} blockers{delta_note}",
+        ],
     }
     is_verification = rnd > C.resolved_debate_rounds(state)
     # Precedence chain (TASK-022): requirements > early(stuck) > thrashing
@@ -599,9 +782,34 @@ def _debate_decision(state, is_verification: bool = False) -> dict:
 
 
 def debate_reply(state):
+    """The proposer replies to both critics and updates the plan.
+
+    TASK-023 contract: the proposer prints per-item notes AND a plan patch
+    enclosed in ``=== PLAN PATCH START/END ===`` markers, containing one or
+    more ``@@@ REPLACE section: "<title>" … @@@ END`` blocks. The pipeline
+    applies the patch to ``PLAN-{tid}.md`` and never lets the proposer edit
+    the plan file directly — any direct edit is reverted.
+
+    Ownership rule (ruling 1): every branch that is NOT a successful
+    ``"patch"`` or ``"legacy"`` apply ends with ``_save(PLAN-{tid}.md,
+    pre_plan)`` — the file is always exactly what it was before this reply's
+    ``run_agent`` call unless a validated apply changed it. ``pre_plan`` is
+    captured BEFORE ``run_agent`` so a direct edit during the call is
+    overwritten on every non-apply path (no-marker, malformed envelope, and
+    apply-failure). The restore writes ``pre_plan`` verbatim (no appended
+    ``"\\n"``) so the file is byte-exact (ruling 3).
+
+    Every return path carries ``plan_snapshot: pre_plan`` so the next critic
+    round can diff the snapshot against the (possibly patched) current plan
+    and send only the changed sections via ``_build_plan_view``.
+    """
     tid = state["task_id"]
     rnd = state["debate_round"]
     conv = Conversation.from_state(state)
+    plan_path = C.PLANS / f"PLAN-{tid}.md"
+    # Capture the pre-reply plan BEFORE run_agent so a direct edit during the
+    # agent call is overwritten on every non-apply path (rulings 1 + 3).
+    pre_plan = read_if_exists(plan_path)
     _, out = run_agent(
         "PROPOSER",
         conv,
@@ -611,18 +819,90 @@ def debate_reply(state):
         tech_limits="; ".join(state.get("tech_limits", [])) or "none",
     )
     debate_path = C.DEBATES / f"DEBATE-{tid}.md"
-    # Extract the updated plan from between the markers; the per-item notes
-    # (everything outside the markers) go into the debate file as the reply.
-    plan_text = _extract_plan(out)
-    if plan_text:
-        _save(C.PLANS / f"PLAN-{tid}.md", plan_text + "\n")
-        reply = PLAN_MARKER_RE.sub("", out).strip()
-    else:
-        # No markers: the agent may have updated the plan file directly in the
-        # target repo instead of printing it. Try to recover it.
-        plan_path = C.PLANS / f"PLAN-{tid}.md"
-        _recover_artifact(tid, f"PLAN-{tid}.md", plan_path)
+    kind, body = _extract_plan_or_patch(out)
+
+    if kind == "patch":
+        new_plan = _apply_section_patch(pre_plan, body)
+        if new_plan is None:
+            # Apply failed (missing title or section not found): restore the
+            # pre-reply plan verbatim and escalate. The literal "plan patch
+            # apply failed" prefix lets the router/escalate path recognize it.
+            _save(plan_path, pre_plan)
+            reply = out.strip()
+            if reply:
+                _save(debate_path, f"\n\n## Round {rnd} — Reply\n\n{reply}\n", append=True)
+            return {
+                "escalation": (
+                    "plan patch apply failed: could not apply section patch "
+                    "(missing section title or cited section not found in plan)"
+                ),
+                "plan_snapshot": pre_plan,
+                "journal": [
+                    f"debate r{rnd}: plan patch apply failed — "
+                    f"plan restored to pre-reply snapshot"
+                ],
+            }
+        _save(plan_path, new_plan)
         reply = out.strip()
+        if reply:
+            _save(debate_path, f"\n\n## Round {rnd} — Reply\n\n{reply}\n", append=True)
+        return {
+            "plan_snapshot": pre_plan,
+            "journal": [f"debate r{rnd}: proposer replied with a section patch"],
+        }
+
+    if kind == "legacy":
+        # Discouraged: the proposer printed the whole plan instead of a patch.
+        # Save it (it is the new plan) and record a degradation so the legacy
+        # fallback is observable. plan_snapshot is still pre_plan (ruling 14).
+        _save(plan_path, body + "\n")
+        reply = PLAN_MARKER_RE.sub("", out).strip()
+        if reply:
+            _save(debate_path, f"\n\n## Round {rnd} — Reply\n\n{reply}\n", append=True)
+        return {
+            "plan_snapshot": pre_plan,
+            "degradations": ["debate reply used full-plan markers (legacy)"],
+            "journal": [
+                f"debate r{rnd}: proposer replied with full-plan markers (legacy, degraded)"
+            ],
+        }
+
+    if kind == "malformed":
+        # A partial/unmatched envelope or a stray @@@ token: restore the
+        # pre-reply plan and escalate. Per C3, any @@@/envelope token outside
+        # a well-formed block is an apply failure, not a silent no-op.
+        _save(plan_path, pre_plan)
+        reply = out.strip()
+        if reply:
+            _save(debate_path, f"\n\n## Round {rnd} — Reply\n\n{reply}\n", append=True)
+        return {
+            "escalation": (
+                "plan patch apply failed: malformed plan patch envelope "
+                "(unmatched PLAN PATCH START/END or stray @@@ token)"
+            ),
+            "plan_snapshot": pre_plan,
+            "journal": [
+                f"debate r{rnd}: malformed plan patch envelope — "
+                f"plan restored to pre-reply snapshot"
+            ],
+        }
+
+    # (None, None): a genuine no-patch, per-item-only (or direct-edit-only)
+    # reply. Unconditionally restore pre_plan (rulings 1 + 3) — even when it
+    # is empty — so a direct edit during run_agent is always reverted.
+    _save(plan_path, pre_plan)
+    reply = out.strip()
     if reply:
         _save(debate_path, f"\n\n## Round {rnd} — Reply\n\n{reply}\n", append=True)
-    return {"journal": [f"debate r{rnd}: proposer replied to both critics"]}
+    if pre_plan:
+        journal_line = (
+            f"debate r{rnd}: no plan patch markers — plan restored to pre-reply snapshot"
+        )
+    else:
+        journal_line = (
+            f"debate r{rnd}: no plan patch markers — no prior plan to restore (reverted to empty)"
+        )
+    return {
+        "plan_snapshot": pre_plan,
+        "journal": [journal_line],
+    }

@@ -51,6 +51,11 @@ class PipelineState(TypedDict, total=False):
     ux_blockers: int               # UX blockers still open (0 = designer satisfied)
     tech_limits: list[str]         # UX items the reviewer verified as blocked by a real tech constraint
     debate_next: str               # "summary" | "reply" — where the round router should go
+    # TASK-023: plan snapshot the proposer last replied to (the pre-reply plan
+    # captured by debate_reply on every branch). The next critic round diffs
+    # this against the current plan to send only the changed sections (lean
+    # plan_view) once the plan grows past LEAN_PLAN_FULL_THRESHOLD.
+    plan_snapshot: str
     # TASK-022: deterministic thrashing triage attached to a debate escalation
     # (mode/blocker_counts/repeated/new/recommended/rationale). None when the
     # pause is not a debate escalation or when the debate is not thrashing.
