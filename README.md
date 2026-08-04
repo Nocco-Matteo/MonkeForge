@@ -77,6 +77,32 @@ a monte è cambiato, `redo`. `resume` non accetta `--from`; `redo` non accetta
 
 ---
 
+## Interactive TTY mode
+
+Quando stdin è un terminale e nessun flag/variabile disabilita la modalità
+interattiva, il CLI entra in **modalità TTY interattiva** (TASK-027):
+
+- **Start wizard.** `./run.py` senza argomenti (oppure `./run.py start` senza
+  richiesta/`--file`) lancia un wizard che chiede task id, richiesta (o
+  `--file`), effort level, `--auto` e `--interview`, saltando i campi già
+  forniti sulla riga di comando. I prompt usano [rich](https://rich.readthedocs.io/)
+  e vanno su stderr; l'output machine-readable resta su stdout.
+- **In-process session loop.** Quando il grafo si ferma su un interrupt
+  (escalation, checkpoint effort, approvazione piano), il driver NON esce più
+  sempre: su un TTY presenta il menu di pausa inline e legge la risposta dallo
+  stesso terminale, poi riprende il grafo con `Command(resume=<risposta>)` in
+  un singolo processo. Ctrl+C durante il loop interrompe (exit 130) e il task
+  resta pausato — riprendi con `./run.py resume <ID>`.
+- **Disabilitare la modalità interattiva.** `--no-input` (sia top-level che
+  per subcommand), `PIPELINE_NO_INPUT=1` nell'ambiente, o stdin non-TTY
+  (pipe/redirect) disattivano sia il wizard che il session loop: il CLI torna
+  al comportamento non-interattivo (pausa → exit 0, riprendi con `resume`).
+- **Ctrl+C.** Durante lo stream del grafo, Ctrl+C emette `run_stalled`, scrive
+  un hint `resume with ./run.py resume <ID>` su stderr, ed esce con 130 (non
+  più un bare re-raise che lascia il processo in stato indefinito).
+
+---
+
 ## Uso: i casi
 
 > **Quando vale l'intervista.** Ogni task interattivo costa almeno un giro di
