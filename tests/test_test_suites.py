@@ -33,13 +33,16 @@ class TestConfigLoad(unittest.TestCase):
         pass
 
     def test_empty_when_no_yaml_no_env(self):
-        # With no PIPELINE_TEST_SUITES env and (in this test repo) no
-        # monkeforge.yaml test_suites key, TEST_SUITES must be [] — no
-        # hardcoded backend/frontend default. This asserts the actual
-        # config-load result (C.TEST_SUITES), not the private legacy parser.
+        # No hardcoded backend/frontend default: absent yaml key → [].
+        # Do not assert against process-global C.TEST_SUITES — the operator's
+        # monkeforge.yaml may pin suites (as in a live MonkeForge checkout).
+        import tempfile
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PIPELINE_TEST_SUITES", None)
-            self.assertEqual(C.TEST_SUITES, [])
+            with tempfile.TemporaryDirectory() as td:
+                mf = Path(td) / "monkeforge.yaml"
+                mf.write_text("pipeline:\n  dry_run: true\n")
+                self.assertEqual(C._load_yaml_test_suites(mf), [])
 
     def test_unknown_runner_raises(self):
         with self.assertRaises(ValueError):

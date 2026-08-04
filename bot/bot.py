@@ -45,10 +45,19 @@ def _allowed(user_id: int) -> bool:
 
 
 async def _cli(*args: str) -> str:
-    """Run `run.py <args>` and return its (trimmed) output. resume can take minutes."""
+    """Run `run.py <args>` and return its (trimmed) output. resume can take minutes.
+
+    stdin is DEVNULL and PIPELINE_NO_INPUT=1 so a Discord-spawned resume never
+    blocks on interactive prompts (e.g. test-suite discovery ``_ask_suites``).
+    Inheriting the bot's TTY made ``isatty()`` true → hang with no Discord log.
+    """
+    child_env = os.environ.copy()
+    child_env["PIPELINE_NO_INPUT"] = "1"
     proc = await asyncio.create_subprocess_exec(
         sys.executable, str(C.RUN_PY), *args, cwd=str(C.MF_ROOT),
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        env=child_env)
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=C.RESUME_TIMEOUT)
     except asyncio.TimeoutError:

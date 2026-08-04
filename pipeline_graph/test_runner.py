@@ -256,7 +256,10 @@ def _run_pytest(suite: C.TestSuite, timeout: int) -> tuple[int, set[str], str]:
     cwd = C.REPO / suite.cwd if suite.cwd else C.REPO
     env = os.environ.copy()
     env.update(suite.env or {})
-    code, out = _run_cmd(["python", "-m", "pytest", "-q"], cwd, env, timeout)
+    # Prefer the interpreter running the pipeline — bare ``python`` is often
+    # missing on Debian/Ubuntu (only ``python3``), which produced a synthetic
+    # gate failure and a silent hang-adjacent RED baseline on TASK-027.
+    code, out = _run_cmd([sys.executable, "-m", "pytest", "-q"], cwd, env, timeout)
     fails = parse_pytest_failures(out)
     failures = {f"{label}|{f}" for f in fails}
     parts: list[str] = [f"{len(fails)} failed"]

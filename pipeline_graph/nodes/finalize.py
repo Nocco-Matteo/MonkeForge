@@ -13,7 +13,7 @@ import pipeline_graph.nodes as _N
 from .. import config as C
 from .. import events as ev
 from .. import test_runner as tr
-from ..agents import classify_output, parse_not_met
+from ..agents import MIN_OUTPUT_BYTES, classify_output, parse_not_met
 from ..state import Conversation
 from .common import (
     _db_note,
@@ -26,6 +26,21 @@ from .common import (
     _write_progress,
     validate_batches_schema,
 )
+
+
+_HAS_UI_ONLY_RE = re.compile(
+    r"^\s*HAS_UI\s*:\s*(YES|NO)\s*$", re.IGNORECASE | re.DOTALL
+)
+
+
+def _is_has_ui_trailer_only(out: str) -> bool:
+    """True when stdout is only the judge.md trailing ``HAS_UI: YES|NO`` line.
+
+    Tool-using judges often Write FINAL/BATCHES to disk and print only that
+    trailer; treating it as near-empty must not clobber or discard on-disk
+    artifacts (TASK-027: 12-byte stdout, valid files already present).
+    """
+    return bool(_HAS_UI_ONLY_RE.match((out or "").strip()))
 
 
 def _is_noop_judge_escalate(reason: str) -> bool:
@@ -89,31 +104,27 @@ def judge(state):
             return {"escalation": f"judge escalated: {reason}", "journal": ["judge: escalated"]}
 
     health, _signal = classify_output(code, out)
-    if not _trust_output(code, out, health):
-        return {
-            "escalation": f"judge produced untrustworthy output — refusing to parse it (see journal for diagnostics)",
-            "journal": [
-                f"judge: UNTRUSTWORTHY output — health={health}, exit={code}, "
-                f"{len(out)} bytes"
-            ],
-        }
+    stdout_ok = _trust_output(code, out, health)
 
     batches_file = C.FINAL / f"BATCHES-{tid}.json"
+    final_path = C.FINAL / f"FINAL-{tid}.md"
+
     # F2: file-primary. If a valid BATCHES file already exists, use it and do
     # NOT overwrite it with stdout — a decoy stdout (prose false positive) must
     # never clobber a real file. Only extract from stdout when no file exists.
-    if batches_file.exists():
-        batches_json = None
-    else:
+    if not batches_file.exists() and stdout_ok:
         batches_json = _extract_json(out)
         if batches_json:
             _save(batches_file, json.dumps(batches_json, indent=2))
-    # Save the FINAL report from stdout. Pass None (not batches_json) so
-    # unrelated fenced JSON examples in the judge prose survive (F4) — the
-    # BATCHES block stays in the report for human readability; the file is the
-    # primary source.
-    final_path = C.FINAL / f"FINAL-{tid}.md"
-    if out.strip():
+
+    # Save FINAL from stdout only when it looks like a real report. A bare
+    # ``HAS_UI: YES`` trailer (or other near-empty stdout) must not clobber a
+    # FINAL the judge already Wrote via tools.
+    if (
+        stdout_ok
+        and out.strip()
+        and not _is_has_ui_trailer_only(out)
+    ):
         report_text = _strip_batches_block(out, None)
         _save(final_path, report_text)
     if not final_path.exists():
@@ -127,13 +138,10 @@ def judge(state):
 
     # F2: file-primary load with unlink-on-corrupt. A corrupt or invalid
     # BATCHES file is unlinked BEFORE escalating so a retry_judge re-entry
-    # does not re-read the same corrupt file and trap permanently. The
-    # stdout-extracted json (if any) was already saved above; on retry the
-    # judge re-runs and re-writes it.
+    # does not re-read the same corrupt file and trap permanently.
     try:
         raw = json.loads(batches_file.read_text())
     except (json.JSONDecodeError, OSError) as exc:
-        # Unlink the corrupt file before escalating so retry re-runs the judge.
         batches_file.unlink(missing_ok=True)
         return {
             "escalation": f"BATCHES json invalid: {exc}",
@@ -142,7 +150,6 @@ def judge(state):
 
     batches, schema_err = validate_batches_schema(raw)
     if batches is None:
-        # Schema validation failed — unlink the bad file before escalating.
         batches_file.unlink(missing_ok=True)
         shape_note = ""
         if isinstance(raw, list):
@@ -157,11 +164,39 @@ def judge(state):
                 f"judge: BATCHES json rejected — {schema_err}{shape_note} — file unlinked before retry"
             ],
         }
+
+    # Stdout may be untrusted (near-empty / HAS_UI-only) while the judge still
+    # Wrote valid BATCHES + FINAL via tools. Prefer on-disk artifacts when they
+    # clear schema + a non-trivial FINAL; otherwise keep the hard escalate.
+    if not stdout_ok:
+        final_ok = (
+            final_path.exists()
+            and final_path.stat().st_size >= MIN_OUTPUT_BYTES
+        )
+        if not final_ok:
+            return {
+                "escalation": (
+                    "judge produced untrustworthy output — refusing to parse it "
+                    "(see journal for diagnostics)"
+                ),
+                "journal": [
+                    f"judge: UNTRUSTWORTHY output — health={health}, exit={code}, "
+                    f"{len(out)} bytes; no usable FINAL on disk"
+                ],
+            }
+        journal = [
+            f"judge: {len(batches)} batches "
+            f"(rescued on-disk artifacts; stdout health={health}, "
+            f"{len(out)} bytes)"
+        ]
+    else:
+        journal = [f"judge: {len(batches)} batches"]
+
     # has_ui was decided at plan-time (before the debate) and is not the judge's
     # to reset; the UX critique already happened during the debate.
     _write_progress(tid, batches)
     return {"batches": batches, "batch_idx": 0, "retry_judge": False,
-            "journal": [f"judge: {len(batches)} batches"]}
+            "journal": journal}
 
 
 def checkpoint_plan(state):

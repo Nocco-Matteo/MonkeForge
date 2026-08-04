@@ -295,3 +295,43 @@ class TestBatchesUnlinkOnCorrupt:
         assert "malformed batch" in d["escalation"]
         # The bad-schema file was unlinked.
         assert not batches_file.exists()
+
+
+class TestJudgeFilePrimaryRescue:
+    """Near-empty stdout (HAS_UI trailer only) must not discard on-disk artifacts."""
+
+    def test_has_ui_only_rescues_valid_files(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "FINAL", tmp_path)
+        batches_file = tmp_path / "BATCHES-027.json"
+        final_path = tmp_path / "FINAL-027.md"
+        batches_file.write_text(
+            '[{"n": 1, "scope": "cli", "checklist": [1, 2], '
+            '"test_failure_allowlist": []}]\n'
+        )
+        final_body = (
+            "# FINAL-027\n\n## 1. Rulings\n\n"
+            "- B1 — RULED FOR REVIEWER with enough text to clear MIN_OUTPUT_BYTES.\n"
+        )
+        assert len(final_body) >= 40
+        final_path.write_text(final_body)
+        state = _state("027")
+        with patch.object(N, "run_agent", return_value=(0, "HAS_UI: YES\n")), \
+                patch.object(_finalize, "_write_progress"):
+            d = _finalize.judge(state)
+        assert not d.get("escalation"), d
+        assert d["batches"][0]["n"] == 1
+        assert "rescued on-disk" in d["journal"][0]
+        # Must not clobber FINAL with the HAS_UI trailer.
+        assert final_path.read_text() == final_body
+
+    def test_has_ui_only_without_final_still_escalates(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(C, "FINAL", tmp_path)
+        (tmp_path / "BATCHES-027.json").write_text(
+            '[{"n": 1, "scope": "cli", "checklist": [1]}]\n'
+        )
+        state = _state("027")
+        with patch.object(N, "run_agent", return_value=(0, "HAS_UI: YES\n")), \
+                patch.object(_finalize, "_write_progress"), \
+                patch.object(_finalize, "_recover_artifact"):
+            d = _finalize.judge(state)
+        assert "untrustworthy" in d.get("escalation", "")
