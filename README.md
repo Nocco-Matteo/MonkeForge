@@ -221,12 +221,23 @@ repo target: `PIPELINE_DOCS_DIR=$REPO/docs`).
   sostituiti dai nodi.
 - **Numero di round / cicli**: `MAX_DEBATE_ROUNDS`, `MAX_FIX_CYCLES`,
   `MAX_TEST_FIXES`, `MAX_INTAKE_ROUNDS` in `config.py`.
-- **Gate test post-implement**: `pipeline_graph/test_runner.py` esegue
-  `backend/npm test` e `frontend/npm test` (backend con `E2E_DATABASE_URL`
-  da `config.py`). Chiavi FAIL prefissate `backend|` / `frontend|`. Prima del
-  primo tentativo di batch con DB up cattura i FAIL come baseline (anche al
-  retry se il DB era giù al tentativo 0); dopo l'implementer passa solo se non
-  ci sono **nuovi** FAIL rispetto alla baseline, meno sottostringhe in
+- **Gate test post-implement**: `pipeline_graph/test_runner.py` esegue le
+  suite dichiarate in `monkeforge.yaml` alla chiave top-level `test_suites:`
+  (letta direttamente da `config.py`, non via env). Ogni entry è una
+  `TestSuite` con `label`, `cwd` (repo-relativo), `runner` e opzionali
+  `cmd`/`env`. Runner registry: `npm-vitest` (tsc + vitest + lint),
+  `pytest` (`python -m pytest -q`), `script` (cmd custom). Chiavi FAIL
+  prefissate `label|`. Assente/empty `test_suites:` → discovery (root +
+  sottodirectory immediate) + ask interattivo sulla prima
+  `run_repo_tests()`, non gate-off. Un'uscita non-zero del subprocess con
+  zero failure parsati appende una chiave sintetica `label|<runner> exit N`
+  (più coda del subprocess nel summary) — un crash (Node rotto,
+  `node_modules` corrotto, config di tool errata) non può mai passare il
+  gate in silenzio. `PIPELINE_TEST_SUITES` (formato `label:subdir:ENV=val`)
+  è un override solo-debug che vince sulla yaml e parse in suite
+  `npm-vitest`. Prima del primo tentativo di batch con DB up cattura i FAIL
+  come baseline; dopo l'implementer passa solo se non ci sono **nuovi**
+  FAIL rispetto alla baseline, meno sottostringhe in
   `test_failure_allowlist` nel JSON del giudice (schema in `prompts/judge.md`).
 - **Tuning del gate (falsi positivi su debito preesistente)**: su un branch
   che parte RED, il confronto baseline-vs-current può scambiare debito

@@ -1,6 +1,7 @@
 """Configuration: roles -> agent CLIs, paths, timeouts. Single source of truth."""
 from __future__ import annotations
 import json, math, os, shlex, shutil, subprocess, sys
+from dataclasses import dataclass
 from pathlib import Path
 
 REPO = Path(
@@ -655,15 +656,82 @@ TEST_AMBIENT_PATTERNS = tuple(
     if p.strip()
 )
 
-# Test suites to run for the in-graph test gate. Each entry is (label, subdir, env).
-# Format: "label:subdir:ENV_VAR=val,ENV2=val2;label2:subdir2:"
-# Use {e2e_db} in env values to interpolate E2E_DATABASE_URL.
-# An empty PIPELINE_TEST_SUITES disables the test gate entirely.
-_DEFAULT_TEST_SUITES = "backend:backend:DATABASE_URL={e2e_db};frontend:frontend:"
-_TEST_SUITES_RAW = os.environ.get("PIPELINE_TEST_SUITES", _DEFAULT_TEST_SUITES)
-TEST_SUITES: list[tuple[str, str, dict[str, str]]] = []
-if _TEST_SUITES_RAW.strip():
-    for entry in _TEST_SUITES_RAW.split(";"):
+# --- Test suites (repo-agnostic test gate) ---------------------------------
+# Read directly from the top-level `test_suites:` key in monkeforge.yaml
+# (mirroring `_yaml_agents`), NOT via the PIPELINE_* env bridge — run.py's
+# `_load_yaml_to_env` deliberately does not bridge this key. The legacy
+# `PIPELINE_TEST_SUITES` env var remains as a debug-only override of the
+# `label:subdir:ENV=val` shape (parsed into npm-vitest TestSuite objects).
+# An absent yaml key AND an absent/empty env var both yield TEST_SUITES == []
+# (no hardcoded backend/frontend default) — empty triggers discovery in
+# test_runner.resolve_test_suites, it does NOT silently disable the gate.
+TEST_SUITE_RUNNERS = frozenset({"npm-vitest", "pytest", "script"})
+
+
+@dataclass(frozen=True)
+class TestSuite:
+    """One runnable test suite for the in-graph test gate.
+
+    ``env`` is a per-suite OVERRIDE map applied on top of ``os.environ.copy()``
+    by each runner — NOT a full env replacement. ``cmd`` is required for the
+    ``script`` runner and ignored by the others. ``cwd`` is repo-relative and
+    must resolve inside ``C.REPO`` (validated at load time).
+    """
+
+    label: str
+    cwd: str
+    runner: str
+    cmd: list[str] | None = None
+    env: dict[str, str] | None = None
+
+
+def _validate_test_suite(label: str, entry: dict) -> TestSuite:
+    """Validate one yaml ``test_suites`` entry and build a TestSuite.
+
+    Raises ValueError on an invalid entry (unknown runner, ``script`` without
+    ``cmd``, or a ``cwd`` that resolves outside ``C.REPO``) so a misconfigured
+    file fails loudly at config load instead of silently skipping the suite.
+    """
+    if not isinstance(entry, dict):
+        raise ValueError(f"test_suites entry {label!r}: not a mapping")
+    runner = str(entry.get("runner") or "").strip()
+    if runner not in TEST_SUITE_RUNNERS:
+        raise ValueError(
+            f"test_suites entry {label!r}: unknown runner {runner!r} "
+            f"(expected one of {sorted(TEST_SUITE_RUNNERS)})")
+    cwd = str(entry.get("cwd") or "").strip()
+    cmd = entry.get("cmd")
+    if runner == "script":
+        if not cmd or (isinstance(cmd, list) and not any(str(c).strip() for c in cmd)):
+            raise ValueError(
+                f"test_suites entry {label!r}: runner 'script' requires a non-empty 'cmd'")
+    if isinstance(cmd, list):
+        cmd = [str(c) for c in cmd]
+    elif cmd is not None:
+        cmd = [str(cmd)]
+    env = entry.get("env") or {}
+    if not isinstance(env, dict):
+        raise ValueError(f"test_suites entry {label!r}: env must be a mapping")
+    env = {str(k): str(v) for k, v in env.items()}
+    # cwd must resolve inside the repo (guard against escape/misconfiguration).
+    cwd_path = (REPO / cwd).resolve() if cwd else REPO
+    if not cwd_path.is_relative_to(REPO):
+        raise ValueError(
+            f"test_suites entry {label!r}: cwd {cwd!r} resolves outside repo {REPO}")
+    return TestSuite(label=label, cwd=cwd, runner=runner, cmd=cmd, env=env)
+
+
+def _parse_legacy_test_suites(raw: str) -> list[TestSuite]:
+    """Parse the legacy ``PIPELINE_TEST_SUITES`` env string into TestSuites.
+
+    Format: ``label:subdir:ENV_VAR=val,ENV2=val2;label2:subdir2:``. Each entry
+    becomes a TestSuite with ``runner='npm-vitest'``. ``{e2e_db}`` interpolates
+    ``E2E_DATABASE_URL``. An empty/whitespace string yields ``[]``.
+    """
+    suites: list[TestSuite] = []
+    if not raw or not raw.strip():
+        return suites
+    for entry in raw.split(";"):
         entry = entry.strip()
         if not entry:
             continue
@@ -671,12 +739,53 @@ if _TEST_SUITES_RAW.strip():
         label = parts[0]
         subdir = parts[1] if len(parts) > 1 else ""
         env_str = parts[2] if len(parts) > 2 else ""
-        suite_env = os.environ.copy()
+        env: dict[str, str] = {}
         for pair in env_str.split(","):
             if "=" in pair:
                 k, v = pair.split("=", 1)
-                suite_env[k.strip()] = v.format(e2e_db=E2E_DATABASE_URL)
-        TEST_SUITES.append((label, subdir, suite_env))
+                env[k.strip()] = v.format(e2e_db=E2E_DATABASE_URL)
+        suites.append(TestSuite(label=label, cwd=subdir, runner="npm-vitest",
+                                cmd=None, env=env))
+    return suites
+
+
+def _load_yaml_test_suites(yaml_file: Path) -> list[TestSuite]:
+    """Load + validate the top-level ``test_suites:`` key from a yaml file.
+
+    Returns TestSuites for a valid list. An absent key or missing file yields
+    ``[]`` (discovery). A present key that is not a list, or an invalid entry,
+    raises ValueError so a misconfigured file fails loudly at config load
+    instead of silently falling back to discovery.
+    """
+    if not yaml_file.exists():
+        return []
+    import yaml as _yaml_ts
+    raw = (_yaml_ts.safe_load(yaml_file.read_text()) or {}).get("test_suites")
+    # An absent key (None) → discovery. A present key MUST be a list; any other
+    # top-level shape (scalar/mapping) is a misconfiguration that fails loudly
+    # instead of silently falling back to discovery.
+    if raw is not None and not isinstance(raw, list):
+        raise ValueError(f"test_suites must be a list, got {type(raw).__name__}")
+    suites: list[TestSuite] = []
+    for _entry in (raw or []):
+        if isinstance(_entry, dict):
+            _lbl = str(_entry.get("label") or "").strip()
+            if not _lbl:
+                raise ValueError("test_suites entry: missing 'label'")
+            suites.append(_validate_test_suite(_lbl, _entry))
+        else:
+            raise ValueError(f"test_suites entry: not a mapping ({_entry!r})")
+    return suites
+
+
+TEST_SUITES: list[TestSuite] = []
+_legacy_test_suites_raw = os.environ.get("PIPELINE_TEST_SUITES", "")
+if _legacy_test_suites_raw.strip():
+    # Debug-only override: env wins over yaml, parsed into npm-vitest suites.
+    TEST_SUITES = _parse_legacy_test_suites(_legacy_test_suites_raw)
+else:
+    TEST_SUITES = _load_yaml_test_suites(_yaml_file)
+# Absent yaml key AND absent env → TEST_SUITES stays [] (discovery, not gate-off).
 
 def db_reachable() -> bool:
     """Check if the e2e Postgres is accepting connections on its mapped port."""
