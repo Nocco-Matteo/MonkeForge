@@ -354,6 +354,19 @@ class TestIsPlanSectionHeader:
         assert _is_plan_section_header(lines, 2) is False
         assert _is_plan_section_header(lines, 3) is True
 
+    def test_unnumbered_atx_section_is_header(self):
+        # Live TASK-025: every PLAN-*.md ends with ``## Unverified assumptions``.
+        lines = [
+            "## 8. Out of scope",
+            "nope",
+            "## Unverified assumptions",
+            "- maybe",
+        ]
+        assert _is_plan_section_header(lines, 2) is True
+        # Doc title ``# TASK-…`` and ``###`` subsections are not anchors.
+        assert _is_plan_section_header(["# TASK-025 Implementation Plan"], 0) is False
+        assert _is_plan_section_header(["### Nested detail"], 0) is False
+
 
 # --- _apply_section_patch (TASK-023) ---------------------------------------
 
@@ -518,6 +531,29 @@ class TestApplySectionPatch:
         assert "- old C1" not in result
         assert "## 1. Goal" in result
         assert "## 3. Architecture decisions" in result
+
+    def test_unnumbered_unverified_assumptions_replace(self):
+        # Live TASK-025: proposer patched ``Unverified assumptions`` and the
+        # applier returned None because unnumbered ``##`` was not a header.
+        plan = (
+            "## 7. Test strategy\n"
+            "- old tests\n"
+            "## 8. Out of scope (explicit non-goals)\n"
+            "- out\n"
+            "## Unverified assumptions\n"
+            "- old assumption\n"
+        )
+        body = (
+            '@@@ REPLACE section: "Unverified assumptions"\n'
+            "## Unverified assumptions\n"
+            "- new assumption\n"
+            "@@@ END\n"
+        )
+        result = _apply_section_patch(plan, body)
+        assert result is not None
+        assert "- new assumption" in result
+        assert "- old assumption" not in result
+        assert "## 8. Out of scope (explicit non-goals)" in result
 
 
 # --- _latest_section -------------------------------------------------------

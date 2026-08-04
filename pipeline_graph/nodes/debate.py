@@ -46,6 +46,10 @@ SECTION_REPLACE_RE = re.compile(
 # ``plan.md``. Group 1 = optional ``## `` prefix, group 2 = number, group 3 =
 # title text after ``N. ``.
 _SECTION_HEADER_LINE_RE = re.compile(r"^(#{1,6}\s+)?(\d+)\.\s+(.+)$")
+# Unnumbered ATX section anchors used by real PLAN-*.md files
+# (``## Unverified assumptions``). Exactly ``##`` — not ``#`` (doc title) and
+# not ``###`` (subsections under File-by-file).
+_UNNUMBERED_ATX_SECTION_RE = re.compile(r"^##\s+(.+)$")
 # Bare numbered line (no ``#``) — used only to reject list items under a bare
 # ``N. Title`` header. Markdown ATX headers (``## N.``) are never rejected
 # for a following bare ``1. item`` list — that was the TASK-023 ship-blocker
@@ -59,17 +63,21 @@ def _plan_uses_atx_section_headers(lines: list[str]) -> bool:
         m = _SECTION_HEADER_LINE_RE.match(ln)
         if m and m.group(1):
             return True
+        if _UNNUMBERED_ATX_SECTION_RE.match(ln) and not _SECTION_HEADER_LINE_RE.match(ln):
+            return True
     return False
 
 
 def _is_plan_section_header(lines: list[str], i: int) -> bool:
     """True when ``lines[i]`` is a plan section header.
 
-    Accepts ``## N. Title`` (production PLAN-*.md) and bare ``N. Title``
-    (fixture / plan.md style).
+    Accepts ``## N. Title`` (production PLAN-*.md), bare ``N. Title``
+    (fixture / plan.md style), and unnumbered ``## Title`` anchors
+    (``## Unverified assumptions``).
 
     Rules:
     - Markdown ATX ``## N.`` lines are always section anchors.
+    - Unnumbered ``## Title`` (not ``#`` / ``###``) is a section anchor.
     - When the plan already uses ATX section headers, bare ``N.`` lines are
       never anchors (they are list items under ``## 5. File-by-file`` etc.).
     - Bare-only plans: a ``N.`` line is an anchor unless it sits in a
@@ -79,7 +87,9 @@ def _is_plan_section_header(lines: list[str], i: int) -> bool:
         return False
     m = _SECTION_HEADER_LINE_RE.match(lines[i])
     if not m:
-        return False
+        # ``## Unverified assumptions`` — production plans always have this
+        # unnumbered trailing section; proposers patch it often (TASK-025).
+        return bool(_UNNUMBERED_ATX_SECTION_RE.match(lines[i]))
     if m.group(1):
         return True  # ## N. Title — always a section header
     if _plan_uses_atx_section_headers(lines):
@@ -96,17 +106,23 @@ def _section_title_keys(line: str) -> set[str]:
     """Match keys for a header line against a ``@@@ REPLACE section: "..."`` title.
 
     A proposer may cite ``Goal``, ``1. Goal``, or ``## 1. Goal`` — all must
-    resolve to the same ``## 1. Goal`` line in a real plan.
+    resolve to the same ``## 1. Goal`` line in a real plan. Unnumbered
+    ``## Unverified assumptions`` matches title ``Unverified assumptions``.
     """
     stripped = (line or "").strip()
     keys = {stripped}
     m = _SECTION_HEADER_LINE_RE.match(stripped)
-    if not m:
+    if m:
+        num, rest = m.group(2), m.group(3).strip()
+        keys.add(rest)
+        keys.add(f"{num}. {rest}")
+        keys.add(f"## {num}. {rest}")
         return keys
-    num, rest = m.group(2), m.group(3).strip()
-    keys.add(rest)
-    keys.add(f"{num}. {rest}")
-    keys.add(f"## {num}. {rest}")
+    um = _UNNUMBERED_ATX_SECTION_RE.match(stripped)
+    if um:
+        rest = um.group(1).strip()
+        keys.add(rest)
+        keys.add(f"## {rest}")
     return keys
 
 
