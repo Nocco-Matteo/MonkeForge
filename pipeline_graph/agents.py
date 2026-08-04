@@ -414,18 +414,14 @@ def count_blockers(text: str) -> int:
     return len(re.findall(r"\[BLOCKER(?::(?:PLAN|REQUIREMENTS))?\]", text or ""))
 
 
-def _agent_result_fields(output: str) -> dict:
-    """Extra event fields for agent_end when a VERDICT is present."""
-    verdict = parse_verdict(output)
-    if verdict == "UNKNOWN":
-        return {}
-    # Open blockers only matter on REJECT/UNKNOWN — same spirit as debate._open_blocker_count.
-    blockers = count_blockers(output) if verdict == "REJECT" else 0
-    return {"verdict": verdict, "blockers": blockers}
+def extract_blocker_claims(output: str) -> list[str]:
+    """All BLOCKER claim texts from agent stdout (full list, no preview cap).
 
-
-def _blocker_claim_preview(output: str, limit: int = 3) -> str:
-    """Short bullet list of BLOCKER claims for the Discord return beat."""
+    Used by Discord notify to post a summary return beat (count only) plus
+    follow-up detail message(s) packed under the embed size limit. Trailing
+    ``— RESOLVED`` noise is stripped so a restated raise does not pollute the
+    human-facing report.
+    """
     claims: list[str] = []
     for m in re.finditer(
         r"\[BLOCKER(?::(?:PLAN|REQUIREMENTS))?\]\s*(.+)", output or ""
@@ -433,25 +429,42 @@ def _blocker_claim_preview(output: str, limit: int = 3) -> str:
         claim = m.group(1).strip()
         if not claim:
             continue
-        # Drop trailing RESOLVED noise if a proposer restated a raise.
         claim = re.sub(r"\s*(?:—|--)\s*RESOLVED\b.*$", "", claim, flags=re.I)
-        claims.append(claim[:160])
-        if len(claims) >= limit:
-            break
-    if not claims:
-        return ""
-    return "\n" + "\n".join(f"• {c}" for c in claims)
+        claim = claim.strip()
+        if claim:
+            claims.append(claim)
+    return claims
+
+
+def _agent_result_fields(output: str) -> dict:
+    """Extra event fields for agent_end when a VERDICT is present."""
+    verdict = parse_verdict(output)
+    if verdict == "UNKNOWN":
+        return {}
+    # Open blockers only matter on REJECT — same spirit as debate._open_blocker_count.
+    if verdict != "REJECT":
+        return {"verdict": verdict, "blockers": 0}
+    claims = extract_blocker_claims(output)
+    return {
+        "verdict": verdict,
+        "blockers": len(claims) if claims else count_blockers(output),
+        "blocker_claims": claims,
+    }
 
 
 def _agent_result_suffix(output: str) -> str:
-    """Human suffix for the monke return beat: `` — REJECT, 2 blocker(s)``."""
+    """Human suffix for the monke return beat: `` — REJECT, 2 blocker(s)``.
+
+    Claim text is NOT inlined here — Discord posts detail follow-ups via
+    ``blocker_claims`` on the event (see ``events.emit``).
+    """
     fields = _agent_result_fields(output)
     if not fields:
         return ""
     verdict = fields["verdict"]
     if verdict == "REJECT":
         n = fields["blockers"]
-        return f" — {verdict}, {n} blocker(s)" + _blocker_claim_preview(output)
+        return f" — {verdict}, {n} blocker(s)"
     return f" — {verdict}"
 
 

@@ -93,6 +93,107 @@ def humanize_error(msg: str) -> str:
     return text
 
 
+# --- Blocker detail packing (multi-message Discord report) -----------------
+# Discord embed description hard-limit is 4096; the notify daemon clamps at
+# 4000. Pack under a safer ceiling so a packed body never relies on mid-string
+# truncation. Unit of packing = one full numbered claim line (never mid-claim).
+# Detail messages use 📋; the return summary keeps 📨 so the two beats differ.
+
+EMBED_DESC_SAFE = 3900
+
+
+def number_blocker_claims(claims: list[str]) -> list[str]:
+    """``1. <claim>``, ``2. <claim>``, … — readable index before any B# id."""
+    return [f"{i}. {c}" for i, c in enumerate(claims, 1) if str(c).strip()]
+
+
+def _split_oversized_line(line: str, max_len: int) -> list[str]:
+    """Split one line that alone exceeds ``max_len`` into whole-line chunks.
+
+    Prefers newline boundaries; falls back to hard character chunks with a
+    ``(cont.)`` marker. Pathological only — debate prompts keep claims short.
+    """
+    body_max = max(32, max_len - len(" (cont.)"))
+    # Preserve a leading ``N. `` prefix on continuation chunks when present.
+    prefix = ""
+    body = line
+    m = re.match(r"^(\d+\.\s+)", line or "")
+    if m:
+        prefix = m.group(1)
+        body = line[m.end():]
+        body_max = max(32, max_len - len(prefix) - len(" (cont.)"))
+    lines = (body or "").splitlines() or [body or ""]
+    chunks: list[str] = []
+    buf = ""
+    for piece in lines:
+        candidate = f"{buf}\n{piece}" if buf else piece
+        if len(prefix) + len(candidate) <= body_max:
+            buf = candidate
+            continue
+        if buf:
+            chunks.append(buf)
+            buf = piece
+        else:
+            text = piece
+            while len(prefix) + len(text) > body_max:
+                take = body_max - len(prefix)
+                chunks.append(text[:take])
+                text = text[take:]
+            buf = text
+    if buf:
+        chunks.append(buf)
+    out: list[str] = []
+    for i, piece in enumerate(chunks):
+        suffix = " (cont.)" if i < len(chunks) - 1 else ""
+        out.append(f"{prefix}{piece}{suffix}")
+    return out or [line or "(empty)"]
+
+
+def pack_blocker_bodies(claims: list[str],
+                        max_len: int = EMBED_DESC_SAFE) -> list[str]:
+    """Pack numbered blocker lines into embed bodies under ``max_len``.
+
+    Numbers claims as ``1. …``, ``2. …`` then packs: if appending the next
+    line would exceed ``max_len``, flush and start a new body. Never truncates
+    mid-claim except the oversized-single-line path.
+
+    Returns a list of body strings (empty when there are no claims).
+    """
+    lines = number_blocker_claims([str(c) for c in (claims or [])])
+    if not lines:
+        return []
+    parts: list[str] = []
+    cur = ""
+    for line in lines:
+        if len(line) > max_len:
+            if cur:
+                parts.append(cur)
+                cur = ""
+            parts.extend(_split_oversized_line(line, max_len))
+            continue
+        candidate = f"{cur}\n{line}" if cur else line
+        if cur and len(candidate) > max_len:
+            parts.append(cur)
+            cur = line
+        else:
+            cur = candidate
+    if cur:
+        parts.append(cur)
+    return parts
+
+
+def format_blocker_detail_title(role: str, task: str, step: str,
+                                index: int, total: int) -> str:
+    """Detail-beat title (📋). Show ``part i/k`` only when split across msgs."""
+    name = _monke_name(role)
+    if total > 1:
+        return (
+            f"📋 {name} — blockers · part {index}/{total} "
+            f"· TASK-{task}/{step or '?'}"
+        )
+    return f"📋 {name} — blockers · TASK-{task}/{step or '?'}"
+
+
 # --- Title/description formatter ------------------------------------------
 
 # Kinds whose titles MUST NOT be the raw ``TASK-{task} · {step or kind}``

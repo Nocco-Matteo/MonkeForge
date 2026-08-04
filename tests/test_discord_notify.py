@@ -84,14 +84,16 @@ class TestFormatDiscordLine:
 
     def test_agent_end_title_includes_verdict_and_blockers(self):
         """Return beat title carries VERDICT / blocker count when present."""
-        title, _ = df.format_discord_line(
+        title, desc = df.format_discord_line(
             "agent_end", "024", "PLAN_REVIEWER", "debate",
             "PLAN_REVIEWER/claude exit=0 in 12s, 80 bytes, health=ok"
-            " — REJECT, 2 blocker(s)\n• missing tests\n• vague AC",
+            " — REJECT, 2 blocker(s)",
             duration_ms=12000, verdict="REJECT", blockers=2,
         )
         assert "REJECT" in title
         assert "2 blocker(s)" in title
+        # Summary description stays count-only (no claim bullets).
+        assert "•" not in desc
         title_ok, _ = df.format_discord_line(
             "agent_end", "024", "PLAN_REVIEWER", "debate",
             "… health=ok — APPROVE",
@@ -99,6 +101,63 @@ class TestFormatDiscordLine:
         )
         assert "APPROVE" in title_ok
         assert "blocker" not in title_ok
+
+
+class TestPackBlockerBodies:
+    def test_empty(self):
+        assert df.pack_blocker_bodies([]) == []
+
+    def test_single_fits(self):
+        bodies = df.pack_blocker_bodies(["missing tests"])
+        assert bodies == ["1. missing tests"]
+
+    def test_numbers_before_blocker_ids(self):
+        bodies = df.pack_blocker_bodies([
+            "B4: Top-level --no-input still allows…",
+            "B5: The session loop cannot detect…",
+        ])
+        assert len(bodies) == 1
+        assert bodies[0].startswith("1. B4:")
+        assert "\n2. B5:" in bodies[0]
+
+    def test_packs_until_max_then_new_message(self):
+        # Two claims that individually fit but together exceed a tiny max.
+        a = "A" * 20
+        b = "B" * 20
+        bodies = df.pack_blocker_bodies([a, b], max_len=40)
+        assert len(bodies) == 2
+        assert bodies[0] == f"1. {a}"
+        assert bodies[1] == f"2. {b}"
+
+    def test_many_small_claims_one_body(self):
+        claims = [f"c{i}" for i in range(5)]
+        bodies = df.pack_blocker_bodies(claims, max_len=500)
+        assert len(bodies) == 1
+        for i, c in enumerate(claims, 1):
+            assert f"{i}. {c}" in bodies[0]
+
+    def test_never_truncates_claim_mid_text(self):
+        claim = "exact claim text that must survive intact"
+        bodies = df.pack_blocker_bodies([claim, "other"], max_len=60)
+        joined = "\n".join(bodies)
+        assert claim in joined
+        assert "exact claim text that must sur…" not in joined
+
+    def test_detail_title_no_part_when_single(self):
+        t = df.format_blocker_detail_title(
+            "PLAN_REVIEWER", "027", "debate-r5-tech", 1, 1)
+        assert t.startswith("📋 ")
+        assert "blockers" in t
+        assert "part " not in t
+        assert "(1/1)" not in t
+        assert "TASK-027/debate-r5-tech" in t
+
+    def test_detail_title_part_i_of_k_when_split(self):
+        t = df.format_blocker_detail_title(
+            "PLAN_REVIEWER", "024", "debate-r3-tech", 2, 3)
+        assert t.startswith("📋 ")
+        assert "part 2/3" in t
+        assert "Skeptical Baboon" in t
 
 
 class TestHumanizeError:
@@ -283,6 +342,67 @@ class TestEmitRouting:
         title = args[0]
         assert title != "TASK-007 · plan"  # formatted, not raw
         assert "Wise Orangutan" in title  # PROPOSER's monke name
+
+    def test_agent_end_reject_pushes_detail_then_summary(
+            self, monkeypatch, tmp_path):
+        """REJECT with blocker_claims → detail (📋) then summary (📨)."""
+        pushes = self._setup(monkeypatch, tmp_path)
+        claims = ["B4: missing tests for gate", "B5: vague acceptance criteria"]
+        ev.emit(
+            "agent_end", "027", "debate-r5-tech",
+            "PLAN_REVIEWER/claude exit=0 — REJECT, 2 blocker(s)",
+            role="PLAN_REVIEWER",
+            verdict="REJECT",
+            blockers=2,
+            blocker_claims=claims,
+            duration_ms=12000,
+        )
+        assert len(pushes) == 2  # 1 detail + summary
+        detail_title = pushes[0][0][0]
+        assert detail_title.startswith("📋 ")
+        assert "blockers" in detail_title
+        assert "part " not in detail_title  # single part → no i/k
+        detail_body = pushes[0][0][1]
+        assert "1. B4:" in detail_body
+        assert "2. B5:" in detail_body
+        summary_title = pushes[1][0][0]
+        assert summary_title.startswith("📨 ")
+        assert "REJECT" in summary_title
+        assert "•" not in pushes[1][0][1]
+        assert "1. B4" not in pushes[1][0][1]
+
+    def test_agent_end_approve_no_detail(self, monkeypatch, tmp_path):
+        pushes = self._setup(monkeypatch, tmp_path)
+        ev.emit(
+            "agent_end", "024", "debate-r3-tech",
+            "… — APPROVE",
+            role="PLAN_REVIEWER",
+            verdict="APPROVE",
+            blockers=0,
+        )
+        assert len(pushes) == 1
+        assert pushes[0][0][0].startswith("📨 ")
+
+    def test_agent_end_detail_splits_with_part_i_of_k(self, monkeypatch, tmp_path):
+        """When claims cannot fit one embed, detail titles use part i/k."""
+        pushes = self._setup(monkeypatch, tmp_path)
+        big = "X" * 2000
+        ev.emit(
+            "agent_end", "024", "debate-r3-tech",
+            "… — REJECT, 2 blocker(s)",
+            role="PLAN_REVIEWER",
+            verdict="REJECT",
+            blockers=2,
+            blocker_claims=[big, big],
+        )
+        # 2 detail parts + summary
+        assert len(pushes) == 3
+        assert pushes[0][0][0].startswith("📋 ")
+        assert "part 1/2" in pushes[0][0][0]
+        assert "part 2/2" in pushes[1][0][0]
+        assert pushes[2][0][0].startswith("📨 ")
+        assert "1. " in pushes[0][0][1]
+        assert "2. " in pushes[1][0][1]
 
 
 # ---------------------------------------------------------------------------

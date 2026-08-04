@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import Callable
 
 from . import config as C
-from .discord_format import format_discord_line, humanize_error
+from .discord_format import (
+    format_blocker_detail_title,
+    format_discord_line,
+    humanize_error,
+    pack_blocker_bodies,
+)
 from .event_types import Event
 
 EVENTS_LOG = C.METRICS / "events.jsonl"
@@ -215,12 +220,29 @@ def emit(kind: str, task: str = "?", step: str = "", msg: str = "",
             display_msg = humanize_error(msg)
         # Pass extra without ``role`` (already extracted above) so
         # format_discord_line does not get a duplicate ``role`` kwarg.
-        fmt_extra = {k: v for k, v in extra.items() if k != "role"}
+        # Drop blocker_claims from the formatter kwargs — they drive follow-up
+        # pushes below, not the summary title/description.
+        fmt_extra = {
+            k: v for k, v in extra.items()
+            if k not in ("role", "blocker_claims")
+        }
+        push_prio = prio or PRIORITY.get(kind, "default")
+        # REJECT return beat: detail first (numbered blockers, possibly split
+        # across part i/k messages), then the 📨 summary with count only.
+        if kind == "agent_end":
+            claims = extra.get("blocker_claims") or []
+            if isinstance(claims, list) and claims:
+                bodies = pack_blocker_bodies(
+                    [str(c) for c in claims if str(c).strip()]
+                )
+                total = len(bodies)
+                for i, body in enumerate(bodies, 1):
+                    detail_title = format_blocker_detail_title(
+                        role, task, step, i, total)
+                    _push(detail_title, body, push_prio, role=role)
         title, description = format_discord_line(
             kind, task, role, step, display_msg, **fmt_extra)
-        _push(title, description,
-              prio or PRIORITY.get(kind, "default"),
-              role=role)
+        _push(title, description, push_prio, role=role)
 
 
 def read_journal(task: str, n: int = 20) -> list[str]:
