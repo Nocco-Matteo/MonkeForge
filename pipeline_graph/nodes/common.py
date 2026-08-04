@@ -549,12 +549,41 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
         # "debate stuck:" (continue/redo/stop/ok) with thrashing-specific
         # labels. continue raises the cap by 2 AND sets debate_grace_until so
         # stuck/thrashing early-stop cannot re-fire until those rounds run.
+        # TASK-024: the "recommended" highlight keys off triage["recommended"]
+        # — "ok" when the new claims are fresh surface area (or the human
+        # already extended once), "continue" when a majority of the new claims
+        # refine the prior round's themes. The churning WARNING text stays on
+        # the continue label in both cases.
+        thrashing_continue_recommended = (
+            triage is not None
+            and isinstance(triage, dict)
+            and triage.get("recommended") == "continue"
+        )
+        continue_label = (
+            "extend the debate by 2 more rounds (early thrashing/stuck "
+            "pause suppressed for those rounds) — WARNING: the trend "
+            "shows the debate is churning (blockers not decreasing, new "
+            "claims appearing), so more rounds may still not converge"
+        )
+        if thrashing_continue_recommended:
+            continue_label = (
+                "extend the debate by 2 more rounds — recommended: the new "
+                "blockers refine the prior round's themes, so the proposer is "
+                "iterating on the same surface and more rounds may converge "
+                "(WARNING: the trend shows the debate is churning — blockers "
+                "not decreasing, new claims appearing)"
+            )
+        ok_label = (
+            "proceed to the verdict with the plan as it stands (the "
+            "thrashing trend is recorded in the report)"
+        )
+        if not thrashing_continue_recommended:
+            ok_label = (
+                ok_label + " — recommended when the debate is churning "
+                "without converging"
+            )
         return [
-            _opt("continue",
-                 "extend the debate by 2 more rounds (early thrashing/stuck "
-                 "pause suppressed for those rounds) — WARNING: the trend "
-                 "shows the debate is churning (blockers not decreasing, new "
-                 "claims appearing), so more rounds may still not converge"),
+            _opt("continue", continue_label),
             _opt("redo",
                  "re-run the debate from round 1 on the SAME plan (use when the "
                  "debate itself derailed — a fresh start may break the churn)"),
@@ -562,10 +591,7 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
                  "stop the run — the churning blockers may be in the "
                  "REQUIREMENTS, not the plan: amend the brief, then "
                  "./run.py redo <id> --from plan to regenerate the plan"),
-            _opt("ok",
-                 "proceed to the verdict with the plan as it stands (the "
-                 "thrashing trend is recorded in the report) — recommended "
-                 "when the debate is churning without converging"),
+            _opt("ok", ok_label),
         ]
     if r.startswith("debate requirements:"):
         # Item 33: a REQUIREMENTS-provenanced blocker is unfixable by debate
@@ -614,22 +640,41 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
         # A mode="stuck" (or unknown/converging) exhausted escalation keeps the
         # default exhausted labels — the warning is specific to a churning
         # trend, not to every exhausted debate.
+        # TASK-024: within the thrashing_exhausted branch, the "recommended"
+        # highlight keys off triage["recommended"] — "continue" when a majority
+        # of the new claims refine the prior round's themes (the proposer is
+        # iterating, not churning onto unrelated surface), "ok" otherwise. The
+        # churning WARNING text stays on the continue label in both cases.
         thrashing_exhausted = (
             triage is not None
             and isinstance(triage, dict)
             and triage.get("mode") == "thrashing"
         )
         if thrashing_exhausted:
-            continue_label = (
-                "extend the debate by 2 more rounds — WARNING: the trend shows "
-                "the debate is churning (blockers not decreasing, new claims "
-                "appearing), so more rounds may not converge"
-            )
+            exhausted_continue_recommended = triage.get("recommended") == "continue"
+            if exhausted_continue_recommended:
+                continue_label = (
+                    "extend the debate by 2 more rounds — recommended: the new "
+                    "blockers refine the prior round's themes, so the proposer "
+                    "is iterating on the same surface and more rounds may "
+                    "converge (WARNING: the trend shows the debate is churning "
+                    "— blockers not decreasing, new claims appearing)"
+                )
+            else:
+                continue_label = (
+                    "extend the debate by 2 more rounds — WARNING: the trend "
+                    "shows the debate is churning (blockers not decreasing, "
+                    "new claims appearing), so more rounds may not converge"
+                )
             ok_label = (
                 "proceed to the verdict with the plan as it stands (the "
-                "thrashing trend is recorded in the report) — recommended "
-                "when the debate is churning without converging"
+                "thrashing trend is recorded in the report)"
             )
+            if not exhausted_continue_recommended:
+                ok_label = (
+                    ok_label + " — recommended when the debate is churning "
+                    "without converging"
+                )
         else:
             continue_label = (
                 "extend the debate by 2 more rounds, keeping the existing "

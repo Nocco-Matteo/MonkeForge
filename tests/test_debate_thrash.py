@@ -29,7 +29,10 @@ Covers the conformance checklist items 2-26:
 """
 from __future__ import annotations
 
+import importlib
+import os
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -517,8 +520,12 @@ class TestResolutionWipe(unittest.TestCase):
 
 class TestDebateNodeWiring(unittest.TestCase):
     def test_build_triage_thrashing_recommends_ok(self):
-        # Claims rotate so no claim is in all 3 rounds (stuck_claims empty).
-        text = _debate(
+        # TASK-024 item 31: split into three cases — low-Jaccard/bonus-0 → ok;
+        # high-Jaccard/bonus-0 → continue; high-Jaccard/bonus>0 → ok. Each
+        # passes debate_round_bonus= explicitly to _build_triage.
+        # Low-Jaccard fixture: new claims (gamma, delta) share no theme tokens
+        # with the prior round's claims (alpha, beta) → fresh surface → ok.
+        low_jaccard = _debate(
             _round(1, "Reviewer",
                    "VERDICT: REJECT\n[BLOCKER] alpha\n[BLOCKER] beta\n[BLOCKER] gamma\n"),
             _round(2, "Reviewer",
@@ -526,9 +533,34 @@ class TestDebateNodeWiring(unittest.TestCase):
             _round(3, "Reviewer",
                    "VERDICT: REJECT\n[BLOCKER] gamma\n[BLOCKER] delta\n"),
         )
-        triage = D._build_triage(text, "debate thrashing")
+        triage = D._build_triage(low_jaccard, "debate thrashing",
+                                 debate_round_bonus=0)
         self.assertEqual(triage["mode"], "thrashing")
         self.assertEqual(triage["recommended"], "ok")
+
+        # High-Jaccard fixture: new claims refine the prior round's themes
+        # (alpha theme variant shares tokens with alpha theme one) → continue.
+        high_jaccard = _debate(
+            _round(1, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha theme one\n"
+                   "[BLOCKER] beta theme two\n[BLOCKER] gamma theme three\n"),
+            _round(2, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha theme one\n"
+                   "[BLOCKER] beta theme two\n"),
+            _round(3, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha theme variant\n"
+                   "[BLOCKER] gamma theme three\n"),
+        )
+        triage_refine = D._build_triage(high_jaccard, "debate thrashing",
+                                        debate_round_bonus=0)
+        self.assertEqual(triage_refine["mode"], "thrashing")
+        self.assertEqual(triage_refine["recommended"], "continue")
+
+        # Same high-Jaccard fixture but bonus > 0 → ok (human already extended).
+        triage_bonus = D._build_triage(high_jaccard, "debate thrashing",
+                                       debate_round_bonus=2)
+        self.assertEqual(triage_bonus["mode"], "thrashing")
+        self.assertEqual(triage_bonus["recommended"], "ok")
 
     def test_build_triage_stuck_recommends_ok(self):
         text = _debate(
@@ -565,8 +597,12 @@ class TestDebateNodeWiring(unittest.TestCase):
         self.assertEqual(triage["recommended"], "continue")
 
     def test_build_triage_exhausted_thrashing_recommends_ok(self):
-        # Claims rotate so no claim is in all 3 rounds (stuck_claims empty).
-        text = _debate(
+        # TASK-024 item 32: the exhausted thrashing branch applies the same
+        # refinement policy as the early thrashing branch. Low-Jaccard/bonus-0
+        # → ok (fresh surface); refine+bonus-0 → continue; refine+bonus>0 → ok.
+        # Low-Jaccard fixture: new claims (gamma, delta) share no theme tokens
+        # with the prior round's claims (alpha, beta) → fresh surface → ok.
+        low_jaccard = _debate(
             _round(1, "Reviewer",
                    "VERDICT: REJECT\n[BLOCKER] alpha\n[BLOCKER] beta\n[BLOCKER] gamma\n"),
             _round(2, "Reviewer",
@@ -574,9 +610,32 @@ class TestDebateNodeWiring(unittest.TestCase):
             _round(3, "Reviewer",
                    "VERDICT: REJECT\n[BLOCKER] gamma\n[BLOCKER] delta\n"),
         )
-        triage = D._build_triage(text, "debate exhausted")
+        triage = D._build_triage(low_jaccard, "debate exhausted",
+                                 debate_round_bonus=0)
         self.assertEqual(triage["mode"], "thrashing")
         self.assertEqual(triage["recommended"], "ok")
+
+        # High-Jaccard fixture: new claims refine the prior round's themes.
+        high_jaccard = _debate(
+            _round(1, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha theme one\n"
+                   "[BLOCKER] beta theme two\n[BLOCKER] gamma theme three\n"),
+            _round(2, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha theme one\n"
+                   "[BLOCKER] beta theme two\n"),
+            _round(3, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha theme variant\n"
+                   "[BLOCKER] gamma theme three\n"),
+        )
+        triage_refine = D._build_triage(high_jaccard, "debate exhausted",
+                                        debate_round_bonus=0)
+        self.assertEqual(triage_refine["mode"], "thrashing")
+        self.assertEqual(triage_refine["recommended"], "continue")
+
+        triage_bonus = D._build_triage(high_jaccard, "debate exhausted",
+                                       debate_round_bonus=2)
+        self.assertEqual(triage_bonus["mode"], "thrashing")
+        self.assertEqual(triage_bonus["recommended"], "ok")
 
     def test_debate_tech_delta_includes_debate_text(self):
         # debate_tech sets "debate_text" in its delta (item 11). We verify
@@ -624,6 +683,33 @@ class TestDebateNodeWiring(unittest.TestCase):
         self.assertIn("triage", result)
         self.assertIn("hint", result)
         self.assertEqual(result["hint"], "stop")
+
+    # --- TASK-024 items 39-41: caller-wiring regression tests ---------------
+
+    def test_debate_tech_threads_debate_round_bonus(self):
+        # Item 39: debate_tech passes debate_round_bonus=state.get(...) into
+        # its _check_thrashing_escalation call. Verified via inspect.getsource
+        # so a caller cannot bypass the kwarg while staying green.
+        import inspect
+        source = inspect.getsource(D.debate_tech)
+        self.assertIn("_check_thrashing_escalation", source)
+        self.assertIn("debate_round_bonus=state.get(\"debate_round_bonus\")", source)
+
+    def test_debate_ux_threads_debate_round_bonus(self):
+        # Item 40: debate_ux passes debate_round_bonus=state.get(...) into
+        # its _check_thrashing_escalation call.
+        import inspect
+        source = inspect.getsource(D.debate_ux)
+        self.assertIn("_check_thrashing_escalation", source)
+        self.assertIn("debate_round_bonus=state.get(\"debate_round_bonus\")", source)
+
+    def test_debate_decision_threads_debate_round_bonus(self):
+        # Item 41: _debate_decision's exhausted branch passes
+        # debate_round_bonus=state.get(...) into its _build_triage call.
+        import inspect
+        source = inspect.getsource(D._debate_decision)
+        self.assertIn("_build_triage", source)
+        self.assertIn("debate_round_bonus=state.get(\"debate_round_bonus\")", source)
 
 
 # --- TestBotEmbedTriage (item 21) -------------------------------------------
@@ -766,6 +852,187 @@ class TestExhaustedPathTriageWiring(unittest.TestCase):
         delta = D._debate_decision(state, is_verification=True)
         self.assertNotIn("triage", delta)
         self.assertEqual(delta["debate_next"], "summary")
+
+
+# --- TASK-024: theme-overlap / refinement-policy tests (items 33-38) --------
+
+
+class TestClaimThemeOverlap(unittest.TestCase):
+    """Item 33: claim_theme_overlap — identical → 1.0, disjoint → 0.0,
+    partial → strictly between 0 and 1."""
+
+    def test_identical_claims_return_one(self):
+        self.assertEqual(condenser.claim_theme_overlap(
+            "the plan is wrong", "the plan is wrong"), 1.0)
+
+    def test_disjoint_claims_return_zero(self):
+        self.assertEqual(condenser.claim_theme_overlap(
+            "alpha beta", "gamma delta"), 0.0)
+
+    def test_partial_overlap_is_strictly_between_zero_and_one(self):
+        val = condenser.claim_theme_overlap(
+            "alpha theme variant", "alpha theme one")
+        self.assertGreater(val, 0.0)
+        self.assertLess(val, 1.0)
+
+    def test_empty_input_returns_zero(self):
+        self.assertEqual(condenser.claim_theme_overlap("", "alpha beta"), 0.0)
+        self.assertEqual(condenser.claim_theme_overlap("alpha beta", ""), 0.0)
+
+
+class TestMajorityNewRefinePrior(unittest.TestCase):
+    """Item 34: majority_new_refine_prior — refine-majority → True,
+    fresh-majority → False, empty new → False, empty prior → False."""
+
+    def test_refine_majority_returns_true(self):
+        # Both new claims refine prior themes at threshold 0.35.
+        new = ["alpha theme variant", "beta theme tweak"]
+        prior = ["alpha theme one", "beta theme two"]
+        self.assertTrue(condenser.majority_new_refine_prior(new, prior, 0.35))
+
+    def test_fresh_majority_returns_false(self):
+        new = ["gamma delta", "epsilon zeta"]
+        prior = ["alpha beta"]
+        self.assertFalse(condenser.majority_new_refine_prior(new, prior, 0.35))
+
+    def test_empty_new_returns_false(self):
+        self.assertFalse(condenser.majority_new_refine_prior(
+            [], ["alpha"], 0.35))
+
+    def test_empty_prior_returns_false(self):
+        self.assertFalse(condenser.majority_new_refine_prior(
+            ["alpha"], [], 0.35))
+
+    def test_prior_as_set_accepted(self):
+        # prior may be a set, not just a list.
+        new = ["alpha theme variant"]
+        prior = {"alpha theme one"}
+        self.assertTrue(condenser.majority_new_refine_prior(new, prior, 0.35))
+
+
+class TestThrashingReportPrior(unittest.TestCase):
+    """Item 35: thrashing_report['prior'] == sorted(window[-2] claims) on a
+    2-active-round fixture, and == [] on a 1-active-round fixture."""
+
+    def test_prior_is_sorted_window_minus_two_claims_on_two_rounds(self):
+        text = _debate(
+            _round(1, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha\n[BLOCKER] beta\n"),
+            _round(2, "Reviewer",
+                   "VERDICT: REJECT\n[BLOCKER] alpha\n[BLOCKER] gamma\n"),
+        )
+        r = condenser.thrashing_report(text, 2)
+        # window = [round1, round2]; window[-2] = round1 claims = {alpha, beta}.
+        self.assertEqual(r["prior"], ["alpha", "beta"])
+
+    def test_prior_is_empty_on_single_active_round(self):
+        text = _debate(_round(1, "Reviewer", _REJECT))
+        r = condenser.thrashing_report(text, 1)
+        self.assertEqual(r["prior"], [])
+
+    def test_prior_is_empty_on_empty_input(self):
+        r = condenser.thrashing_report("", 2)
+        self.assertEqual(r["prior"], [])
+
+
+class TestEscalationOptionsRefineLabels(unittest.TestCase):
+    """Items 36-37: the "recommended" highlight keys off
+    triage["recommended"] on both thrashing menu surfaces."""
+
+    # Item 36: debate thrashing: branch.
+
+    def test_thrashing_continue_recommended_drops_ok_recommended(self):
+        triage = {"mode": "thrashing", "recommended": "continue"}
+        opts = _common._escalation_options(
+            "debate thrashing: blockers not decreasing", triage=triage)
+        ok_label = next(o["label"] for o in opts if o["key"] == "ok")
+        continue_label = next(o["label"] for o in opts if o["key"] == "continue")
+        self.assertNotIn("recommended", ok_label.lower())
+        self.assertIn("recommended", continue_label.lower())
+
+    def test_thrashing_ok_recommended_retains_ok_recommended(self):
+        triage = {"mode": "thrashing", "recommended": "ok"}
+        opts = _common._escalation_options(
+            "debate thrashing: blockers not decreasing", triage=triage)
+        ok_label = next(o["label"] for o in opts if o["key"] == "ok")
+        continue_label = next(o["label"] for o in opts if o["key"] == "continue")
+        self.assertIn("recommended", ok_label.lower())
+        self.assertNotIn("recommended", continue_label.lower())
+
+    # Item 37: debate exhausted thrashing_exhausted branch.
+
+    def test_exhausted_thrashing_continue_recommended_drops_ok_recommended(self):
+        triage = {"mode": "thrashing", "recommended": "continue"}
+        opts = _common._escalation_options("debate exhausted 5 rounds",
+                                           triage=triage)
+        ok_label = next(o["label"] for o in opts if o["key"] == "ok")
+        continue_label = next(o["label"] for o in opts if o["key"] == "continue")
+        self.assertNotIn("recommended", ok_label.lower())
+        self.assertIn("recommended", continue_label.lower())
+
+    def test_exhausted_thrashing_ok_recommended_retains_ok_recommended(self):
+        triage = {"mode": "thrashing", "recommended": "ok"}
+        opts = _common._escalation_options("debate exhausted 5 rounds",
+                                           triage=triage)
+        ok_label = next(o["label"] for o in opts if o["key"] == "ok")
+        continue_label = next(o["label"] for o in opts if o["key"] == "continue")
+        self.assertIn("recommended", ok_label.lower())
+        self.assertNotIn("recommended", continue_label.lower())
+
+
+class TestDebateThrashThemeJaccardEnv(unittest.TestCase):
+    """Item 38: DEBATE_THRASH_THEME_JACCARD env parse — 0.35 for unset,
+    'abc', 'nan', 'inf', '0', '1.5'; 0.5 for '0.5'."""
+
+    @staticmethod
+    def _with_env(env: dict[str, str | None]):
+        @contextmanager
+        def _cm():
+            saved = {k: os.environ.get(k) for k in env}
+            try:
+                for k, v in env.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+                importlib.reload(C)
+                yield
+            finally:
+                for k, v in saved.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+                importlib.reload(C)
+        return _cm()
+
+    def test_unset_defaults_to_0_35(self):
+        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": None}):
+            self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
+
+    def test_non_float_falls_back_to_0_35(self):
+        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "abc"}):
+            self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
+
+    def test_nan_falls_back_to_0_35(self):
+        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "nan"}):
+            self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
+
+    def test_inf_falls_back_to_0_35(self):
+        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "inf"}):
+            self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
+
+    def test_zero_falls_back_to_0_35(self):
+        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "0"}):
+            self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
+
+    def test_above_one_falls_back_to_0_35(self):
+        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "1.5"}):
+            self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
+
+    def test_valid_value_is_used(self):
+        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "0.5"}):
+            self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.5)
 
 
 if __name__ == "__main__":

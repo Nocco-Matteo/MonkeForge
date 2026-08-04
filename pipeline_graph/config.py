@@ -1,6 +1,6 @@
 """Configuration: roles -> agent CLIs, paths, timeouts. Single source of truth."""
 from __future__ import annotations
-import json, os, shlex, shutil, subprocess, sys
+import json, math, os, shlex, shutil, subprocess, sys
 from pathlib import Path
 
 REPO = Path(
@@ -491,6 +491,44 @@ if CONDENSER_KEEP_RECENT < DEBATE_THRASH_ROUNDS:
         file=sys.stderr,
     )
     DEBATE_THRASH_ROUNDS = _thrash_ceiling
+
+# Thrashing-refinement policy (TASK-024): the theme-Jaccard threshold above
+# which a "new" BLOCKER claim in a thrashing window is considered a refinement
+# of an existing (prior) claim's theme rather than fresh surface area. When a
+# majority of the latest round's new claims refine prior themes, the triage
+# recommends "continue" (the proposer is iterating on the same themes, not
+# churning onto unrelated ones); otherwise it recommends "ok" (proceed to the
+# verdict — the new claims are genuinely fresh and more rounds will not help).
+# Validated parse mirrors _raw_thrash: a non-float, NaN/Inf, or out-of-(0, 1]
+# value falls back to the default (0.35) with a stderr warning.
+_raw_theme_jaccard = os.environ.get("PIPELINE_DEBATE_THRASH_THEME_JACCARD")
+if _raw_theme_jaccard is None or not _raw_theme_jaccard.strip():
+    DEBATE_THRASH_THEME_JACCARD = 0.35
+else:
+    try:
+        _val_theme_jaccard = float(_raw_theme_jaccard)
+    except ValueError:
+        print(
+            f"PIPELINE_DEBATE_THRASH_THEME_JACCARD={_raw_theme_jaccard!r} not a float; "
+            f"using default 0.35",
+            file=sys.stderr,
+        )
+        _val_theme_jaccard = 0.35
+    if math.isnan(_val_theme_jaccard) or math.isinf(_val_theme_jaccard):
+        print(
+            f"PIPELINE_DEBATE_THRASH_THEME_JACCARD={_raw_theme_jaccard!r} is NaN/Inf; "
+            f"using default 0.35",
+            file=sys.stderr,
+        )
+        _val_theme_jaccard = 0.35
+    if _val_theme_jaccard <= 0 or _val_theme_jaccard > 1:
+        print(
+            f"PIPELINE_DEBATE_THRASH_THEME_JACCARD={_raw_theme_jaccard!r} out of range "
+            f"(0, 1]; using default 0.35",
+            file=sys.stderr,
+        )
+        _val_theme_jaccard = 0.35
+    DEBATE_THRASH_THEME_JACCARD = _val_theme_jaccard
 
 # Consecutive non-improving cycles before the visual/render gates escalate early
 # (plateau detection — the fix loop is oscillating, not converging).
