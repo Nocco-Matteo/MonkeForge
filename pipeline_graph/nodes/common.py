@@ -242,12 +242,22 @@ def _dirty_blocks_interactive_init(paths: list[str]) -> bool:
     return any(not any(path.startswith(p) for p in C.INIT_DIRTY_OK_PREFIXES) for path in paths)
 
 
+# Nodes whose step_start context may show ``debate round N``. Everywhere else
+# (summary/judge/implement/…) keeping the stale counter made ``ok``-after-stuck
+# look like the debate had restarted (TASK-026 council-log).
+_DEBATE_CONTEXT_NODES = frozenset({"debate_tech", "debate_ux", "debate_reply"})
+
+
 def _context(state, node: str = "") -> str:
     """Where the run is, in one phrase — batch, fix cycle, debate round.
 
     `node` is the node about to run (from instrument). debate_tech increments
     debate_round inside the node, so before it runs the display is off by one;
     bump it here for that node only.
+
+    ``debate round N`` is only shown on debate critic/reply nodes (and on
+    escalate pauses while batches are not yet built). Implement/verify keep
+    batch + fix-cycle only.
     """
     bits = []
     batches = state.get("batches") or []
@@ -257,7 +267,11 @@ def _context(state, node: str = "") -> str:
     dr = state.get("debate_round", 0)
     if node == "debate_tech":
         dr += 1
-    if dr:
+    show_debate_round = (
+        node in _DEBATE_CONTEXT_NODES
+        or (not node and dr and not batches)  # escalate payload mid-debate
+    )
+    if show_debate_round and dr:
         bits.append(f"debate round {dr}")
     if state.get("fix_cycle"):
         bits.append(f"fix cycle {state['fix_cycle']}")
@@ -541,7 +555,9 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
                  "to regenerate the plan"),
             _opt("ok",
                  "proceed to the verdict with the plan as it stands (the stuck "
-                 "blocker is recorded in the report)"),
+                 "blocker is recorded in the report) — WARNING: implement will "
+                 "not get a plan patch for this claim; only use when you accept "
+                 "shipping the hole or will fix it out-of-band"),
         ]
     if r.startswith("debate thrashing:"):
         # TASK-022: thrashing early escalation — the debate is churning
@@ -575,7 +591,8 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
             )
         ok_label = (
             "proceed to the verdict with the plan as it stands (the "
-            "thrashing trend is recorded in the report)"
+            "thrashing trend is recorded in the report) — WARNING: "
+            "unresolved blockers are not plan-patched before implement"
         )
         if not thrashing_continue_recommended:
             ok_label = (

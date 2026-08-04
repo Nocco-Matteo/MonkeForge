@@ -664,6 +664,49 @@ class TestSectionHeaders:
         assert err.count("implement done") == 1
         assert "test baseline" not in err
 
+    def test_blank_line_between_different_monkes(self, monkeypatch, tmp_path):
+        """Within a phase, a blank line separates Drill → Vervet blocks."""
+        _setup_env(monkeypatch, tmp_path)
+        events = [
+            ("step_start", "implement", "batch 1/1", {}),
+            ("step_end", "implement", "[ok] impl done [1s]", {"outcome": "ok"}),
+            ("step_start", "code_review", "batch 1/1", {}),
+            ("step_end", "code_review", "[ok] cr done [1s]", {"outcome": "ok"}),
+        ]
+        graph = _FakeGraphEvents(events, "tm")
+        err = _drive_capturing(graph, "tm")
+        # Drill return, blank line, Vervet dispatch.
+        drill = "Diligent Drill"
+        vervet = "Vigilant Vervet"
+        assert drill in err and vervet in err
+        # After the Drill return line there is a blank line before Vervet.
+        assert f"impl done [1s]\n\n  {vervet}" in err or \
+               f"impl done [1s]\n\n  \x1b[" in err  # colour-off path preferred
+        # Colour is off in _drive_capturing by default — plain form:
+        assert "impl done [1s]\n\n  Vigilant Vervet" in err
+
+    def test_verdict_phase_after_debate(self, monkeypatch, tmp_path):
+        """summary/judge/checkpoint_plan sit under ``── verdict ──``, not debate."""
+        _setup_env(monkeypatch, tmp_path)
+        events = [
+            ("step_start", "debate_tech", "debate round 1", {}),
+            ("step_end", "debate_tech", "[ok] debate done [1s]", {"outcome": "ok"}),
+            ("step_start", "summary", "starting summary", {}),
+            ("step_end", "summary", "[ok] summary done [1s]", {"outcome": "ok"}),
+            ("step_start", "judge", "starting judge", {}),
+            ("step_end", "judge", "[ok] judge done [1s]", {"outcome": "ok"}),
+            ("step_start", "checkpoint_plan", "plan approved?", {}),
+            ("step_end", "checkpoint_plan", "[ok] approved [0s]", {"outcome": "ok"}),
+        ]
+        graph = _FakeGraphEvents(events, "tv")
+        err = _drive_capturing(graph, "tv")
+        assert "── debate ──" in err
+        assert "── verdict ──" in err
+        assert err.index("── debate ──") < err.index("── verdict ──")
+        # summary must not appear under a second debate header after verdict.
+        after_verdict = err[err.index("── verdict ──"):]
+        assert "── debate ──" not in after_verdict
+
 
 # --- F3 / F3b: colour gate (C5/D3) ------------------------------------------
 

@@ -158,20 +158,20 @@ def _role_display_name(node: str) -> str:
 
 
 # --- Council-log coarse-phase section headers (D4) -------------------------
-# Ground truth per the §3 F2 node table: ``checkpoint_plan``/``summary``/
-# ``judge`` break a single-prefix rule, so the mapping is enumerated, not
-# derived. ``init`` and ``escalate`` map to ``""`` → no header, no phase change.
+# Ground truth enumerated (not prefix-derived): ``init``/``escalate`` map to
+# ``""`` (no header). ``summary``/``judge``/``checkpoint_plan`` are ``verdict``
+# so a post-stuck ``ok`` does not keep printing under ``── debate ──``.
 NODE_TO_PHASE: dict[str, str] = {
     "intake_ask":         "intake",
     "intake_wait":        "intake",
     "plan":               "plan",
     "checkpoint_effort":  "plan",
-    "checkpoint_plan":    "plan",
     "debate_tech":        "debate",
     "debate_ux":          "debate",
     "debate_reply":       "debate",
-    "summary":            "debate",
-    "judge":              "debate",
+    "summary":            "verdict",
+    "judge":              "verdict",
+    "checkpoint_plan":    "verdict",
     "implement":          "implement",
     "code_review":        "implement",
     "code_fix":           "implement",
@@ -193,6 +193,7 @@ _PHASE_HEADER: dict[str, str] = {
     "intake":    "── intake ──",
     "plan":      "── plan ──",
     "debate":    "── debate ──",
+    "verdict":   "── verdict ──",
     "implement": "── implement ──",
     "visual":    "── visual ──",
     "final":     "── final ──",
@@ -615,6 +616,9 @@ _progress_lock = threading.Lock()
 ui_state: dict = {
     "dispatched_node": None,
     "last_phase": "",
+    # Last council-log monke display name — used to insert a blank line between
+    # different agents so dispatch/return blocks are scannable.
+    "last_monke": "",
     "events_offset": 0,
     "disabled": False,
     "color": False,
@@ -653,15 +657,21 @@ def _emit_dispatch(node: str, *, msg: str, color: bool) -> None:
         return
     tty = ui_state["tty"]
     _finish_progress(color=color, tty=tty)
+    name = _sanitize_text(_role_display_name(node), color=color, tty=tty)
     phase = NODE_TO_PHASE.get(node, "")
-    if phase and phase != ui_state["last_phase"]:
+    phase_changed = bool(phase and phase != ui_state["last_phase"])
+    if phase_changed:
         sys.stderr.write("\n")
         sys.stderr.write(_c(_PHASE_HEADER[phase], "dim", color=color) + "\n")
         ui_state["last_phase"] = phase
-    name = _sanitize_text(_role_display_name(node), color=color, tty=tty)
+    elif ui_state["last_monke"] and ui_state["last_monke"] != name:
+        # Blank line between different monkes inside the same phase (e.g.
+        # Drill → Vervet under ``── implement ──``).
+        sys.stderr.write("\n")
     body = _sanitize_text(msg, color=color, tty=tty)
     sys.stderr.write(f"  {_c(name, 'cyan', color=color)} · {body}\n")
     ui_state["dispatched_node"] = node
+    ui_state["last_monke"] = name
 
 
 def _emit_return(node: str, msg: str, outcome: str, *, color: bool) -> None:
@@ -687,6 +697,7 @@ def _emit_return(node: str, msg: str, outcome: str, *, color: bool) -> None:
         sym, code = "⛔", "yellow"
     sys.stderr.write(f"  {_c(sym, code, color=color)} "
                      f"{_c(name, 'cyan', color=color)} · {body}\n")
+    ui_state["last_monke"] = name
 
 
 def _drain_events(task_id: str) -> None:
@@ -818,6 +829,7 @@ def _drive(graph, task_id, payload, args=None) -> int:
     # Reset the shared UI state for this drive.
     ui_state["dispatched_node"] = None
     ui_state["last_phase"] = ""
+    ui_state["last_monke"] = ""
     ui_state["disabled"] = False
     ui_state["color"] = color
     ui_state["tty"] = tty

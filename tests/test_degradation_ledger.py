@@ -36,6 +36,26 @@ class StepSummary(unittest.TestCase):
         self.assertEqual(NC._step_summary([]), "no journal line")
 
 
+class ContextLabel(unittest.TestCase):
+    def test_debate_round_only_on_debate_nodes(self):
+        from pipeline_graph.nodes import common as NC
+
+        st = {"debate_round": 8, "batches": [{"n": 1}], "batch_idx": 0}
+        self.assertIn("debate round 9", NC._context(st, "debate_tech"))
+        self.assertIn("debate round 8", NC._context(st, "debate_reply"))
+        # Implement / verify keep batch (+ fix cycle), not the stale debate counter.
+        self.assertEqual(NC._context(st, "implement"), "batch 1/1")
+        self.assertEqual(NC._context(st, "code_review"), "batch 1/1")
+        self.assertNotIn("debate round", NC._context(st, "summary"))
+        self.assertNotIn("debate round", NC._context(st, "checkpoint_plan"))
+
+    def test_escalate_pause_still_shows_debate_round_pre_batches(self):
+        from pipeline_graph.nodes import common as NC
+
+        st = {"debate_round": 8, "batches": []}
+        self.assertEqual(NC._context(st, ""), "debate round 8")
+
+
 class WrapUpReport(unittest.TestCase):
     def test_report_lists_every_degradation(self):
         st = {"task_id": "ledgertest", "branch": "b", "batches": [{"n": 1}],
