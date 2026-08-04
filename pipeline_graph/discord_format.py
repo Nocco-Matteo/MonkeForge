@@ -124,7 +124,19 @@ def format_discord_line(kind: str, task: str, role: str, step: str,
         return title, fallback_desc
     if kind == "agent_end":
         name = _monke_name(role)
-        title = f"📨 {name} returns — TASK-{task}/{step or '?'}"
+        # Prefer VERDICT in the title when present (return beat is the place
+        # humans look for REJECT / blocker counts — not a later Council step_end).
+        verdict = extra.get("verdict")
+        if isinstance(verdict, str) and verdict and verdict != "UNKNOWN":
+            title = f"📨 {name} returns — {verdict} · TASK-{task}/{step or '?'}"
+            blockers = extra.get("blockers")
+            if verdict == "REJECT" and isinstance(blockers, int) and blockers > 0:
+                title = (
+                    f"📨 {name} returns — {verdict}, {blockers} blocker(s) "
+                    f"· TASK-{task}/{step or '?'}"
+                )
+        else:
+            title = f"📨 {name} returns — TASK-{task}/{step or '?'}"
         duration_ms = extra.get("duration_ms")
         if isinstance(duration_ms, (int, float)) and duration_ms >= 0:
             seconds = int(duration_ms) // 1000

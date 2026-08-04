@@ -152,6 +152,18 @@ class TestClassifyOutput:
     def test_near_empty_is_hard(self):
         health, sig = classify_output(0, "ab")
         assert health == "hard"
+        assert "near-empty" in sig
+
+    def test_short_parseable_verdict_is_ok(self):
+        """A short reviewer reply with VERDICT is complete, not near-empty.
+
+        Seen on Discord: ``VERDICT: APPROVE`` (~38b with round header) was
+        health=hard and spammed agent_unhealthy on a correct APPROVE.
+        """
+        body = "## Round 1 — Reviewer\n\nVERDICT: APPROVE\n"
+        assert len(body.strip()) < 40  # under MIN_OUTPUT_BYTES without the fix
+        assert classify_output(0, body) == ("ok", "")
+        assert classify_output(0, "VERDICT: REJECT\n[BLOCKER] x\n") == ("ok", "")
 
     def test_transient_beats_fatal(self):
         """A rate limit in the head wins over a fatal signature."""

@@ -48,8 +48,11 @@ NOTIFY_LEVEL = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
 MILESTONES = {
     "run_start", "run_end", "run_paused", "run_stalled",
     "step_error", "escalation_open", "escalation_resolved",
-    "batch_done", "degraded", "intake_questions", "intake_complete",
+    "batch_done", "intake_questions", "intake_complete",
     "agent_unhealthy", "agent_start", "agent_end",
+    # ``degraded`` (e.g. debate condenser) stays in events/journal and still
+    # pushes when NOTIFY_LEVEL=all — not a phone milestone. Condenser notes are
+    # folded into agent_start description instead.
 }
 
 PRIORITY = {

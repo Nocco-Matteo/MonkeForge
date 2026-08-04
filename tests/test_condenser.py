@@ -349,10 +349,18 @@ class TestRunAgentIntegration:
         degraded = self._degraded_events()
         assert len(degraded) == 1
         rec = degraded[0]
-        assert rec["role"] == "PLAN_REVIEWER"
+        assert rec["role"] == "COUNCIL"  # pipeline voice; note folded into agent_start
         assert rec["original_size"] == len(text)
         assert rec["condensed_size"] == len(rewritten)
         assert rec["condensed_size"] < rec["original_size"]
+        # Folded into the convene beat — not a free-floating Orangutan post.
+        starts = [
+            json.loads(line)
+            for line in ev.EVENTS_LOG.read_text().splitlines()
+            if line and json.loads(line).get("kind") == "agent_start"
+        ]
+        assert starts, "agent_start was not emitted"
+        assert "condensed debate_history" in starts[-1]["msg"]
 
     def test_over_budget_prompt_receives_condensed_debate(self, monkeypatch, tmp_path):
         """The prompt file must contain the CONDENSED debate, not the full one.

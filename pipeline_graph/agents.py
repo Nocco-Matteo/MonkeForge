@@ -87,6 +87,12 @@ def classify_output(code: int, output: str) -> tuple[str, str]:
     # approval emits a spurious `agent_unhealthy` event on a correct run.
     if (output or "").strip().upper() in TERMINAL_MARKERS:
         return "ok", ""
+    # A short reviewer reply that still carries a parseable VERDICT (e.g.
+    # ``## Round N — Reviewer\nVERDICT: APPROVE`` at ~38 bytes) is a complete
+    # answer — not near-empty. Without this, filtered-clean APPROVE emits
+    # spurious ``agent_unhealthy`` / health=hard on Discord.
+    if parse_verdict(output) != "UNKNOWN":
+        return "ok", ""
     if len((output or "").strip()) < MIN_OUTPUT_BYTES:
         return "hard", f"near-empty output ({len((output or '').strip())}b)"
     return "ok", ""
@@ -200,6 +206,9 @@ def run_agent(role: str, conversation: "Conversation", step: str,
     from .condenser import condense, estimate_tokens
     budget = C.token_budget(role)
     debate_history = conversation.debate_history
+    # Folded into agent_start description so Discord narration stays inside the
+    # monke convene beat (not a separate Orangutan/Council post before the call).
+    condense_note = ""
     if budget is not None and debate_history:
         if estimate_tokens(debate_history) > budget:
             condensed = condense(debate_history, C.CONDENSER_KEEP_RECENT)
@@ -237,14 +246,24 @@ def run_agent(role: str, conversation: "Conversation", step: str,
                 # Write back so future from_state reads the condensed version.
                 if debate_path.exists():
                     debate_path.write_text(condensed)
-                ev.emit("degraded", task_id, step,
-                        f"condensed debate_history for {role}: "
-                        f"{estimate_tokens(conversation.debate_history)} -> "
-                        f"{estimate_tokens(condensed)} est-tokens (budget {budget}); "
-                        f"verbatim archive at DEBATE-{task_id}-full.md",
-                        original_size=len(conversation.debate_history),
-                        condensed_size=len(condensed),
-                        role=role)
+                condense_note = (
+                    f"condensed debate_history: "
+                    f"{estimate_tokens(conversation.debate_history)} -> "
+                    f"{estimate_tokens(condensed)} est-tokens (budget {budget}); "
+                    f"verbatim archive at DEBATE-{task_id}-full.md"
+                )
+                # Journal/events only — not a Discord milestone. role=COUNCIL so
+                # any opt-in ``all`` notify is pipeline voice, not the monke.
+                ev.emit(
+                    "degraded",
+                    task_id,
+                    step,
+                    condense_note,
+                    original_size=len(conversation.debate_history),
+                    condensed_size=len(condensed),
+                    role="COUNCIL",
+                    notify=False,
+                )
 
     prompt = render_prompt(tpl, conversation, **extra_kw)
 
@@ -284,7 +303,10 @@ def run_agent(role: str, conversation: "Conversation", step: str,
           "agent": binary, "role": role, "output_file": str(out_file)})
     _write_current({"task": task_id, "step": step, "agent": binary, "role": role,
                     "started": started, "output_file": str(out_file)})
-    ev.emit("agent_start", task_id, step, f"{role} -> {binary}; log: {out_file.name}",
+    start_msg = f"{role} -> {binary}; log: {out_file.name}"
+    if condense_note:
+        start_msg = f"{start_msg}\n({condense_note})"
+    ev.emit("agent_start", task_id, step, start_msg,
             agent=binary, role=role, output_file=str(out_file))
 
     def _run_once() -> tuple[int, str]:
@@ -347,11 +369,20 @@ def run_agent(role: str, conversation: "Conversation", step: str,
           "task": task_id, "step": step, "agent": binary, "role": role,
           "duration_ms": duration_ms, "exit_code": code, "health": health,
           "output_bytes": len(output), "output_file": str(out_file)})
-    ev.emit("agent_end", task_id, step,
-            f"{role}/{binary} exit={code} in {duration_ms // 1000}s, "
-            f"{len(output)} bytes, health={health}",
-            agent=binary, role=role, exit_code=code, duration_ms=duration_ms,
-            health=health)
+    result_bit = _agent_result_suffix(output)
+    ev.emit(
+        "agent_end",
+        task_id,
+        step,
+        f"{role}/{binary} exit={code} in {duration_ms // 1000}s, "
+        f"{len(output)} bytes, health={health}{result_bit}",
+        agent=binary,
+        role=role,
+        exit_code=code,
+        duration_ms=duration_ms,
+        health=health,
+        **_agent_result_fields(output),
+    )
 
     if health != "ok":
         # The real failure, surfaced in pipeline.log with the actual error line —
@@ -381,6 +412,47 @@ def count_blockers(text: str) -> int:
     # [BLOCKER:REQUIREMENTS] — so a provenance-tagged blocker counts the same
     # as a bare one.
     return len(re.findall(r"\[BLOCKER(?::(?:PLAN|REQUIREMENTS))?\]", text or ""))
+
+
+def _agent_result_fields(output: str) -> dict:
+    """Extra event fields for agent_end when a VERDICT is present."""
+    verdict = parse_verdict(output)
+    if verdict == "UNKNOWN":
+        return {}
+    # Open blockers only matter on REJECT/UNKNOWN — same spirit as debate._open_blocker_count.
+    blockers = count_blockers(output) if verdict == "REJECT" else 0
+    return {"verdict": verdict, "blockers": blockers}
+
+
+def _blocker_claim_preview(output: str, limit: int = 3) -> str:
+    """Short bullet list of BLOCKER claims for the Discord return beat."""
+    claims: list[str] = []
+    for m in re.finditer(
+        r"\[BLOCKER(?::(?:PLAN|REQUIREMENTS))?\]\s*(.+)", output or ""
+    ):
+        claim = m.group(1).strip()
+        if not claim:
+            continue
+        # Drop trailing RESOLVED noise if a proposer restated a raise.
+        claim = re.sub(r"\s*(?:—|--)\s*RESOLVED\b.*$", "", claim, flags=re.I)
+        claims.append(claim[:160])
+        if len(claims) >= limit:
+            break
+    if not claims:
+        return ""
+    return "\n" + "\n".join(f"• {c}" for c in claims)
+
+
+def _agent_result_suffix(output: str) -> str:
+    """Human suffix for the monke return beat: `` — REJECT, 2 blocker(s)``."""
+    fields = _agent_result_fields(output)
+    if not fields:
+        return ""
+    verdict = fields["verdict"]
+    if verdict == "REJECT":
+        n = fields["blockers"]
+        return f" — {verdict}, {n} blocker(s)" + _blocker_claim_preview(output)
+    return f" — {verdict}"
 
 
 def parse_not_met(text: str) -> list[str]:

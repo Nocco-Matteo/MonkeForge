@@ -19,6 +19,23 @@ class StepOutcome(unittest.TestCase):
         self.assertEqual(N._step_outcome({"journal": ["done"]}), "ok")
 
 
+class StepSummary(unittest.TestCase):
+    def test_prefers_debate_outcome_over_trailing_bypass_note(self):
+        from pipeline_graph.nodes import common as NC
+
+        lines = [
+            "debate r2 tech: REJECT, 3 open blocker(s)",
+            "visual review disabled — no render command configured for this repo",
+        ]
+        self.assertEqual(NC._step_summary(lines), lines[0])
+
+    def test_falls_back_to_last_line(self):
+        from pipeline_graph.nodes import common as NC
+
+        self.assertEqual(NC._step_summary(["a", "b"]), "b")
+        self.assertEqual(NC._step_summary([]), "no journal line")
+
+
 class WrapUpReport(unittest.TestCase):
     def test_report_lists_every_degradation(self):
         st = {"task_id": "ledgertest", "branch": "b", "batches": [{"n": 1}],

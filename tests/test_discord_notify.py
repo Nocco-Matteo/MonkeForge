@@ -82,6 +82,24 @@ class TestFormatDiscordLine:
             "agent_end", "007", "PROPOSER", "plan", "done")
         assert "65s" not in desc2
 
+    def test_agent_end_title_includes_verdict_and_blockers(self):
+        """Return beat title carries VERDICT / blocker count when present."""
+        title, _ = df.format_discord_line(
+            "agent_end", "024", "PLAN_REVIEWER", "debate",
+            "PLAN_REVIEWER/claude exit=0 in 12s, 80 bytes, health=ok"
+            " — REJECT, 2 blocker(s)\n• missing tests\n• vague AC",
+            duration_ms=12000, verdict="REJECT", blockers=2,
+        )
+        assert "REJECT" in title
+        assert "2 blocker(s)" in title
+        title_ok, _ = df.format_discord_line(
+            "agent_end", "024", "PLAN_REVIEWER", "debate",
+            "… health=ok — APPROVE",
+            verdict="APPROVE", blockers=0,
+        )
+        assert "APPROVE" in title_ok
+        assert "blocker" not in title_ok
+
 
 class TestHumanizeError:
     def test_stalled_no_traceback(self):
@@ -157,6 +175,18 @@ class TestShouldNotify:
         monkeypatch.setattr(ev, "NOTIFY_LEVEL", "milestones")
         monkeypatch.setattr(ev, "_bot_alive", lambda: False)
         assert ev._should_notify("agent_start", None, step="plan") is True
+
+    def test_degraded_not_a_milestone(self, monkeypatch):
+        """Condenser ``degraded`` stays journal-only under milestones (folded
+        into agent_start description); notify=False also hard-suppresses."""
+        assert "degraded" not in ev.MILESTONES
+        monkeypatch.setattr(ev, "NOTIFY_LEVEL", "milestones")
+        monkeypatch.setattr(ev, "_bot_alive", lambda: False)
+        assert ev._should_notify("degraded", None, step="debate") is False
+        assert ev._should_notify("degraded", False, step="debate") is False
+        monkeypatch.setattr(ev, "NOTIFY_LEVEL", "all")
+        # Explicit notify=False still wins over ``all``.
+        assert ev._should_notify("degraded", False, step="debate") is False
 
 
 class TestBotAlive:

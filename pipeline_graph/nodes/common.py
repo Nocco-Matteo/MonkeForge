@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import re
 import subprocess
 import time
 import traceback
@@ -316,7 +317,7 @@ def instrument(name: str, fn):
 
         ms = int((time.time() - t0) * 1000)
         lines = delta.get("journal") or []
-        summary = lines[-1] if lines else "no journal line"
+        summary = _step_summary(lines)
         outcome = _step_outcome(delta)
         if delta.get("escalation"):
             summary = f"-> escalating: {delta['escalation']}"
@@ -329,6 +330,31 @@ def instrument(name: str, fn):
         return delta
 
     return wrapper
+
+
+# Prefer debate/review outcome lines over trailing notes (e.g. "visual review
+# disabled…") so Discord step_end / council-log show VERDICT + blocker counts.
+_DEBATE_OUTCOME_RE = re.compile(
+    r"^debate r\d+ (?:tech|ux):\s*"
+    r"(APPROVE_WITH_CHANGES|APPROVE|REJECT|UNKNOWN)\b",
+    re.IGNORECASE,
+)
+
+
+def _step_summary(lines: list[str]) -> str:
+    """Pick the journal line that best summarises a node for step_end notify."""
+    if not lines:
+        return "no journal line"
+    for line in reversed(lines):
+        if _DEBATE_OUTCOME_RE.match((line or "").strip()):
+            return line
+    for line in reversed(lines):
+        s = line or ""
+        if "blocker" in s.lower() and any(
+            v in s for v in ("REJECT", "APPROVE", "APPROVE_WITH_CHANGES")
+        ):
+            return line
+    return lines[-1]
 
 
 def _trust_output(code: int, out: str, health: str) -> bool:
