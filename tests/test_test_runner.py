@@ -151,5 +151,39 @@ class TestGateFalsePositiveSuppression(unittest.TestCase):
         self.assertEqual(new, {"backend|src/c.test.ts > suite C > new"})
 
 
+class TestNpmVitestLabelPrefix(unittest.TestCase):
+    """Regression (TASK-026): npm-vitest failure keys stay prefixed ``label|``.
+
+    The refactored ``_run_npm_vitest`` (former ``_run_suite`` body) must keep
+    prefixing every failure key with the suite label, so the baseline
+    comparison and the judge's allowlist substring match keep working.
+    """
+
+    def test_npm_vitest_label_prefix(self):
+        from unittest.mock import patch
+        from pathlib import Path
+        from pipeline_graph import config as C
+        suite = C.TestSuite(label="frontend", cwd="frontend", runner="npm-vitest")
+        vt_out = (
+            "FAIL  src/a.test.ts > suite A > case one\n"
+            "FAIL  src/b.test.ts > suite B > case two\n"
+            "Tests  2 failed | 5 passed (7)\n"
+        )
+        with patch.object(tr, "_run_cmd",
+                          side_effect=[(0, "typecheck ok"),
+                                       (1, vt_out),
+                                       (0, "[]")]), \
+             patch.object(C, "REPO", Path("/tmp")):
+            code, fails, summary = tr._run_npm_vitest(suite, 60)
+        # Every failure key is prefixed "frontend|".
+        self.assertTrue(fails, "expected non-empty failure set")
+        for f in fails:
+            self.assertTrue(f.startswith("frontend|"),
+                            f"failure key not label-prefixed: {f!r}")
+        # The two vitest FAIL lines are present (not just the synthetic exit key).
+        self.assertTrue(any("case one" in f for f in fails))
+        self.assertTrue(any("case two" in f for f in fails))
+
+
 if __name__ == "__main__":
     unittest.main()

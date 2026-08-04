@@ -53,6 +53,9 @@ def _load_yaml_to_env(path: Path) -> None:
     # agents: read directly by config.py from monkeforge.yaml — no env var
     # bridge, so a stale terminal session can't shadow the yaml with a
     # deprecated/expired model.
+    # test_suites: likewise read directly by config.py from the top-level
+    # `test_suites:` yaml key — NOT bridged here. The legacy
+    # PIPELINE_TEST_SUITES env var remains a debug-only override.
 
     # condenser: -> PIPELINE_TOKEN_BUDGET_<ROLE> per-role token budgets,
     # and PIPELINE_CONDENSER_KEEP_RECENT for the verbatim-round count.
@@ -94,6 +97,7 @@ from langgraph.types import Command
 
 from pipeline_graph import config as C, events as ev
 from pipeline_graph.graph import build_graph, open_checkpointer
+from pipeline_graph import test_runner as tr
 
 
 # --- Council-log role mapping ----------------------------------------------
@@ -1441,6 +1445,8 @@ def main(argv=None) -> int:
     s.add_argument("--effort", dest="effort", default=None,
                    choices=["scout-monke", "troop-monke", "barrel-monke"],
                    help="force an effort level (skips the effort checkpoint)")
+    s.add_argument("--no-input", action="store_true",
+                   help="never prompt; resolve test suites non-interactively")
     r = sub.add_parser("resume", parents=[_no_color_parent],
                        help="resume a paused or interrupted run, optionally "
                             "answering the pending pause")
@@ -1461,6 +1467,8 @@ def main(argv=None) -> int:
     rd.add_argument("--effort", dest="effort", default=None,
                     choices=["scout-monke", "troop-monke", "barrel-monke"],
                     help="force an effort level for the redo (plan/debate only)")
+    rd.add_argument("--no-input", action="store_true",
+                    help="never prompt; resolve test suites non-interactively")
     rs = sub.add_parser("reset", parents=[_no_color_parent],
                         help="delete the checkpoint state for a task "
                         "so it can be started fresh again")
@@ -1588,6 +1596,27 @@ def main(argv=None) -> int:
         _warn_if_notifications_off()
         _ensure_notify_daemon()
         _ensure_bot()
+
+    # --- Test-suite resolution (pre-_drive) ---------------------------------
+    # `start` and `redo` resolve test suites before driving so the gate is
+    # configured by the time the implement/finalize nodes call run_repo_tests.
+    # `redo --from visual` skips resolution: it reuses the built UI and only
+    # redoes render + visual gate, so the test-suite config from the original
+    # run must stand (re-resolving could re-prompt and change the gate mid-run).
+    # `resume` NEVER resolves pre-_drive (R6 B1): it re-enters at an arbitrary
+    # interrupt stage where the suites may already have been used, so the
+    # sentinel + existing config from the original start/redo must hold. The
+    # PIPELINE_NO_INPUT env bridge is still set on resume so any later
+    # resolution (e.g. a fresh run_repo_tests on a cold process) honours it.
+    if args.cmd in ("start", "resume", "redo"):
+        if getattr(args, "no_input", False):
+            os.environ["PIPELINE_NO_INPUT"] = "1"
+        else:
+            os.environ.pop("PIPELINE_NO_INPUT", None)
+    if args.cmd == "start":
+        tr.resolve_test_suites(task_id=args.task_id)
+    elif args.cmd == "redo" and args.from_phase != "visual":
+        tr.resolve_test_suites(task_id=args.task_id)
 
     if args.cmd == "reset":
         import sqlite3 as _sqlite3

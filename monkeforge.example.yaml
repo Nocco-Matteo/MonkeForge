@@ -92,6 +92,36 @@ effort:
 # tools:
 #   gemini_trust_workspace: true
 
+# Test suites for the in-graph test gate. Read directly by config.py from
+# this top-level `test_suites:` key (NOT bridged via PIPELINE_* env). Each
+# entry is a mapping with: label, cwd (repo-relative), runner, and optional
+# cmd (for `script`) / env (per-suite override map applied on top of
+# os.environ). Runners: `npm-vitest` (tsc + vitest + lint), `pytest`
+# (`python -m pytest -q`), `script` (custom cmd). An absent/empty
+# `test_suites:` key triggers discovery + (on a TTY) an interactive ask on
+# the first run_repo_tests() call; it does NOT silently disable the gate.
+# A non-zero subprocess exit with zero parsed failures appends a synthetic
+# `label|<runner> exit N` key so a crash can never silently yield a green
+# gate. The legacy PIPELINE_TEST_SUITES env var (label:subdir:ENV=val) is a
+# debug-only override that wins over this yaml and parses into npm-vitest
+# suites.
+# test_suites:
+#   - label: backend
+#     cwd: backend
+#     runner: npm-vitest
+#     env:
+#       DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5433/nexusvtt?schema=public
+#   - label: frontend
+#     cwd: frontend
+#     runner: npm-vitest
+#   - label: python
+#     cwd: ""
+#     runner: pytest
+#   - label: custom
+#     cwd: tools
+#     runner: script
+#     cmd: ["bash", "run-checks.sh"]
+
 # Optional notification settings.
 # level: milestones (default) | all (debug opt-in) | silent (never push)
 # notifications:
