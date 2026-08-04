@@ -9,13 +9,14 @@ Batch scope: {batch_scope}
 Checklist items for this batch: {checklist_items}
 
 ARCHITECTURE — READ BEFORE WRITING (not optional; violating these produces
-misaligned code the reviewers will reject). Read CLAUDE.md and its architecture
-index, then the docs relevant to what THIS batch touches (plus any the brief
-names) from the project's architecture docs:
+misaligned code the reviewers will reject). Read the project's architecture
+index (e.g. CLAUDE.md, AGENTS.md, ARCHITECTURE.md — whichever exist at the
+repo root), then the docs relevant to what THIS batch touches (plus any the
+brief names) from the project's configured architecture docs:
 {arch_docs}
-frontend/AGENTS.md matters most for UI: this Next.js has breaking changes vs your
-training — read the guide it points to before using any Next API. Build within
-the architecture that already exists; do not invent your own structure.
+For UI work, also read any repo-root UI guide (e.g. AGENTS.md) that exists and
+the guide it points to before using any framework API. Build within the
+architecture that already exists; do not invent your own structure.
 
 PRIOR STATE: before writing anything, read what previous batches actually
 produced — `git log --oneline` for this branch, the Deviations recorded in the

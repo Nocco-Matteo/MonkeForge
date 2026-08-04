@@ -199,6 +199,7 @@ def intake_ask(state):
         intake_path=str(_rel(intake_file(tid))),
         refs_path=str(_rel(refs)),
         refs_list=ref_list,
+        arch_docs=C.arch_docs_block(),
     )
     if code != 0:
         return {

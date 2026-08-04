@@ -31,6 +31,7 @@ def code_review(state):
         diff_base=base,
         checklist_items=", ".join(map(str, b.get("checklist", []))),
         trusted_context=state.get("trusted_context", ""),
+        arch_docs=C.arch_docs_block(),
     )
     health, _signal = classify_output(code, out)
     if not _trust_output(code, out, health):

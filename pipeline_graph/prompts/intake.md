@@ -88,10 +88,13 @@ contain them):
        ground truth for intent.
 
     ## 4b. Architecture docs to follow
-       Name the specific docs the implementer MUST read for this task (from
-       CLAUDE.md's index): frontend/ARCHITECTURE.md + frontend/AGENTS.md for
-       UI, the matching {docs_dir}/<subsystem>.md for a backend domain,
-       {docs_dir}/UX-MANIFESTO.md for UI behaviour. List only the relevant
+       Name the specific docs the implementer MUST read for this task. Draw
+       them from the project's configured architecture docs:
+       {arch_docs}
+       plus any repo-root index files (e.g. AGENTS.md, ARCHITECTURE.md) that
+       actually exist and are relevant to what this task touches — none are
+       mandatory, list only the ones that govern this work. For UI behaviour,
+       read {docs_dir}/UX-MANIFESTO.md if it exists. List only the relevant
        ones, so the implementer reads what governs this work, not all of them.
 
     ## 5. Definition of done

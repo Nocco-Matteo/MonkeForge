@@ -6,13 +6,17 @@
 pipeline:
   # Repository-relative architecture documents passed to the agents.
   arch_docs: []
+  # Example (uncomment and list repo-relative paths to opt in):
+  # arch_docs:
+  #   - AGENTS.md
+  #   - ARCHITECTURE.md
 
   # Adaptive effort default. The CLI --effort flag overrides this per run.
   effort_default: troop-monke
 
   # A changed file matching one of these names receives the barrel hint.
   # Separate entries with semicolons.
-  effort_critical_paths: "config.py;graph.py;state.py;run.py"
+  # effort_critical_paths: "config.py;graph.py;state.py;run.py"
 
   # Existing pipeline limits. These are also available as PIPELINE_* env vars.
   max_debate_rounds: 2
@@ -29,19 +33,19 @@ pipeline:
   # as new failures. Stops pre-existing debt from looking like a batch
   # regression when it surfaces (type-aware rules) or is relocated to a new
   # file. A rule NOT in baseline in any file is still a real regression.
-  lint_debt_rules:
-    - "@typescript-eslint/no-explicit-any"
-    - "react-refresh/only-export-components"
-    - "react-hooks/immutability"
-    - "react-hooks/set-state-in-effect"
-    - "react-hooks/purity"
+  # lint_debt_rules:
+  #   - "@typescript-eslint/no-explicit-any"
+  #   - "react-refresh/only-export-components"
+  #   - "react-hooks/immutability"
+  #   - "react-hooks/set-state-in-effect"
+  #   - "react-hooks/purity"
 
   # Vitest FAIL key substrings for environment-sensitive tests (DB-gated,
   # network, external services). A failure matching any pattern is NOT counted
   # as new — it was skipped in baseline (env down) and fails when the env
   # comes up mid-batch. Declare only tests you know are ambient.
-  test_ambient_patterns:
-    - "magic auto-grant: class domain & patron spells"
+  # test_ambient_patterns:
+  #   - "magic auto-grant: class domain & patron spells"
 
 # Effort presets:
 #   scout-monke  = leggero: implement + review, no debate, no gate
@@ -110,7 +114,7 @@ effort:
 #     cwd: backend
 #     runner: npm-vitest
 #     env:
-#       DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5433/nexusvtt?schema=public
+#       DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5433/yourdb?schema=public
 #   - label: frontend
 #     cwd: frontend
 #     runner: npm-vitest

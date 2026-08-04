@@ -8,7 +8,7 @@ persistito su SQLite, e le escalation sono `interrupt()` di LangGraph.
 ## Installazione (Debian 12)
 
 ```bash
-cd ~/Documenti/progetti/dnn-vtt/nexus-vtt
+cd ~/path/to/your/repo
 python3 -m venv .venv-pipeline
 source .venv-pipeline/bin/activate
 pip install langgraph langgraph-checkpoint-sqlite
@@ -344,7 +344,10 @@ Loop fino a `MAX_UX_RENDER_CYCLES` (default 3, env-overridabile). Se i blocker
 serve una decisione di design, non altri cicli. Deterministici **+** visione
 insieme: i fatti prendono i sintomi misurabili (modalità identiche, scroll), la
 vista prende ciò che nessuno strumento becca (un'etichetta troncata a `overflow_x
-= false`). Disabilitabile con `PIPELINE_UX_RENDER_CMD` vuoto.
+= false`). Disabilitabile con `PIPELINE_UX_RENDER_CMD` vuoto. Il cancello
+visivo è **opt-in**: di default `PIPELINE_UX_RENDER_CMD` è vuoto e il gate
+non parte — configurarlo (più `PIPELINE_UX_SEED_SCRIPT`/`PIPELINE_UX_RENDER_CWD`
+se servono) per riattivarlo.
 
 Prerequisito una-tantum: `cd frontend && npx playwright install chromium
 chromium-headless-shell`.
@@ -419,10 +422,17 @@ Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
 | `PIPELINE_AGENT_TIMEOUT` | nessuno | secondi; `0` o assente = nessun tetto |
 | `PIPELINE_TEST_TIMEOUT` | vedi `config.py` | timeout del gate dei test |
 | `PIPELINE_E2E_UP_TIMEOUT` | `660` | secondi per tirare su lo stack e2e |
-| `PIPELINE_E2E_DATABASE_URL` | `localhost:5433` | DB usato da vitest lato host |
+| `PIPELINE_E2E_DATABASE_URL` | vuoto | DB usato da vitest lato host; assente = degrado |
+| `PIPELINE_E2E_DB_CONTAINER` | vuoto | nome container Postgres e2e (opt-in) |
+| `PIPELINE_E2E_PROJECT` | vuoto | `COMPOSE_PROJECT_NAME` per lo stack e2e (opt-in) |
+| `PIPELINE_E2E_UP_SCRIPT` | vuoto | script `e2e-up.sh` (opt-in; assente = solo port-probe) |
+| `PIPELINE_UX_SEED_SCRIPT` | vuoto | script di seed fixture (opt-in) |
 | `PIPELINE_MAX_UX_RENDER_CYCLES` | `3` | cicli render→review→fix del cancello visivo |
-| `PIPELINE_UX_RENDER_CMD` | `npx playwright test …` | comando di render; **vuoto = disabilita il cancello visivo** |
+| `PIPELINE_UX_RENDER_CMD` | vuoto | comando di render; **vuoto = cancello visivo disattivato (opt-in)** |
+| `PIPELINE_UX_RENDER_CWD` | vuoto | working dir del render (opt-in) |
 | `PIPELINE_UX_RENDER_TIMEOUT` | `720` | secondi per il render (cold path fixture) |
+| `PIPELINE_RENDER_CMD` | vuoto | comando di render-profile; **vuoto = cancello perf disattivato (opt-in)** |
+| `PIPELINE_RENDER_CWD` | vuoto | working dir del render-profile (opt-in) |
 | `PIPELINE_AGENT_TRANSIENT_RETRIES` | `1` | retry automatici su fallimenti agente transitori |
 | `PIPELINE_CONDENSER_KEEP_RECENT` | `3` | round verbatim nel condenser (negativo → 0, non-intero → default) |
 | `PIPELINE_TOKEN_BUDGET_<ROLE>` | — | tetto token per il condenser del ruolo; assente = no-op, non-intero = trattato come assente |

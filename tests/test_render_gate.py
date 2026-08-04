@@ -5,6 +5,7 @@ re-renders more than baseline (a regression). No LLM in the review.
 import json
 import shutil
 import unittest
+from unittest.mock import patch
 
 from pipeline_graph import nodes as N, config as C, graph as G
 
@@ -96,11 +97,19 @@ class RenderRouting(unittest.TestCase):
         self.assertEqual(G.route_render_review({"escalation": "x"}), "escalate")
 
     def test_after_ui_gate_routes_to_render_when_perf(self):
-        self.assertEqual(G._after_ui_gate({"has_perf": True, "render_verdict": ""}),
-                         "render_measure")
-        self.assertEqual(G._after_ui_gate({"has_perf": True, "render_verdict": "PASS"}),
-                         "final_check")
+        with patch.object(G.C, "RENDER_CMD", "npx playwright test"):
+            self.assertEqual(G._after_ui_gate({"has_perf": True, "render_verdict": ""}),
+                             "render_measure")
+            self.assertEqual(G._after_ui_gate({"has_perf": True, "render_verdict": "PASS"}),
+                             "final_check")
         self.assertEqual(G._after_ui_gate({"has_perf": False}), "final_check")
+
+    def test_after_ui_gate_skips_render_when_cmd_empty(self):
+        # RENDER_CMD empty (default opt-off) → a perf task goes straight to final.
+        with patch.object(G.C, "RENDER_CMD", ""):
+            self.assertEqual(
+                G._after_ui_gate({"has_perf": True, "render_verdict": ""}),
+                "final_check")
 
     def test_non_perf_task_skips_render_gate(self):
         # A backend/UI task without has_perf goes straight to final_check.
@@ -111,7 +120,26 @@ class RenderRouting(unittest.TestCase):
         state = {"branch": "b", "intake_done": True, "batches": [{"n": 1}],
                  "batch_idx": 1, "has_ui": False, "has_perf": True,
                  "render_verdict": "", "render_blockers": 0}
-        self.assertEqual(G.route_escalation_return(state), "render_measure")
+        with patch.object(G.C, "RENDER_CMD", "npx playwright test"):
+            self.assertEqual(G.route_escalation_return(state), "render_measure")
+
+    def test_escalation_return_skips_render_when_cmd_empty(self):
+        # RENDER_CMD empty (default opt-off) → a perf task escalation resolves
+        # to final_check, not render_measure.
+        state = {"branch": "b", "intake_done": True, "batches": [{"n": 1}],
+                 "batch_idx": 1, "has_ui": False, "has_perf": True,
+                 "render_verdict": "", "render_blockers": 0}
+        with patch.object(G.C, "RENDER_CMD", ""):
+            self.assertEqual(G.route_escalation_return(state), "final_check")
+
+    def test_render_measure_empty_cmd_returns_skipped(self):
+        # render_measure with RENDER_CMD="" returns a SKIPPED verdict, not
+        # journal-only — so render_review sees a passed state.
+        with patch.object(G.C, "RENDER_CMD", ""), \
+             patch.object(G.C, "DRY_RUN", False):
+            out = N.render_measure({"task_id": TID})
+        self.assertEqual(out["render_verdict"], "SKIPPED")
+        self.assertEqual(out["render_blockers"], 0)
 
     def test_render_measure_in_escalation_returns(self):
         self.assertIn("render_measure", G.ESCALATION_RETURNS)

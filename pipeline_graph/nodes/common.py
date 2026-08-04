@@ -236,7 +236,7 @@ def _ignorable_dirty_path(path: str) -> bool:
 
 
 def _dirty_blocks_interactive_init(paths: list[str]) -> bool:
-    """True if a non-auto start must escalate (src/backend/frontend dirty)."""
+    """True if a non-auto start must escalate (non-pipeline dirty paths)."""
     if not paths:
         return False
     return any(not any(path.startswith(p) for p in C.INIT_DIRTY_OK_PREFIXES) for path in paths)

@@ -71,6 +71,7 @@ PROMPT_PLACEHOLDERS = {
         "intake_path",
         "refs_path",
         "refs_list",
+        "arch_docs",
     },
     "plan": {"request", "brief", "arch_docs", "docs_dir"},
     "debate_review": {"plan_view", "debate_ledger", "round"},
@@ -96,6 +97,7 @@ PROMPT_PLACEHOLDERS = {
         "checklist_items",
         "trusted_context",
         "final",
+        "arch_docs",
     },
     "code_fix": {"task_id", "batch_n", "review_history"},
     "code_verify": {"task_id", "batch_n", "review_history"},
@@ -215,4 +217,62 @@ class TestVerificationPassSection:
         )
         assert "[SUGGESTION]" in text, (
             f"{prompt_name}.md is missing the '[SUGGESTION]' rule."
+        )
+
+
+# --- TASK-029: prompt neutrality + arch_docs wiring -------------------------
+
+
+_NEUTRALITY_PROMPTS = ["intake", "implement", "code_review", "plan"]
+_FORBIDDEN_LITERALS = [
+    "frontend/AGENTS.md",
+    "frontend/ARCHITECTURE.md",
+    "this Next.js",
+]
+
+
+class TestPromptNeutrality:
+    """The high-traffic prompts must not assume a nexus-vtt/monorepo layout:
+    no mandatory ``frontend/AGENTS.md``, ``frontend/ARCHITECTURE.md``, or
+    ``this Next.js`` wording. Repo-root index files are referenced generically
+    and only as optional."""
+
+    @pytest.mark.parametrize("prompt_name", _NEUTRALITY_PROMPTS)
+    def test_no_nexus_monorepo_assumptions(self, prompt_name):
+        path = PROMPTS_DIR / f"{prompt_name}.md"
+        if not path.exists():
+            pytest.skip(f"{prompt_name}.md not found")
+        text = path.read_text()
+        for forbidden in _FORBIDDEN_LITERALS:
+            assert forbidden not in text, (
+                f"{prompt_name}.md still contains the nexus/monorepo literal "
+                f"{forbidden!r} — prompts must be repo-neutral."
+            )
+
+
+class TestPromptArchDocsWiring:
+    """Both ``intake.py::intake_ask`` and ``review.py::code_review`` must
+    forward an ``arch_docs`` kwarg to ``run_agent`` so the ``{arch_docs}``
+    placeholder in their prompts renders instead of leaking through literally."""
+
+    def test_intake_ask_forwards_arch_docs(self):
+        import inspect
+
+        from pipeline_graph.nodes import intake as _intake
+
+        src = inspect.getsource(_intake.intake_ask)
+        assert "arch_docs=" in src, (
+            "intake.py::intake_ask must pass arch_docs= to run_agent so the "
+            "{arch_docs} placeholder in intake.md renders."
+        )
+
+    def test_code_review_forwards_arch_docs(self):
+        import inspect
+
+        from pipeline_graph.nodes import review as _review
+
+        src = inspect.getsource(_review.code_review)
+        assert "arch_docs=" in src, (
+            "review.py::code_review must pass arch_docs= to run_agent so the "
+            "{arch_docs} placeholder in code_review.md renders."
         )

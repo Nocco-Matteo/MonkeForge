@@ -163,7 +163,7 @@ def _render_passed(state) -> bool:
 def _after_ui_gate(state):
     """Once the visual gate (if any) is done: the render gate if this task targets
     perf and it hasn't passed yet, else the final check."""
-    if state.get("has_perf") and not _render_passed(state):
+    if state.get("has_perf") and not _render_passed(state) and C.RENDER_CMD.strip():
         return "render_measure"
     return "final_check"
 
@@ -286,7 +286,9 @@ def route_escalation_return(state):
         return "ux_render"
     # Perf task whose render gate has not passed: a resolved escalation re-profiles
     # (never silently skip the gate — the same fix the visual gate got).
-    if state.get("has_perf") and not _render_passed(state) and C.resolved_gates_enabled(state):
+    if (state.get("has_perf") and not _render_passed(state)
+            and C.RENDER_CMD.strip()
+            and C.resolved_gates_enabled(state)):
         return "render_measure"
     return "final_check"
 

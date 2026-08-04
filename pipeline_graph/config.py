@@ -558,13 +558,13 @@ except ValueError:
 # UX_RENDER_OUT (output dir). Disable the whole visual phase with an empty value.
 SCREENS = DOCS / "reviews" / "screens"
 # Idempotent upsert of the fixed-id render fixtures; ux_render runs it before
-# rendering so the visual gate survives an e2e DB re-seed.
-UX_SEED_SCRIPT = Path(os.environ.get("PIPELINE_UX_SEED_SCRIPT")
-                      or (REPO / "scripts" / "e2e-seed-ux-fixtures.sh"))
-UX_RENDER_CMD = os.environ.get(
-    "PIPELINE_UX_RENDER_CMD",
-    "npx playwright test tests/e2e/ux-render.spec.ts --project=chromium")
-UX_RENDER_CWD = os.environ.get("PIPELINE_UX_RENDER_CWD", "frontend")
+# rendering so the visual gate survives an e2e DB re-seed. None when unset —
+# MonkeForge is standalone and ships no seed script by default; opt in via
+# PIPELINE_UX_SEED_SCRIPT (repo-relative or absolute path).
+_ux_seed_raw = os.environ.get("PIPELINE_UX_SEED_SCRIPT", "").strip()
+UX_SEED_SCRIPT: Path | None = (Path(_ux_seed_raw) if _ux_seed_raw else None)
+UX_RENDER_CMD = os.environ.get("PIPELINE_UX_RENDER_CMD", "")
+UX_RENDER_CWD = os.environ.get("PIPELINE_UX_RENDER_CWD", "")
 # Subprocess kill for the render command. Must exceed the spec's own
 # test.setTimeout (600s cold-path for fixture creation) with margin.
 UX_RENDER_TIMEOUT = int(os.environ.get("PIPELINE_UX_RENDER_TIMEOUT", "720"))
@@ -575,10 +575,8 @@ UX_RENDER_TIMEOUT = int(os.environ.get("PIPELINE_UX_RENDER_TIMEOUT", "720"))
 # compares to a baseline to catch re-render REGRESSIONS. Deterministic — the
 # review is numeric, no LLM critic. Reuses the ux-render seed fixtures.
 RENDERS = DOCS / "reviews" / "renders"
-RENDER_CMD = os.environ.get(
-    "PIPELINE_RENDER_CMD",
-    "npx playwright test tests/e2e/render-profile.spec.ts --project=chromium")
-RENDER_CWD = os.environ.get("PIPELINE_RENDER_CWD", "frontend")
+RENDER_CMD = os.environ.get("PIPELINE_RENDER_CMD", "")
+RENDER_CWD = os.environ.get("PIPELINE_RENDER_CWD", "")
 RENDER_TIMEOUT = int(os.environ.get("PIPELINE_RENDER_TIMEOUT", "300"))
 MAX_RENDER_CYCLES = int(os.environ.get("PIPELINE_MAX_RENDER_CYCLES", "3"))
 
@@ -597,17 +595,17 @@ NO_GIT = os.environ.get("PIPELINE_NO_GIT") == "1"
 
 # --- E2E / test infrastructure
 E2E_DB_PORT = int(os.environ.get("PIPELINE_E2E_DB_PORT", "5433"))
-E2E_DB_CONTAINER = os.environ.get("PIPELINE_E2E_DB_CONTAINER", "nexus_vtt_e2e_db")
-E2E_PROJECT = os.environ.get("PIPELINE_E2E_PROJECT", "nexus-vtt-e2e")
-E2E_UP_SCRIPT = Path(os.environ.get("PIPELINE_E2E_UP_SCRIPT") or (REPO / "scripts" / "e2e-up.sh"))
+E2E_DB_CONTAINER = os.environ.get("PIPELINE_E2E_DB_CONTAINER", "")
+E2E_PROJECT = os.environ.get("PIPELINE_E2E_PROJECT", "")
+# None when unset — MonkeForge is standalone and ships no e2e-up script by
+# default; opt in via PIPELINE_E2E_UP_SCRIPT (repo-relative or absolute path).
+_e2e_up_raw = os.environ.get("PIPELINE_E2E_UP_SCRIPT", "").strip()
+E2E_UP_SCRIPT: Path | None = (Path(_e2e_up_raw) if _e2e_up_raw else None)
 E2E_UP_TIMEOUT = int(os.environ.get("PIPELINE_E2E_UP_TIMEOUT", "660"))
 
 # Host-side URL for vitest when the e2e Postgres container maps 5433→5432.
 # Override with PIPELINE_E2E_DATABASE_URL; never read backend/.env implicitly.
-E2E_DATABASE_URL = os.environ.get(
-    "PIPELINE_E2E_DATABASE_URL",
-    "postgresql://postgres:postgrespassword@localhost:5433/nexusvtt?schema=public",
-)
+E2E_DATABASE_URL = os.environ.get("PIPELINE_E2E_DATABASE_URL", "")
 
 # Notify daemon (persistent rate-limited notification dispatcher).
 NOTIFY_RATE = int(os.environ.get("PIPELINE_NOTIFY_RATE", "30"))
@@ -634,22 +632,14 @@ NOTIFY_SOCKET = Path(os.environ.get("PIPELINE_NOTIFY_SOCKET")
 #   whose key contains any of these patterns is NOT counted as new — it is
 #   treated as ambient noise (e.g. a describe.skipIf(!hasDb) test that was
 #   skipped in baseline but runs and fails when the DB comes up mid-batch).
-_DEFAULT_LINT_DEBT_RULES = (
-    "@typescript-eslint/no-explicit-any;"
-    "react-refresh/only-export-components;"
-    "react-hooks/immutability;"
-    "react-hooks/set-state-in-effect;"
-    "react-hooks/purity"
-)
+_DEFAULT_LINT_DEBT_RULES = ""
 LINT_DEBT_RULES = tuple(
     r.strip() for r in
     os.environ.get("PIPELINE_LINT_DEBT_RULES", _DEFAULT_LINT_DEBT_RULES).split(";")
     if r.strip()
 )
 
-_DEFAULT_TEST_AMBIENT_PATTERNS = (
-    "magic auto-grant: class domain & patron spells"
-)
+_DEFAULT_TEST_AMBIENT_PATTERNS = ""
 TEST_AMBIENT_PATTERNS = tuple(
     p.strip() for p in
     os.environ.get("PIPELINE_TEST_AMBIENT_PATTERNS", _DEFAULT_TEST_AMBIENT_PATTERNS).split(";")
@@ -806,6 +796,8 @@ def ensure_e2e_stack() -> bool:
     """
     if db_reachable():
         return True
+    if E2E_UP_SCRIPT is None:
+        return db_reachable()
     if not E2E_UP_SCRIPT.exists():
         return False
     env = os.environ.copy()

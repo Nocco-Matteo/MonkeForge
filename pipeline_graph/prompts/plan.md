@@ -14,11 +14,11 @@ METHOD (do this before writing):
 1. Read the code you intend to change. Every file path, symbol name and API you
    mention must be one you have actually seen in this repo.
 2. Read the ARCHITECTURE the plan must respect, and design within it — do not
-   invent structure. CLAUDE.md and its index, then the docs relevant to what you
-   touch (plus any the brief names), from the project's architecture docs:
+   invent structure. The docs relevant to what you touch (plus any the brief
+   names), from the project's architecture docs:
    {arch_docs}
-3. If the work touches user-facing UI, read {docs_dir}/UX-MANIFESTO.md and design the
-   flows to satisfy it — it is a hard constraint, not advice.
+3. If the work touches user-facing UI and {docs_dir}/UX-MANIFESTO.md exists, read
+   it and design the flows to satisfy it — it is a hard constraint, not advice.
 
 OUTPUT -> print the plan to stdout (the pipeline files it automatically), with these sections exactly:
   1. Goal (max 3 lines)

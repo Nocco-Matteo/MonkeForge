@@ -38,7 +38,7 @@ def ux_render(state):
     # Ensure the render fixtures exist (idempotent upsert). Without this the gate
     # breaks silently whenever the e2e DB was re-seeded: the fixed character ids
     # the spec navigates to would not exist and every render would time out.
-    if C.UX_SEED_SCRIPT.exists():
+    if C.UX_SEED_SCRIPT and C.UX_SEED_SCRIPT.exists():
         seed = subprocess.run(
             ["bash", str(C.UX_SEED_SCRIPT)], cwd=C.REPO, capture_output=True, text=True
         )
@@ -214,7 +214,11 @@ def render_measure(state):
     tid = state["task_id"]
     cyc = state.get("render_cycle", 0)
     if C.DRY_RUN or not C.RENDER_CMD.strip():
-        return {"journal": ["render measure: skipped (dry run / disabled)"]}
+        return {
+            "render_verdict": "SKIPPED",
+            "render_blockers": 0,
+            "journal": ["render measure: skipped (dry run / disabled)"],
+        }
 
     db_ok, _ = _db_note(tid, "render_measure")
     if not db_ok:
@@ -222,7 +226,7 @@ def render_measure(state):
             "escalation": "cannot profile renders: the e2e stack is not reachable",
             "journal": ["render measure: e2e stack down"],
         }
-    if C.UX_SEED_SCRIPT.exists():
+    if C.UX_SEED_SCRIPT and C.UX_SEED_SCRIPT.exists():
         seed = subprocess.run(
             ["bash", str(C.UX_SEED_SCRIPT)], cwd=C.REPO, capture_output=True, text=True
         )

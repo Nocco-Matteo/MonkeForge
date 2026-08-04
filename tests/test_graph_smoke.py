@@ -220,6 +220,15 @@ class TestRoutingFunctions:
         with patch.object(C, "UX_RENDER_CMD", ""):
             assert self.G.route_next_batch(state) == "final_check"
 
+    def test_default_config_perf_task_reaches_final_check(self):
+        # With default config (no env override) UX_RENDER_CMD and RENDER_CMD are
+        # both empty, so a has_ui=True, has_perf=True task skips both gates and
+        # reaches final_check — the gates are opt-in, ships off.
+        state = _dry_state(batches=[{"n": 1}], batch_idx=1,
+                           has_ui=True, has_perf=True)
+        with patch.object(C, "UX_RENDER_CMD", ""), patch.object(C, "RENDER_CMD", ""):
+            assert self.G.route_next_batch(state) == "final_check"
+
     def test_route_visual_clean(self):
         state = _dry_state(visual_blockers=0, has_perf=False)
         assert self.G.route_visual(state) == "final_check"

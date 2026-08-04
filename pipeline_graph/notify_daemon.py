@@ -136,7 +136,7 @@ def _send(title: str, msg: str, color: int, role: str = "") -> int:
         req = urllib.request.Request(
             WEBHOOK, data=payload.encode("utf-8"),
             headers={"Content-Type": "application/json",
-                     "User-Agent": "nexus-pipeline-notify/1.0"})
+                     "User-Agent": "monkeforge-notify/1.0"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status
     except urllib.error.HTTPError as exc:

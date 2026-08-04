@@ -30,13 +30,15 @@ answer `<n>: DEFERRED — final gate` and move on. DEFERRED is never a blocker.
 Anything under "VERIFIED AT FINAL GATE" in the spec is not yours to judge.
 
 PART 2 — ARCHITECTURE CONFORMANCE. Check the diff against the project's WRITTEN
-architecture — the same docs the implementer was told to follow (CLAUDE.md's
-index, the ones the spec/brief names, and these project architecture docs):
+architecture — the same docs the implementer was told to follow (the project's
+architecture index, the ones the spec/brief names, and these project
+architecture docs):
 {arch_docs}
 Open the doc that governs what the diff touches and check the diff against it.
-  - A file in the wrong layer / folder per frontend/ARCHITECTURE.md; a stated
-    ANTI-PATTERN reintroduced; business logic where the doc forbids it; a Next
-    API used against the frontend/AGENTS.md guidance — these are real defects.
+  - A file in the wrong layer / folder per a stated ARCHITECTURE.md; a stated
+    ANTI-PATTERN reintroduced; business logic where the doc forbids it; a
+    framework API used against a stated UI guide (e.g. AGENTS.md) — these are
+    real defects.
   - Decisive rule: flag a VIOLATION of what a doc actually says (quote the doc
     line + the diff line). Do NOT flag "I would have structured it differently" —
     a deviation from your taste is never a finding. Architecture you merely
