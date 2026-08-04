@@ -35,6 +35,7 @@ import io
 import json
 import os
 import re
+import sys
 import time
 import tomllib
 from contextlib import redirect_stdout, redirect_stderr
@@ -44,6 +45,7 @@ from pathlib import Path
 import pytest
 
 from pipeline_graph import config as C, events as ev
+from pipeline_graph import test_runner as tr
 
 import run as run_mod
 
@@ -1141,3 +1143,587 @@ class TestPauseTriageBlock:
             run_mod._print_pause(data, "pt", color=False)
         text = err.getvalue()
         assert "triage:" not in text
+
+
+# ---------------------------------------------------------------------------
+# TASK-027 batch 1: Rich TTY start wizard + in-process session loop +
+# top-help stdout/no-color threading + BrokenPipe-safe _drive restructuring.
+# ---------------------------------------------------------------------------
+
+class _TtyStdin(io.StringIO):
+    """A ``StringIO`` whose ``isatty()`` is configurable, for simulating a
+    TTY stdin in the wizard / session-loop tests."""
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self._tty = False
+
+    def isatty(self):
+        return self._tty
+
+
+class _FakeGraphSession:
+    """Graph that pauses on the first stream call, then finishes on the
+    second (after ``Command(resume=answer)``). Drives the in-session pause
+    loop: first ``get_state`` returns a pause snapshot, second returns a
+    finished snapshot."""
+
+    def __init__(self, task_id, pause_data):
+        self._task_id = task_id
+        self._pause_data = pause_data
+        self._stream_calls = 0
+
+    def stream(self, payload, cfg, stream_mode=None):
+        assert stream_mode == ["updates"]
+        self._stream_calls += 1
+        if self._stream_calls == 1:
+            ev.emit("step_start", self._task_id, "plan", "starting plan")
+            ev.emit("step_end", self._task_id, "plan", "[ok] plan done [1s]",
+                    outcome="ok")
+            yield ("updates", {"plan": {"journal": ["p"]}})
+        else:
+            ev.emit("step_start", self._task_id, "implement",
+                    "starting implement")
+            ev.emit("step_end", self._task_id, "implement",
+                    "[ok] impl done [1s]", outcome="ok")
+            yield ("updates", {"implement": {"journal": ["i"]}})
+
+    def get_state(self, cfg):
+        if self._stream_calls == 1:
+            return _FakeSnapPause(self._pause_data)
+        return _FakeSnap()
+
+
+class _FakeGraphKbdInt:
+    """Graph whose ``stream`` raises ``KeyboardInterrupt`` — exercises the
+    item-32 no-bare-raise path (returns 130)."""
+    def stream(self, payload, cfg, stream_mode=None):
+        assert stream_mode == ["updates"]
+        raise KeyboardInterrupt
+        yield  # noqa: unreachable — generator marker
+
+    def get_state(self, cfg):
+        return _FakeSnap()
+
+
+def _clear_no_input_env(monkeypatch):
+    """Clear PIPELINE_NO_INPUT and reset _EXTERNAL_NO_INPUT so a test starts
+    from a clean interactive-gate state."""
+    monkeypatch.delenv("PIPELINE_NO_INPUT", raising=False)
+    monkeypatch.setattr(run_mod, "_EXTERNAL_NO_INPUT", None)
+
+
+# --- TestStartWizard --------------------------------------------------------
+
+class TestStartWizard:
+    def test_wizard_fills_missing_fields(self, monkeypatch):
+        _clear_no_input_env(monkeypatch)
+        ns = argparse.Namespace(task_id=None, request=None, file=None,
+                                effort=None, auto=False, interview=False,
+                                no_color=False)
+        # Prompt order: task_id, request, effort, auto (Confirm), interview.
+        stdin = _TtyStdin("005\nmy request\ntroop-monke\n\n\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        result = run_mod._run_start_wizard(ns)
+        assert result is ns
+        assert ns.task_id == "005"
+        assert ns.request == "my request"
+        assert ns.effort == "troop-monke"
+
+
+# --- TestWizardSkipsProvidedFlags -------------------------------------------
+
+class TestWizardSkipsProvidedFlags:
+    def test_wizard_skips_provided_effort(self, monkeypatch):
+        _clear_no_input_env(monkeypatch)
+        ns = argparse.Namespace(task_id="005", request="do thing", file=None,
+                                effort="barrel-monke", auto=False,
+                                interview=False, no_color=False)
+        # stdin has only the auto + interview answers (effort is skipped).
+        stdin = _TtyStdin("\n\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        result = run_mod._run_start_wizard(ns)
+        assert result is ns
+        assert ns.effort == "barrel-monke"  # unchanged — not prompted
+
+    def test_wizard_skips_provided_task_id_and_request(self, monkeypatch):
+        _clear_no_input_env(monkeypatch)
+        ns = argparse.Namespace(task_id="010", request="build it", file=None,
+                                effort=None, auto=True, interview=False,
+                                no_color=False)
+        # task_id, request, auto already set → prompts only for effort +
+        # interview.
+        stdin = _TtyStdin("scout-monke\n\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        result = run_mod._run_start_wizard(ns)
+        assert result is ns
+        assert ns.task_id == "010"
+        assert ns.request == "build it"
+        assert ns.auto is True  # already true — not prompted
+
+
+# --- TestWizardNoInput ------------------------------------------------------
+
+class TestWizardNoInput:
+    def test_start_no_input_does_not_run_wizard(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(run_mod, "build_graph",
+                            lambda *a, **k: _FakeGraphNoState())
+        called = []
+        monkeypatch.setattr(run_mod, "_run_start_wizard",
+                            lambda *a, **k: called.append(1) or
+                            argparse.Namespace())
+        rc, out, err = _main_capturing(["start", "--no-input"])
+        assert rc == 2  # incomplete start, non-interactive → error
+        assert called == []  # wizard NOT called
+
+
+# --- TestWizardPipelineNoInput ----------------------------------------------
+
+class TestWizardPipelineNoInput:
+    def test_pipeline_no_input_env_disables_wizard(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(run_mod, "build_graph",
+                            lambda *a, **k: _FakeGraphNoState())
+        monkeypatch.setenv("PIPELINE_NO_INPUT", "1")
+        called = []
+        monkeypatch.setattr(run_mod, "_run_start_wizard",
+                            lambda *a, **k: called.append(1) or
+                            argparse.Namespace())
+        rc, out, err = _main_capturing(["start"])
+        assert rc == 2  # incomplete, non-interactive
+        assert called == []
+
+
+# --- TestWizardTopLevelNoInput ----------------------------------------------
+
+class TestWizardTopLevelNoInput:
+    def test_top_level_no_input_disables_wizard(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(run_mod, "build_graph",
+                            lambda *a, **k: _FakeGraphNoState())
+        called = []
+        monkeypatch.setattr(run_mod, "_run_start_wizard",
+                            lambda *a, **k: called.append(1) or
+                            argparse.Namespace())
+        rc, out, err = _main_capturing(["--no-input", "start"])
+        assert rc == 2  # incomplete, non-interactive
+        assert called == []
+
+
+# --- TestResumeTopLevelNoInput ----------------------------------------------
+
+class TestResumeTopLevelNoInput:
+    def test_top_level_no_input_resume_requires_answer(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(C, "CHECKPOINT_DB", Path(__file__))
+        # A graph with a pending interrupt so the resume guard checks
+        # for --answer.
+        pause_data = {"stage": "effort", "reason": "choose",
+                      "options": [{"key": "ok", "label": "proceed"}]}
+        class _GraphWithInterrupt:
+            def stream(self, payload, cfg, stream_mode=None):
+                yield from []
+            def get_state(self, cfg):
+                return _FakeSnapPause(pause_data)
+        monkeypatch.setattr(run_mod, "build_graph",
+                            lambda cp: _GraphWithInterrupt())
+        rc, out, err = _main_capturing(["--no-input", "resume", "001"])
+        assert rc == 2
+        assert "--answer is required" in err
+
+
+# --- TestTopHelpNonTty ------------------------------------------------------
+
+class TestTopHelpNonTty:
+    def test_top_help_non_tty_uses_plain_print(self, monkeypatch):
+        # Non-TTY stdout ⇒ _use_color returns False ⇒ plain print() branch.
+        # _main_capturing uses io.StringIO for stdout (not a TTY).
+        ns = argparse.Namespace()
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            run_mod._print_top_help(ns)
+        text = out.getvalue()
+        assert "MonkeForge pipeline CLI — examples:" in text
+        assert "  ./run.py start 005" in text
+        # No rich Panel border characters.
+        assert "╭" not in text and "╰" not in text
+
+
+# --- TestTopHelpRich --------------------------------------------------------
+
+class TestTopHelpRich:
+    def test_top_help_rich_branch_on_tty_stdout(self, monkeypatch):
+        _no_color_env(monkeypatch)
+        ns = argparse.Namespace(no_color=False)
+        # Force _use_color to return True for stdout by patching.
+        monkeypatch.setattr(run_mod, "_use_color",
+                            lambda args, stream=None: True)
+        out = _TtyStdin()
+        out._tty = True
+        with redirect_stdout(out):
+            run_mod._print_top_help(ns)
+        text = out.getvalue()
+        # The examples text is still present (Rich renders it).
+        assert "MonkeForge pipeline CLI — examples:" in text
+        assert "./run.py start 005" in text
+
+
+# --- TestSessionLoop --------------------------------------------------------
+
+class TestSessionLoop:
+    def test_session_loop_resumes_after_inline_answer(
+            self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        _clear_no_input_env(monkeypatch)
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("sl", pause_data)
+        stdin = _TtyStdin("ok\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        args = argparse.Namespace(no_input=False, no_color=False)
+        err = _TtyStringIO()
+        err._tty = False
+        rc = None
+        with redirect_stderr(err):
+            rc = run_mod._drive(graph, "sl", None, args=args)
+        assert rc == 0  # finished after resume
+        text = err.getvalue()
+        # The in-session pause rendered (in_session=True ⇒ pick hint, no
+        # action line).
+        assert "pick an option" in text
+        assert "action:" not in text
+        # The second iteration's dispatch rendered.
+        assert "starting implement" in text
+
+
+# --- TestSessionLoopNoInput -------------------------------------------------
+
+class TestSessionLoopNoInput:
+    def test_no_input_disables_session_loop(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        _clear_no_input_env(monkeypatch)
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("slni", pause_data)
+        args = argparse.Namespace(no_input=True, no_color=False)
+        err = _TtyStringIO()
+        rc = None
+        with redirect_stderr(err):
+            rc = run_mod._drive(graph, "slni", None, args=args)
+        assert rc == 0  # paused → exit 0 (non-interactive)
+        text = err.getvalue()
+        # Non-interactive ⇒ action line present, no pick hint.
+        assert "action:" in text
+        assert "pick an option" not in text
+
+
+# --- TestSessionLoopPipelineNoInput -----------------------------------------
+
+class TestSessionLoopPipelineNoInput:
+    def test_pipeline_no_input_disables_session_loop(
+            self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        monkeypatch.setenv("PIPELINE_NO_INPUT", "1")
+        monkeypatch.setattr(run_mod, "_EXTERNAL_NO_INPUT", "1")
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("slpni", pause_data)
+        args = argparse.Namespace(no_input=False, no_color=False)
+        err = _TtyStringIO()
+        rc = None
+        with redirect_stderr(err):
+            rc = run_mod._drive(graph, "slpni", None, args=args)
+        assert rc == 0  # paused → exit 0
+        text = err.getvalue()
+        assert "action:" in text
+        assert "pick an option" not in text
+
+
+# --- TestSessionLoopInvalidAnswer -------------------------------------------
+
+class TestSessionLoopInvalidAnswer:
+    def test_non_option_answer_still_continues_loop(
+            self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        _clear_no_input_env(monkeypatch)
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("slia", pause_data)
+        # "bogus" is not in the options, but the session loop passes it
+        # through to Command(resume="bogus") — the graph handles validation.
+        stdin = _TtyStdin("bogus\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        args = argparse.Namespace(no_input=False, no_color=False)
+        err = _TtyStringIO()
+        rc = None
+        with redirect_stderr(err):
+            rc = run_mod._drive(graph, "slia", None, args=args)
+        assert rc == 0  # finished — the fake graph finishes on 2nd stream
+        assert "starting implement" in err.getvalue()
+
+
+# --- TestSessionLoopPickerEof -----------------------------------------------
+
+class TestSessionLoopPickerEof:
+    def test_eof_in_picker_returns_130(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        _clear_no_input_env(monkeypatch)
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("sleof", pause_data)
+        # Empty stdin ⇒ readline returns "" ⇒ EOFError (eof_raises=True).
+        stdin = _TtyStdin("")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        args = argparse.Namespace(no_input=False, no_color=False)
+        err = _TtyStringIO()
+        rc = None
+        with redirect_stderr(err):
+            rc = run_mod._drive(graph, "sleof", None, args=args)
+        assert rc == 130  # interrupted
+        assert "interrupted" in err.getvalue()
+
+
+# --- TestSessionLoopNoDoubleRender ------------------------------------------
+
+class TestSessionLoopNoDoubleRender:
+    def test_tty_pick_called_with_render_false(
+            self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        _clear_no_input_env(monkeypatch)
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("slndr", pause_data)
+        calls = []
+        real_tty_pick = run_mod._tty_pick
+
+        def spy(*a, **kw):
+            calls.append(kw)
+            return real_tty_pick(*a, **kw)
+
+        monkeypatch.setattr(run_mod, "_tty_pick", spy)
+        stdin = _TtyStdin("ok\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        args = argparse.Namespace(no_input=False, no_color=False)
+        err = _TtyStringIO()
+        with redirect_stderr(err):
+            run_mod._drive(graph, "slndr", None, args=args)
+        # _tty_pick was called with render=False (no double render).
+        assert calls, "expected _tty_pick to be called"
+        assert calls[0].get("render") is False
+        assert calls[0].get("eof_raises") is True
+
+
+# --- TestPauseActionTty -----------------------------------------------------
+
+class TestPauseActionTty:
+    def test_tty_pause_uses_in_session_no_action_line(
+            self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        _clear_no_input_env(monkeypatch)
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("pat", pause_data)
+        stdin = _TtyStdin("ok\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        args = argparse.Namespace(no_input=False, no_color=False)
+        err = _TtyStringIO()
+        with redirect_stderr(err):
+            run_mod._drive(graph, "pat", None, args=args)
+        text = err.getvalue()
+        # in_session=True ⇒ "pick an option" hint, NO "action:" line.
+        assert "pick an option" in text
+        assert "action: ./run.py resume" not in text
+
+
+# --- TestPauseActionNonTty --------------------------------------------------
+
+class TestPauseActionNonTty:
+    def test_non_tty_pause_uses_action_line(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        _clear_no_input_env(monkeypatch)
+        pause_data = {"stage": "effort level", "reason": "choose effort",
+                      "options": [{"key": "ok", "label": "proceed"}],
+                      "hint": "ok"}
+        graph = _FakeGraphSession("pant", pause_data)
+        # stdin is NOT a TTY (default _TtyStdin._tty=False) — but
+        # _FakeGraphSession pauses on first stream; non-interactive ⇒ 4b.
+        args = argparse.Namespace(no_input=False, no_color=False)
+        err = _TtyStringIO()
+        rc = None
+        with redirect_stderr(err):
+            rc = run_mod._drive(graph, "pant", None, args=args)
+        text = err.getvalue()
+        assert rc == 0
+        # in_session=False ⇒ "action:" line present, no "pick an option".
+        assert "action: ./run.py resume" in text
+        assert "pick an option" not in text
+
+
+# --- TestRichNoColor --------------------------------------------------------
+
+class TestRichNoColor:
+    def test_color_false_uses_plain_branch(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        data = {"stage": "test", "reason": "choose",
+                "options": [{"key": "ok", "label": "proceed"}], "hint": "ok"}
+        err = _TtyStringIO()
+        with redirect_stderr(err):
+            run_mod._print_pause(data, "rnc", color=False)
+        text = err.getvalue()
+        # Plain branch: no rich Panel border characters.
+        assert "╭" not in text and "╰" not in text
+        assert "=== PAUSED:" in text
+        assert "action:" in text
+
+
+# --- TestRichEscaping -------------------------------------------------------
+
+class TestRichEscaping:
+    def test_rich_branch_escapes_markup_characters(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        # A field containing rich markup syntax "[bold]" must be rendered
+        # literally (Text wrapping escapes it), not interpreted as bold.
+        data = {"stage": "[bold]not bold[/bold]", "reason": "choose",
+                "options": [{"key": "ok", "label": "proceed"}], "hint": "ok"}
+        err = _TtyStringIO()
+        err._tty = True
+        with redirect_stderr(err):
+            run_mod._print_pause(data, "re", color=True)
+        text = err.getvalue()
+        # The literal "[bold]" text appears (escaped), not interpreted.
+        assert "[bold]" in text
+
+
+# --- TestKeyboardInterrupt --------------------------------------------------
+
+class TestKeyboardInterrupt:
+    def test_kbdint_returns_130_no_bare_raise(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        _no_color_env(monkeypatch)
+        graph = _FakeGraphKbdInt()
+        args = argparse.Namespace(no_color=False)
+        err = _TtyStringIO()
+        rc = None
+        raised = []
+        try:
+            with redirect_stderr(err):
+                rc = run_mod._drive(graph, "ki", None, args=args)
+        except KeyboardInterrupt:
+            raised.append("bare-raise")
+        assert rc == 130
+        assert not raised, "KeyboardInterrupt must NOT re-raise (item 32)"
+        assert "interrupted" in err.getvalue()
+        assert "resume" in err.getvalue().lower()
+
+
+# --- TestWizardMissingFile --------------------------------------------------
+
+class TestWizardMissingFile:
+    def test_wizard_missing_file_returns_error_sentinel(self, monkeypatch):
+        _clear_no_input_env(monkeypatch)
+        ns = argparse.Namespace(task_id="005", request=None,
+                                file="/nonexistent/path/file.txt",
+                                effort=None, auto=False, interview=False,
+                                no_color=False)
+        stdin = _TtyStdin("\n")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        result = run_mod._run_start_wizard(ns)
+        assert result is run_mod._WIZARD_ERROR
+
+
+# --- TestStaleWarningStderr -------------------------------------------------
+
+class TestStaleWarningStderr:
+    def test_stale_warning_goes_to_stderr(self, monkeypatch, tmp_path):
+        _setup_env(monkeypatch, tmp_path)
+        # Create stale task files so _warn_stale_task_files has something to
+        # report.
+        tasks_dir = tmp_path / "tasks"
+        tasks_dir.mkdir(parents=True, exist_ok=True)
+        (tasks_dir / "TASK-stale-brief.md").write_text("stale")
+        monkeypatch.setattr(C, "TASKS", tasks_dir)
+        monkeypatch.setattr(C, "REPO", tmp_path)
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            run_mod._warn_stale_task_files("stale")
+        assert "already has files" in err.getvalue()
+        assert "already has files" not in out.getvalue()
+
+
+# --- TestWizardAbort --------------------------------------------------------
+
+class TestWizardAbort:
+    def test_wizard_eof_returns_none(self, monkeypatch):
+        _clear_no_input_env(monkeypatch)
+        ns = argparse.Namespace(task_id=None, request=None, file=None,
+                                effort=None, auto=False, interview=False,
+                                no_color=False)
+        # Empty stdin ⇒ Prompt.ask raises EOFError ⇒ wizard returns None.
+        stdin = _TtyStdin("")
+        stdin._tty = True
+        monkeypatch.setattr(sys, "stdin", stdin)
+        result = run_mod._run_start_wizard(ns)
+        assert result is None
+
+
+# --- TestTopLevelNoInputSuiteResolution -------------------------------------
+
+class TestTopLevelNoInputSuiteResolution:
+    def test_top_level_no_input_sets_env_and_resolves(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(run_mod, "build_graph",
+                            lambda *a, **k: _FakeGraphNoState())
+        called = []
+        monkeypatch.setattr(tr, "resolve_test_suites",
+                            lambda *a, **k: called.append((a, k)))
+        _main_capturing(["--no-input", "start", "005", "do thing"])
+        assert os.environ.get("PIPELINE_NO_INPUT") == "1"
+        assert len(called) == 1
+        assert called[0][1].get("task_id") == "005"
+
+
+# --- TestExternalPipelineNoInputSuiteResolution -----------------------------
+
+class TestExternalPipelineNoInputSuiteResolution:
+    def test_external_pipeline_no_input_survives_bridge(self, monkeypatch):
+        _mock_side_effects(monkeypatch, mock_drive=True)
+        monkeypatch.setattr(run_mod, "build_graph",
+                            lambda *a, **k: _FakeGraphNoState())
+        called = []
+        monkeypatch.setattr(tr, "resolve_test_suites",
+                            lambda *a, **k: called.append((a, k)))
+        # Simulate an external caller that set PIPELINE_NO_INPUT before
+        # exec'ing run.py.
+        monkeypatch.setenv("PIPELINE_NO_INPUT", "1")
+        _main_capturing(["start", "005", "do thing"])
+        # The bridge must NOT pop the externally-set value.
+        assert os.environ.get("PIPELINE_NO_INPUT") == "1"
+        assert len(called) == 1

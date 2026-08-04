@@ -94,10 +94,39 @@ elif _env_file.exists():
             os.environ.setdefault(_k.strip(), _v.strip())
 
 from langgraph.types import Command
+from rich.console import Console
+from rich.markup import escape as _rich_escape
+from rich.panel import Panel
+from rich.prompt import Confirm, Prompt
+from rich.table import Table
+from rich.text import Text
 
 from pipeline_graph import config as C, events as ev
 from pipeline_graph.graph import build_graph, open_checkpointer
 from pipeline_graph import test_runner as tr
+
+
+# --- Rich TTY rendering (TASK-027) ------------------------------------------
+# ``_rich_console`` builds a ``rich.console.Console`` whose ``stderr`` flag is
+# always a real bool — never a stream object passed to the ``stderr=`` kwarg
+# (which would raise ``TypeError: 'StringIO' is not a valid boolean``). When
+# ``stream`` is None the console writes to stderr (``stderr=True``); when a
+# stream is given it writes to that stream (``stderr=False``, ``file=stream``).
+# Colour is gated by ``_use_color(args, stream=...)`` so ``--no-color`` /
+# ``NO_COLOR`` / ``TERM=dumb`` / non-TTY all suppress ANSI in Rich output too.
+def _rich_console(args, *, stream=None) -> Console:
+    """Build a colour-gated ``rich.console.Console``.
+
+    ``stream=None``  → ``Console(stderr=True, …)``  (writes to stderr).
+    ``stream=<f>``   → ``Console(file=f, stderr=False, …)``.
+    """
+    target = stream if stream is not None else sys.stderr
+    color = _use_color(args, stream=target)
+    if stream is None:
+        return Console(stderr=True, no_color=not color, highlight=False,
+                       soft_wrap=True)
+    return Console(file=stream, stderr=False, no_color=not color,
+                   highlight=False, soft_wrap=True)
 
 
 # --- Council-log role mapping ----------------------------------------------
@@ -338,7 +367,8 @@ def _options_from_data(data: dict) -> list[dict]:
     return []
 
 
-def _print_pause(data: dict, task_id: str, *, color: bool = False) -> None:
+def _print_pause(data: dict, task_id: str, *, color: bool = False,
+                 in_session: bool = False) -> None:
     """Print a pause as instructions instead of an opaque JSON blob.
 
     Renders from a single ``options``-shaped list — the structured escalation
@@ -348,11 +378,27 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False) -> None:
     printed last, after the choices, so a human scanning upward sees the
     action they must take immediately above the prompt.
 
+    TASK-027 items 25-27:
+      * ``in_session=True`` (the in-process pause loop) omits the
+        ``action: ./run.py resume …`` line and instead prints an in-session
+        pick hint — the human answers inline, not via a separate ``resume``
+        invocation.
+      * When ``color`` is on, the pause is rendered via a rich ``Panel`` /
+        ``Table`` with every human-facing field wrapped in ``Text(...)`` (or
+        passed through ``rich.markup.escape``) so markup characters in the
+        fields are escaped (no accidental rich markup interpretation).
+      * When ``color`` is off, the existing line-by-line ``sys.stderr.write``
+        calls run unchanged (item 28) — byte-identical to the pre-TASK-027
+        behaviour, so the existing colour-off pause tests stay green.
+
     All output goes to ``sys.stderr`` (C1/C9). Every human-facing field is run
     through ``_sanitize_text`` (D10/Delta A) so colour-off / non-TTY captures
     stay ESC-free and ``\\r``-free: ``stage``, ``reason``, ``context``,
     ``plan``, ``final``, batch lines, option ``key``/``label``.
     """
+    if color:
+        _print_pause_rich(data, task_id, in_session=in_session)
+        return
     tty = sys.stderr.isatty()
     stage = _sanitize_text(str(data.get("stage", "")), color=color, tty=tty)
     sys.stderr.write(f"\n{_c('=== PAUSED:', 'bold', color=color)} "
@@ -421,9 +467,74 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False) -> None:
                       if opt.get("key") == hint else "")
             sys.stderr.write(
                 f"    {_c(key, 'cyan', color=color)}{marker} — {label}\n")
-    sys.stderr.write(
-        f"  {_c('action:', 'dim', color=color)} "
-        f"./run.py resume {task_id} --answer \"<choice>\"\n")
+    if in_session:
+        sys.stderr.write(
+            f"  {_c('pick an option above (or type a key) and press Enter:', 'dim', color=color)}\n")
+    else:
+        sys.stderr.write(
+            f"  {_c('action:', 'dim', color=color)} "
+            f"./run.py resume {task_id} --answer \"<choice>\"\n")
+
+
+def _print_pause_rich(data: dict, task_id: str, *, in_session: bool = False) -> None:
+    """Rich-rendered pause (TASK-027 item 27). Every human-facing field is
+    wrapped in ``Text(...)`` (or passed through ``rich.markup.escape``) before
+    being placed into a ``Panel``/``Table`` so markup characters in the fields
+    are escaped. Output goes to stderr via a stderr-backed console (C1)."""
+    console = Console(stderr=True, no_color=False)
+    stage = Text(str(data.get("stage", "")))
+    reason = Text(_pause_reason(data))
+    title = Text("=== PAUSED: ") + stage + Text(" ===")
+    body_lines: list[Text] = []
+    body_lines.append(Text("what to do: ") + reason)
+    if data.get("context"):
+        body_lines.append(Text("context: ") + Text(str(data["context"])))
+    if data.get("plan"):
+        body_lines.append(Text("plan: ") + Text(str(data["plan"])))
+    if data.get("final"):
+        body_lines.append(Text("final: ") + Text(str(data["final"])))
+    batches = data.get("batches")
+    if isinstance(batches, list) and batches:
+        body_lines.append(Text("batches:"))
+        for b in batches:
+            body_lines.append(Text("    - ") + Text(str(b)))
+    triage = data.get("triage")
+    if isinstance(triage, dict):
+        body_lines.append(Text("triage:"))
+        body_lines.append(Text("    mode: ") + Text(str(triage.get("mode", ""))))
+        bc = triage.get("blocker_counts")
+        if isinstance(bc, list) and bc:
+            trend = Text(" → ".join(str(n) for n in bc))
+        else:
+            trend = Text("no active rounds")
+        body_lines.append(Text("    blockers: ") + trend)
+        repeated = triage.get("repeated") or []
+        new = triage.get("new") or []
+        body_lines.append(Text(f"    repeated/new: {len(repeated)} / {len(new)}"))
+        recommended = str(triage.get("recommended", "") or "").strip()
+        rationale = str(triage.get("rationale", "") or "").strip()
+        if recommended or rationale:
+            parts = []
+            if recommended:
+                parts.append(f"recommended: {recommended}")
+            if rationale:
+                parts.append(rationale)
+            body_lines.append(Text("    ") + Text(" · ".join(parts)))
+    options = _options_from_data(data)
+    if options:
+        body_lines.append(Text("choices:"))
+        hint = data.get("hint")
+        for opt in options:
+            key = Text(str(opt.get("key", "")))
+            label = Text(str(opt.get("label", "")))
+            marker = Text("  (recommended)") if opt.get("key") == hint else Text("")
+            body_lines.append(Text("    ") + key + marker + Text(" — ") + label)
+    if in_session:
+        body_lines.append(Text("pick an option above (or type a key) and press Enter:"))
+    else:
+        body_lines.append(Text(f"action: ./run.py resume {task_id} --answer \"<choice>\""))
+    panel = Panel(Text("\n").join(body_lines), title=title, border_style="cyan")
+    console.print(panel)
 
 
 def _pending_options(snap) -> list[dict] | None:
@@ -493,11 +604,26 @@ def _validate_answer(answer, options, *, free_text_allowed=False,
             f"(stop, no, abort, cancel)")
 
 
-def _tty_pick(options: list[dict], data: dict, *, color: bool = False) -> str:
+def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
+              eof_raises: bool = False, render: bool = True) -> str:
     """Interactive picker: list the pending options and read a choice from stdin.
 
     Returns the chosen option's canonical key. Falls back to the hint (or
     ``"ok"``) on an empty line so a bare Enter takes the recommended path.
+
+    TASK-027 items 38-41:
+      * ``eof_raises=True`` — when the raw ``sys.stdin.readline()`` returns
+        ``""`` (EOF), raise ``EOFError`` BEFORE ``.strip()`` is applied, so the
+        in-session pause loop can distinguish "human hit Ctrl-D" from "human
+        pressed Enter on an empty line" (the latter is a valid "take the
+        hint" answer). The existing ``except EOFError: line = ""`` fallbacks
+        are conditioned on ``not eof_raises`` so they stay behaviour-identical
+        for the ``resume`` call site.
+      * ``render=False`` — skip every ``sys.stderr.write`` call (heading,
+        reason, choices, prompt). Used by the in-session pause loop, which
+        renders the pause chrome via ``_print_pause(..., in_session=True)``
+        first and then calls ``_tty_pick(..., render=False, eof_raises=True)``
+        to read ONLY the answer line — no double render (item 41 / S5).
 
     The prompt is written to ``sys.stderr`` (C9 — not via ``input()`` to
     stdout) and stdin is read via ``sys.stdin.readline()`` so the prompt and
@@ -510,40 +636,60 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False) -> str:
     from pipeline_graph.nodes.common import _canonical_key
 
     tty = sys.stderr.isatty()
-    stage = _sanitize_text(str(data.get("stage", "?")), color=color, tty=tty)
-    reason = _sanitize_text(str(data.get("reason", "")).strip(),
-                            color=color, tty=tty)
     hint = str(data.get("hint", "")).strip()
-    sys.stderr.write(f"\n{_c('=== PAUSED:', 'bold', color=color)} "
-                     f"{_c(stage, 'cyan', color=color)} "
-                     f"{_c('===', 'bold', color=color)}\n")
-    if reason:
-        sys.stderr.write(f"  {reason}\n")
+    if render:
+        stage = _sanitize_text(str(data.get("stage", "?")), color=color, tty=tty)
+        reason = _sanitize_text(str(data.get("reason", "")).strip(),
+                                color=color, tty=tty)
+        sys.stderr.write(f"\n{_c('=== PAUSED:', 'bold', color=color)} "
+                         f"{_c(stage, 'cyan', color=color)} "
+                         f"{_c('===', 'bold', color=color)}\n")
+        if reason:
+            sys.stderr.write(f"  {reason}\n")
+        if not options:
+            # Free-text pause (plan approval): read a raw line.
+            sys.stderr.write(
+                f"  {_c('type your answer and press Enter (empty = approve):', 'dim', color=color)}\n")
+        else:
+            sys.stderr.write(f"  {_c('choices:', 'dim', color=color)}\n")
+            for i, opt in enumerate(options, 1):
+                key = _sanitize_text(opt.get("key", "?"), color=color, tty=tty)
+                label = _sanitize_text(opt.get("label", ""), color=color, tty=tty)
+                marker = (_c("  (recommended)", "dim", color=color)
+                          if opt.get("key") == hint else "")
+                sys.stderr.write(
+                    f"    {_c(f'[{i}]', 'dim', color=color)} "
+                    f"{_c(key, 'cyan', color=color)}{marker} — {label}\n")
+            sys.stderr.write(
+                f"  {_c(f'pick [1-{len(options)}] or type a key:', 'dim', color=color)} ")
     if not options:
-        # Free-text pause (plan approval): read a raw line.
-        sys.stderr.write(
-            f"  {_c('type your answer and press Enter (empty = approve):', 'dim', color=color)}\n")
-        sys.stderr.write("> ")
+        if render:
+            sys.stderr.write("> ")
+        # Item 39: capture the raw readline result; raise EOFError BEFORE
+        # .strip() when eof_raises and the raw result is "" (Ctrl-D). Item 40:
+        # the legacy ``except EOFError: line = ""`` fallback runs only when
+        # ``not eof_raises`` so the resume call site stays behaviour-identical.
+        if eof_raises:
+            raw = sys.stdin.readline()
+            if raw == "":
+                raise EOFError
+            line = raw.strip()
+        else:
+            try:
+                line = sys.stdin.readline().strip()
+            except EOFError:
+                line = ""
+        return line or "ok"
+    if eof_raises:
+        raw = sys.stdin.readline()
+        if raw == "":
+            raise EOFError
+        line = raw.strip()
+    else:
         try:
             line = sys.stdin.readline().strip()
         except EOFError:
             line = ""
-        return line or "ok"
-    sys.stderr.write(f"  {_c('choices:', 'dim', color=color)}\n")
-    for i, opt in enumerate(options, 1):
-        key = _sanitize_text(opt.get("key", "?"), color=color, tty=tty)
-        label = _sanitize_text(opt.get("label", ""), color=color, tty=tty)
-        marker = (_c("  (recommended)", "dim", color=color)
-                  if opt.get("key") == hint else "")
-        sys.stderr.write(
-            f"    {_c(f'[{i}]', 'dim', color=color)} "
-            f"{_c(key, 'cyan', color=color)}{marker} — {label}\n")
-    sys.stderr.write(
-        f"  {_c(f'pick [1-{len(options)}] or type a key:', 'dim', color=color)} ")
-    try:
-        line = sys.stdin.readline().strip()
-    except EOFError:
-        line = ""
     if not line:
         return _canonical_key(hint) if hint else "ok"
     if line.isdigit() and 1 <= int(line) <= len(options):
@@ -824,7 +970,6 @@ def _drive(graph, task_id, payload, args=None) -> int:
     (``status --json``, help, ``--version``, ``metrics``) stays on stdout (C2).
     """
     cfg = _thread(task_id)
-    seen_updates = False
     color = _use_color(args, stream=sys.stderr)
     try:
         tty = sys.stderr.isatty()
@@ -846,32 +991,174 @@ def _drive(graph, task_id, payload, args=None) -> int:
     ui_thread = _start_ui_thread(task_id, stop_event)
     ev.set_step_hook(_step_event_hook)
     try:
-        # stream_mode is updates-only — the "debug" mode that printed bare
-        # ``[<node>] ...`` lines (and a ``[?]`` placeholder when a debug chunk
-        # lacked a name) is gone. Dispatch/return are rendered synchronously by
-        # the step-event hook as events are emitted, NOT after the chunk yields.
-        for mode, chunk in graph.stream(payload, cfg, stream_mode=["updates"]):
-            if mode == "updates":
-                for node, delta in chunk.items():
-                    if node == "__interrupt__":
-                        continue
-                    seen_updates = True
+        # TASK-027 items 29-37: the stream+pause dispatch is a ``while True``
+        # loop nested inside this outer try. Per Amendment A, the
+        # ``except BrokenPipeError`` is scoped around ONLY the inner
+        # ``for mode, chunk in graph.stream(...)`` loop (step 1), so steps
+        # (2)-(4) always run in the same iteration whether or not the pipe
+        # closed — guaranteeing every branch reaches an explicit
+        # ``return <int>`` (C14/item 31). The outer ``except
+        # KeyboardInterrupt`` (item 32: no bare raise — emits run_stalled,
+        # writes the Ctrl+C/resume hint, returns 130) and ``except Exception``
+        # (the crash path, returns 2) wrap the entire while loop; the
+        # ``finally`` cleans up the UI thread.
+        while True:
+            seen_updates_iter = False
+            # Step (1): the stream. BrokenPipeError is scoped HERE ONLY.
+            try:
+                # stream_mode is updates-only — the "debug" mode that printed
+                # bare ``[<node>] ...`` lines (and a ``[?]`` placeholder when a
+                # debug chunk lacked a name) is gone. Dispatch/return are
+                # rendered synchronously by the step-event hook as events are
+                # emitted, NOT after the chunk yields.
+                for mode, chunk in graph.stream(payload, cfg,
+                                                stream_mode=["updates"]):
+                    if mode == "updates":
+                        for node, delta in chunk.items():
+                            if node == "__interrupt__":
+                                continue
+                            seen_updates_iter = True
+            except BrokenPipeError:
+                # stderr pipe closed (parent terminal died during a background
+                # run). Redirect BOTH stdout and stderr to /dev/null so
+                # remaining prints (and any traceback on stderr) don't re-raise,
+                # then fall through to steps (2)-(4) in THIS iteration — the
+                # pipeline state is still valid (Amendment A).
+                try:
+                    sys.stdout = open(os.devnull, "w")
+                except OSError:
+                    pass
+                try:
+                    sys.stderr = open(os.devnull, "w")
+                except OSError:
+                    pass
+            # Step (2): final event drain + disable UI rendering.
+            with _progress_lock:
+                _drain_events(task_id)
+            ui_state["disabled"] = True
+            # Step (3): snapshot + the "resuming" hint.
+            snap = graph.get_state(cfg)
+            if not seen_updates_iter and payload is None and snap.next:
+                sys.stderr.write(
+                    f"  (resuming — next node: {snap.next[0]})\n")
+            # Step (4): branch on the snapshot state.
+            if snap.interrupts:
+                data = snap.interrupts[0].value
+                with _progress_lock:
+                    _finish_progress(color=color, tty=tty)
+                # Carry the answer menu (and, for a visual escalation, where
+                # the screenshots are) in the event so the optional Discord bot
+                # can build one button per valid answer without querying the
+                # graph internals. Item 33: run_paused is emitted exactly once
+                # per observed interrupt, here in the shared code BEFORE the
+                # 4a/4b branch split.
+                reason = _pause_reason(data)
+                answers = _pause_answers(data)
+                options = data.get("options") or []
+                router_error = bool(data.get("router_error", False))
+                blockers = ""
+                if "debate" in reason.lower():
+                    blockers = _extract_debate_blockers(task_id)
+                ev.emit("run_paused", task_id, str(data.get("stage", "?")),
+                        reason,
+                        answers=answers if isinstance(answers, dict) else None,
+                        options=options or None,
+                        router_error=router_error,
+                        hint=data.get("hint", ""),
+                        context=data.get("context", ""), blockers=blockers,
+                        plan=data.get("plan", ""),
+                        final=data.get("final", ""),
+                        batches=data.get("batches") or [],
+                        screens=str(C.SCREENS / f"task-{task_id}")
+                                if "screenshot" in reason.lower()
+                                or "visual" in reason.lower() else "",
+                        # TASK-022 item 20 (C8): pass triage ONLY via a
+                        # conditional spread keyed on isinstance(triage, dict).
+                        **({"triage": data["triage"]}
+                           if isinstance(data.get("triage"), dict) else {}))
+                if args is not None and _interactive_gate(args):
+                    # Step (4a): interactive in-session pause loop.
+                    # Item 34: stop the UI thread under the lock, then a
+                    # separate acquire/release barrier so the UI thread
+                    # (which checks stop_event at the TOP of its loop before
+                    # re-acquiring the lock) has exited its iteration before
+                    # we render pause chrome.
+                    with _progress_lock:
+                        stop_event.set()
+                        ui_state["disabled"] = True
+                        _finish_progress(color=color, tty=tty)
+                    with _progress_lock:
+                        pass  # barrier
+                    try:
+                        ui_thread.join(timeout=1.0)
+                    except Exception:
+                        pass
+                    # Item 35: _print_pause(in_session=True) BEFORE
+                    # _tty_pick(render=False, eof_raises=True) — no double
+                    # render (S5/item 41).
+                    _print_pause(data, task_id, color=color, in_session=True)
+                    _opts = _options_from_data(data)
+                    try:
+                        answer = _tty_pick(_opts, data, color=color,
+                                           render=False, eof_raises=True)
+                    except (EOFError, KeyboardInterrupt):
+                        # Human bailed (Ctrl-D / Ctrl-C) at the in-session
+                        # picker. The task is at a clean pause point — mark
+                        # it idle so status doesn't call it dead, and return
+                        # 130 (interrupted, not a crash). The run_paused
+                        # event was already emitted above (item 33).
+                        _mark_idle(task_id, "paused")
+                        sys.stderr.write(
+                            "\ninterrupted — the run is paused; resume with "
+                            f"./run.py resume {task_id}\n")
+                        return 130
+                    # Item 36: on a valid in-session answer, create a new
+                    # stop_event + new ui_thread, re-enable UI rendering, set
+                    # payload = Command(resume=answer), and continue the loop.
+                    stop_event = threading.Event()
+                    ui_thread = _start_ui_thread(task_id, stop_event)
+                    ui_state["disabled"] = False
+                    payload = Command(resume=answer)
+                    continue
+                else:
+                    # Step (4b): non-interactive. Item 37: _mark_idle +
+                    # _print_pause(in_session=False) + return 0, with NO
+                    # second run_paused emit (it was emitted above, item 33).
+                    _mark_idle(task_id, "paused")
+                    _print_pause(data, task_id, color=color, in_session=False)
+                    return 0
+            elif snap.next:
+                # Neither finished nor waiting for anyone: this is a stall.
+                with _progress_lock:
+                    _finish_progress(color=color, tty=tty)
+                    sys.stderr.write(f"\nstopped at: {snap.next}\n")
+                ev.emit("run_stalled", task_id, str(snap.next[0]),
+                        f"run stopped at {snap.next} without finishing or "
+                        f"asking anything")
+                _mark_idle(task_id, "stalled")
+                return 1
+            else:
+                with _progress_lock:
+                    _finish_progress(color=color, tty=tty)
+                    sys.stderr.write("\n=== FINISHED ===\n")
+                _mark_idle(task_id, "finished")
+                return 0
     except KeyboardInterrupt:
-        ev.emit("run_stalled", task_id, "driver", "interrupted from the keyboard")
-        raise
-    except BrokenPipeError:
-        # stderr pipe closed (parent terminal died during a background run).
-        # Redirect BOTH stdout and stderr to /dev/null so remaining prints (and
-        # any traceback on stderr) don't re-raise, then continue to the
-        # post-stream logic — the pipeline state is still valid.
+        # Item 32: no bare raise. Emit run_stalled, write the Ctrl+C/resume
+        # hint to stderr, return 130. The finally block cleans up the UI
+        # thread before this return takes effect.
         try:
-            sys.stdout = open(os.devnull, "w")
-        except OSError:
+            ev.emit("run_stalled", task_id, "driver",
+                    "interrupted from the keyboard")
+        except Exception:
             pass
         try:
-            sys.stderr = open(os.devnull, "w")
-        except OSError:
+            sys.stderr.write(
+                "\ninterrupted (Ctrl+C) — the run is paused; resume with "
+                f"./run.py resume {task_id}\n")
+        except (BrokenPipeError, OSError, ValueError):
             pass
+        return 130
     except Exception as exc:
         # Something outside any node — the checkpointer, the stream itself.
         # instrument() cannot see this, so it is caught and announced here.
@@ -882,7 +1169,7 @@ def _drive(graph, task_id, payload, args=None) -> int:
         # closed/invalid stderr can raise ValueError as well as pipe errors —
         # catch all three, skip the print, still return 2 / still attempt the
         # emit in its own try. The reporter must never raise and must never let
-        # Python print a traceback. KeyboardInterrupt still re-raises (above).
+        # Python print a traceback.
         stop_event.set()
         try:
             ui_thread.join(timeout=1.0)
@@ -915,73 +1202,6 @@ def _drive(graph, task_id, payload, args=None) -> int:
         except Exception:
             pass
 
-    # Final event drain on the main thread under the lock: any trailing
-    # step_end (the last node's return) lands here. The crash path returned
-    # early above; KeyboardInterrupt re-raised; BrokenPipe fell through to a
-    # /dev/null stderr. D11: a late UI iteration cannot race this because
-    # ``stop_event`` is set and the thread is joined. ``disabled`` is set
-    # AFTER the drain so the trailing step_end is actually rendered (the
-    # emit helpers early-return on ``disabled``).
-    with _progress_lock:
-        _drain_events(task_id)
-    ui_state["disabled"] = True
-
-    snap = graph.get_state(cfg)
-    if not seen_updates and payload is None and snap.next:
-        sys.stderr.write(f"  (resuming — next node: {snap.next[0]})\n")
-    if snap.interrupts:
-        data = snap.interrupts[0].value
-        with _progress_lock:
-            _finish_progress(color=color, tty=tty)
-        _print_pause(data, task_id, color=color)
-        # Carry the answer menu (and, for a visual escalation, where the
-        # screenshots are) in the event so the optional Discord bot can build
-        # one button per valid answer without querying the graph internals.
-        reason = _pause_reason(data)
-        answers = _pause_answers(data)
-        options = data.get("options") or []
-        router_error = bool(data.get("router_error", False))
-        blockers = ""
-        if "debate" in reason.lower():
-            blockers = _extract_debate_blockers(task_id)
-        ev.emit("run_paused", task_id, str(data.get("stage", "?")), reason,
-                answers=answers if isinstance(answers, dict) else None,
-                options=options or None,
-                router_error=router_error,
-                hint=data.get("hint", ""),
-                context=data.get("context", ""), blockers=blockers,
-                plan=data.get("plan", ""),
-                final=data.get("final", ""),
-                batches=data.get("batches") or [],
-                screens=str(C.SCREENS / f"task-{task_id}")
-                        if "screenshot" in reason.lower()
-                        or "visual" in reason.lower() else "",
-                # TASK-022 item 20 (C8): pass triage ONLY via a conditional
-                # spread keyed on isinstance(data.get("triage"), dict). The
-                # key is fully absent (not null) when there is no triage, so
-                # legacy run_paused records stay byte-identical (no
-                # "triage": null on a plain pause).
-                **({"triage": data["triage"]}
-                   if isinstance(data.get("triage"), dict) else {}))
-        _mark_idle(task_id, "paused")
-        return 0
-    elif snap.next:
-        # Neither finished nor waiting for anyone: this is a stall, and it used
-        # to be reported with the same quiet one-liner as a clean pause.
-        with _progress_lock:
-            _finish_progress(color=color, tty=tty)
-            sys.stderr.write(f"\nstopped at: {snap.next}\n")
-        ev.emit("run_stalled", task_id, str(snap.next[0]),
-                f"run stopped at {snap.next} without finishing or asking anything")
-        _mark_idle(task_id, "stalled")
-        return 1
-    else:
-        with _progress_lock:
-            _finish_progress(color=color, tty=tty)
-            sys.stderr.write("\n=== FINISHED ===\n")
-        _mark_idle(task_id, "finished")
-        return 0
-
 
 def _warn_stale_task_files(task_id: str) -> None:
     """Say so when a task id is being reused over leftovers from a previous run.
@@ -995,15 +1215,18 @@ def _warn_stale_task_files(task_id: str) -> None:
                  if p.exists()]
     if not leftovers:
         return
-    print(f"  note: task id {task_id} already has files from an earlier run:")
+    # TASK-027 item 42: route to stderr so a captured stdout stream stays clean.
+    print(f"  note: task id {task_id} already has files from an earlier run:",
+          file=sys.stderr)
     for p in leftovers:
         try:
             label = p.relative_to(C.REPO)
         except ValueError:
             label = p
-        print(f"    {label}")
+        print(f"    {label}", file=sys.stderr)
     print("    the interview appends to the intake file and will not accept the "
-          "old brief as its own; delete them first for a clean start.")
+          "old brief as its own; delete them first for a clean start.",
+          file=sys.stderr)
 
 
 def _doctor(graph, task_id: str) -> None:
@@ -1408,32 +1631,199 @@ _no_color_parent.add_argument("--no-color", dest="no_color", action="store_true"
                                    "NO_COLOR is set or stdout is not a TTY)")
 
 
-def _print_top_help() -> None:
-    """Print the concise, examples-first top-level help (no-args + ``help``)."""
-    print("MonkeForge pipeline CLI — examples:")
-    print()
-    print("  ./run.py start 005 \"rendere pubblicabile la classe Mystic\"")
-    print("  ./run.py start 006 --file docs/tasks/TASK-006-brief.md --auto")
-    print("  ./run.py resume 005                       # resume after crash/suspend")
-    print("  ./run.py resume 005 --answer ok           # answer a pending pause")
-    print("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts")
-    print("  ./run.py status 005                       # current node / batch / pause")
-    print("  ./run.py status 005 --json | jq           # machine-readable status")
-    print("  ./run.py doctor 005                       # failures, degradations, liveness")
-    print("  ./run.py graph                            # print the graph definition")
-    print("  ./run.py metrics 005                      # durations, retries, escalations")
-    print()
-    print("Run `./run.py <command> -h` for per-command options.")
-    print(f"Source & issues: {_SUPPORT_URL}")
+# --- TASK-027: interactive gate, wizard sentinel, start wizard ---------------
+# ``_EXTERNAL_NO_INPUT`` captures ``PIPELINE_NO_INPUT`` as it was when ``main``
+# started (before the env-bridge block mutates ``os.environ``). The env-bridge
+# ``else`` branch (``elif not _EXTERNAL_NO_INPUT``) must NOT pop a value an
+# external caller deliberately set — only one the bridge itself set this run.
+_EXTERNAL_NO_INPUT: str | None = None
+
+# Sentinel returned by ``_run_start_wizard`` on a hard validation failure (e.g.
+# ``--file`` path missing). Distinct from ``None`` (EOF/Ctrl-C abort) so the
+# ``main`` invocation block can branch on ``is None`` vs ``is _WIZARD_ERROR``
+# without the ``... or args`` pattern that silently masks a failed wizard.
+_WIZARD_ERROR = object()
+
+
+def _interactive_gate(args) -> bool:
+    """Return True iff the CLI is allowed to prompt the human interactively.
+
+    Combines four signals (TASK-027):
+      * ``sys.stdin.isatty()`` — no prompting on a non-TTY stdin (piped/closed),
+      * ``getattr(args, "no_input", False)`` — the subcommand's own ``--no-input``
+        (``dest="no_input"``, ``default=False``),
+      * ``getattr(args, "no_input_top", False)`` — the TOP-LEVEL ``--no-input``
+        (``dest="no_input_top"``, ``default=argparse.SUPPRESS`` so absent when
+        not passed),
+      * ``os.environ.get("PIPELINE_NO_INPUT")`` / ``_EXTERNAL_NO_INPUT`` — an
+        external caller (CI, a wrapper pipeline) forcing non-interactive mode.
+
+    Any of the four disabling ⇒ no prompting. ``_EXTERNAL_NO_INPUT`` is read
+    alongside the live env var so a wrapper that set ``PIPELINE_NO_INPUT``
+    before exec'ing ``run.py`` is honoured even before the env-bridge block
+    runs.
+    """
+    try:
+        if not sys.stdin.isatty():
+            return False
+    except (AttributeError, ValueError, OSError):
+        return False
+    if getattr(args, "no_input", False):
+        return False
+    if getattr(args, "no_input_top", False):
+        return False
+    env_ni = os.environ.get("PIPELINE_NO_INPUT")
+    if env_ni is None:
+        env_ni = _EXTERNAL_NO_INPUT
+    if env_ni is not None and env_ni.strip() in ("1", "true", "yes"):
+        return False
+    return True
+
+
+def _run_start_wizard(args):
+    """Interactive start wizard (TASK-027): prompt for the missing start fields.
+
+    Walks ``task_id`` → ``request``/``--file`` → ``effort`` → ``auto`` →
+    ``interview``, prompting ONLY for fields not already present/true on the
+    incoming ``args`` (so ``./run.py start 005 "req" --effort troop-monke``
+    skips every prompt it can). Every ``Prompt.ask`` / ``Confirm.ask`` call
+    passes ``console=_rich_console(args)`` so the prompts honour the colour
+    gate and go to stderr (C1).
+
+    Returns:
+      * the resolved ``Namespace`` on success (mutated in place — the same
+        object passed in, with ``task_id``/``request``/``file``/``effort``/
+        ``auto``/``interview`` filled in),
+      * ``None`` on an EOF/Ctrl-C abort (the human bailed out),
+      * ``_WIZARD_ERROR`` on a hard validation failure (``--file`` path
+        missing) — distinct from ``None`` so ``main`` can branch cleanly.
+
+    Never calls ``_warn_stale_task_files`` — that is ``main``'s job, after the
+    wizard has resolved a real ``task_id``.
+    """
+    console = _rich_console(args)
+    try:
+        # task_id
+        if not getattr(args, "task_id", None):
+            args.task_id = Prompt.ask("[bold]task id[/bold]", console=console,
+                                      default="").strip() or None
+            if not args.task_id:
+                return _WIZARD_ERROR
+        # request / --file
+        if not getattr(args, "request", None) and not getattr(args, "file", None):
+            source = Prompt.ask(
+                "[bold]request source[/bold] — [dim]type the request, or "
+                "[cyan]file:<path>[/cyan] to read from a file[/dim]",
+                console=console, default="")
+            if source.startswith("file:"):
+                args.file = source[len("file:"):].strip()
+            else:
+                args.request = source.strip() or None
+        # If --file was provided (or just set), verify the path exists BEFORE
+        # opening it — a missing path is a hard failure, not an abort.
+        if getattr(args, "file", None):
+            if not Path(args.file).is_file():
+                print(f"--file not found: {args.file}", file=sys.stderr)
+                return _WIZARD_ERROR
+        # effort
+        if not getattr(args, "effort", None):
+            effort = Prompt.ask(
+                "[bold]effort level[/bold] — [dim]scout-monke / troop-monke / "
+                "barrel-monke (empty = let the graph ask at the checkpoint)[/dim]",
+                console=console, default="")
+            effort = effort.strip() or None
+            if effort and effort in ("scout-monke", "troop-monke", "barrel-monke"):
+                args.effort = effort
+            elif effort:
+                print(f"ignoring unknown effort {effort!r}; "
+                      f"the graph will ask at the checkpoint", file=sys.stderr)
+        # auto
+        if not getattr(args, "auto", False):
+            args.auto = Confirm.ask("[bold]--auto[/bold] (skip human checkpoints)?",
+                                    console=console, default=False)
+        # interview
+        if not getattr(args, "interview", False):
+            args.interview = Confirm.ask(
+                "[bold]--interview[/bold] (run the intake interview even under --auto)?",
+                console=console, default=False)
+    except (EOFError, KeyboardInterrupt):
+        return None
+    return args
+
+
+def _print_top_help(args=None) -> None:
+    """Print the concise, examples-first top-level help (no-args + ``help``).
+
+    Amendment B/D (TASK-027): takes an explicit ``args`` namespace so the
+    colour gate ``_use_color(args, stream=sys.stdout)`` reaches the top-level
+    help. The *channel* stays stdout (clig.dev "primary output to stdout" +
+    TASK-027-brief §7 item 7 + the unmodified
+    ``tests/test_cli_ux.py::TestHelpSubcommand::test_help_no_topic_prints_examples``
+    all agree); only the *colour gate* becomes args-aware.
+
+    When colour is off (non-TTY stdout / ``NO_COLOR`` / ``--no-color`` /
+    ``TERM=dumb``) the existing ``print()`` branch runs verbatim, byte-for-byte.
+    When colour is on, the same example strings are wrapped in ``Text(...)`` and
+    rendered via a stdout-backed ``_rich_console`` so markup characters in the
+    examples are escaped (no accidental rich markup interpretation).
+    """
+    if not _use_color(args, stream=sys.stdout):
+        # Plain branch — byte-for-byte the original print() sequence.
+        print("MonkeForge pipeline CLI — examples:")
+        print()
+        print("  ./run.py start 005 \"rendere pubblicabile la classe Mystic\"")
+        print("  ./run.py start 006 --file docs/tasks/TASK-006-brief.md --auto")
+        print("  ./run.py resume 005                       # resume after crash/suspend")
+        print("  ./run.py resume 005 --answer ok           # answer a pending pause")
+        print("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts")
+        print("  ./run.py status 005                       # current node / batch / pause")
+        print("  ./run.py status 005 --json | jq           # machine-readable status")
+        print("  ./run.py doctor 005                       # failures, degradations, liveness")
+        print("  ./run.py graph                            # print the graph definition")
+        print("  ./run.py metrics 005                      # durations, retries, escalations")
+        print()
+        print("Run `./run.py <command> -h` for per-command options.")
+        print(f"Source & issues: {_SUPPORT_URL}")
+        return
+    # Rich branch — stdout-backed console, every example wrapped in Text(...) so
+    # markup characters in the examples are escaped (no accidental rich markup).
+    console = _rich_console(args, stream=sys.stdout)
+    console.print(Text("MonkeForge pipeline CLI — examples:", style="bold"))
+    console.print()
+    console.print(Text("  ./run.py start 005 \"rendere pubblicabile la classe Mystic\""))
+    console.print(Text("  ./run.py start 006 --file docs/tasks/TASK-006-brief.md --auto"))
+    console.print(Text("  ./run.py resume 005                       # resume after crash/suspend"))
+    console.print(Text("  ./run.py resume 005 --answer ok           # answer a pending pause"))
+    console.print(Text("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts"))
+    console.print(Text("  ./run.py status 005                       # current node / batch / pause"))
+    console.print(Text("  ./run.py status 005 --json | jq           # machine-readable status"))
+    console.print(Text("  ./run.py doctor 005                       # failures, degradations, liveness"))
+    console.print(Text("  ./run.py graph                            # print the graph definition"))
+    console.print(Text("  ./run.py metrics 005                      # durations, retries, escalations"))
+    console.print()
+    console.print(Text("Run `./run.py <command> -h` for per-command options.",
+                       style="dim"))
+    console.print(Text(f"Source & issues: {_SUPPORT_URL}", style="dim"))
 
 
 def main(argv=None) -> int:
+    global _EXTERNAL_NO_INPUT
+    _EXTERNAL_NO_INPUT = os.environ.get("PIPELINE_NO_INPUT")
     p = argparse.ArgumentParser(parents=[_no_color_parent])
     p.add_argument("--version", action="version",
                    version=f"monkeforge {_VERSION}")
+    # TOP-LEVEL --no-input (TASK-027 item 12): dest="no_input_top" with
+    # ``default=argparse.SUPPRESS`` so the attribute is ABSENT when the flag is
+    # not passed — ``_interactive_gate`` then treats absence as "prompting
+    # allowed". Separate from each subparser's own --no-input (dest="no_input",
+    # default=False), which remain textually unchanged below.
+    p.add_argument("--no-input", dest="no_input_top", action="store_true",
+                   default=argparse.SUPPRESS,
+                   help="never prompt (top-level; applies to every subcommand)")
     sub = p.add_subparsers(dest="cmd", required=False)
 
-    s = sub.add_parser("start", parents=[_no_color_parent]); s.add_argument("task_id")
+    s = sub.add_parser("start", parents=[_no_color_parent])
+    s.add_argument("task_id", nargs="?", default=None)
     s.add_argument("request", nargs="?", default=None)
     s.add_argument("--file", dest="file", default=None, help="read request from a file")
     s.add_argument("--auto", action="store_true")
@@ -1504,13 +1894,29 @@ def main(argv=None) -> int:
     # No subcommand: print concise, examples-first help.
     # ``required=False`` on the subparsers lets ``./run.py`` with no args
     # reach here instead of argparse erroring out — friendlier entry point.
+    # TASK-027: on a TTY with no --no-input/PIPELINE_NO_INPUT, enter the start
+    # wizard instead of just printing help. Amendment C: the wizard's start
+    # namespace is built by re-parsing an empty ``start`` argv INTO the
+    # already-parsed ``args`` (``sub.choices["start"].parse_args([], namespace=args)``)
+    # so ``no_color`` and ``no_input_top`` (set by the top-level parse) carry
+    # over — a bare ``argparse.Namespace()`` would silently drop them.
     if args.cmd is None:
-        _print_top_help()
-        return 0
+        if _interactive_gate(args):
+            sub.choices["start"].parse_args([], namespace=args)
+            wizard_ns = _run_start_wizard(args)
+            if wizard_ns is None:
+                return 0  # EOF/Ctrl-C — human bailed out of the wizard.
+            if wizard_ns is _WIZARD_ERROR:
+                return 2  # hard validation failure (--file missing, etc.).
+            args = wizard_ns
+            args.cmd = "start"
+        else:
+            _print_top_help(args)
+            return 0
 
     if args.cmd == "help":
         if args.topic is None:
-            _print_top_help()
+            _print_top_help(args)
             return 0
         if args.topic in sub.choices:
             sub.choices[args.topic].print_help()
@@ -1561,7 +1967,7 @@ def main(argv=None) -> int:
                 if _err:
                     print(_err, file=sys.stderr)
                     return 2
-            elif args.no_input or not sys.stdin.isatty():
+            elif not _interactive_gate(args):
                 print("error: --answer is required on a non-TTY (or with --no-input); "
                       "rerun with an answer from the pause menu", file=sys.stderr)
                 return 2
@@ -1608,11 +2014,43 @@ def main(argv=None) -> int:
     # sentinel + existing config from the original start/redo must hold. The
     # PIPELINE_NO_INPUT env bridge is still set on resume so any later
     # resolution (e.g. a fresh run_repo_tests on a cold process) honours it.
+    # TASK-027 item 13: the bridge ORs the subcommand's ``no_input`` with the
+    # top-level ``no_input_top`` so ``./run.py --no-input start 005`` works;
+    # the ``else`` pops only when an EXTERNAL caller did not set
+    # ``PIPELINE_NO_INPUT`` (``_EXTERNAL_NO_INPUT``), so a wrapper's value
+    # survives the bridge.
     if args.cmd in ("start", "resume", "redo"):
-        if getattr(args, "no_input", False):
+        if getattr(args, "no_input", False) or getattr(args, "no_input_top", False):
             os.environ["PIPELINE_NO_INPUT"] = "1"
-        else:
+        elif not _EXTERNAL_NO_INPUT:
             os.environ.pop("PIPELINE_NO_INPUT", None)
+
+    # --- TASK-027: start wizard + incomplete-start non-interactive guard -----
+    # The wizard runs ONLY for an explicit ``start`` subcommand that is missing
+    # task_id/request/file AND the CLI is interactive. It is positioned BEFORE
+    # ``tr.resolve_test_suites`` (item 22) so a wizard-resolved task_id reaches
+    # resolution, and so the incomplete-start error path (item 23) — which
+    # requires a non-interactive CLI — fires before resolution too.
+    if args.cmd == "start":
+        _start_incomplete = (not getattr(args, "task_id", None)
+                             or (not getattr(args, "request", None)
+                                 and not getattr(args, "file", None)))
+        if _start_incomplete and _interactive_gate(args):
+            wizard_ns = _run_start_wizard(args)
+            if wizard_ns is None:
+                return 0  # EOF/Ctrl-C — human bailed out of the wizard.
+            if wizard_ns is _WIZARD_ERROR:
+                return 2  # hard validation failure (--file missing, etc.).
+            # ``_run_start_wizard`` mutates ``args`` in place and returns it,
+            # so ``wizard_ns is args``; no ``... or args`` pattern (item 21).
+            assert wizard_ns is args
+        elif _start_incomplete and not _interactive_gate(args):
+            # Incomplete start on a non-interactive CLI: cannot prompt, cannot
+            # proceed. Item 23: positioned above ``tr.resolve_test_suites``.
+            print("error: provide a request as argument or via --file <path>",
+                  file=sys.stderr)
+            return 2
+
     if args.cmd == "start":
         tr.resolve_test_suites(task_id=args.task_id)
     elif args.cmd == "redo" and args.from_phase != "visual":
