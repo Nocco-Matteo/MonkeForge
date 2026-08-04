@@ -5,8 +5,8 @@ Covers the conformance checklist for FINAL-003 batch 1:
   - TestParseRounds: round/critic grouping, no-headers, duplicated header.
   - TestCondense: verbatim recent rounds, no-op cases, keep_recent==0, marker
     format, two-critic round, reply-only fallback, resolution flag.
-  - TestConfigValidation: non-integer / negative PIPELINE_CONDENSER_KEEP_RECENT
-    and non-integer PIPELINE_TOKEN_BUDGET_<ROLE> fall back gracefully.
+  - TestConfigValidation: non-integer / negative yaml condenser.keep_recent
+    and non-integer condenser.<ROLE> budgets fall back gracefully.
   - TestRunAgentIntegration: real run_agent() with DRY_RUN exercises the
     condenser block — over-budget rewrite + degraded event, no-budget no-op,
     under-budget no-op, missing-file no-op, and the stabilized-file no-rewrite.
@@ -240,56 +240,39 @@ class TestCondense:
 
 
 class TestConfigValidation:
-    def _with_env(self, env: dict[str, str]):
-        """Set env vars; return a context manager that restores + reloads config.
-
-        config.py parses CONDENSER_KEEP_RECENT at import time, so each case
-        reloads the module with the bad value set, asserts, then restores the
-        env and reloads back to the clean default state so no test pollutes the
-        module for the rest of the suite.
-        """
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _cm():
-            saved = {k: os.environ.get(k) for k in env}
-            try:
-                for k, v in env.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
-                importlib.reload(C)
-                yield
-            finally:
-                for k, v in saved.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
-                importlib.reload(C)
-
-        return _cm()
+    """condenser.keep_recent + budgets come from yaml ``condenser:`` only."""
 
     def test_non_integer_keep_recent_falls_back_to_default(self):
-        with self._with_env({"PIPELINE_CONDENSER_KEEP_RECENT": "abc"}):
-            assert C.CONDENSER_KEEP_RECENT == 3
+        assert C._parse_condenser_keep_recent("abc") == 3
 
     def test_negative_keep_recent_clamped_to_zero(self):
-        with self._with_env({"PIPELINE_CONDENSER_KEEP_RECENT": "-1"}):
-            assert C.CONDENSER_KEEP_RECENT == 0
+        assert C._parse_condenser_keep_recent("-1") == 0
+
+    def test_keep_recent_none_uses_default(self):
+        assert C._parse_condenser_keep_recent(None) == 3
 
     def test_non_integer_token_budget_treated_as_unset(self):
-        with self._with_env({"PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER": "abc"}):
-            # token_budget reads env at call time; must return None, not raise.
-            assert C.token_budget("PLAN_REVIEWER") is None
+        assert C._parse_token_budget_value("PLAN_REVIEWER", "abc") is None
 
     def test_blank_token_budget_is_unset(self):
-        assert C.token_budget("PLAN_REVIEWER") is None  # not set in this env
+        # Absent role in the yaml-backed map → None.
+        saved = dict(C._TOKEN_BUDGETS)
+        try:
+            C._TOKEN_BUDGETS.clear()
+            assert C.token_budget("PLAN_REVIEWER") is None
+        finally:
+            C._TOKEN_BUDGETS.clear()
+            C._TOKEN_BUDGETS.update(saved)
 
     def test_valid_token_budget_returns_int(self):
-        with self._with_env({"PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER": "2000"}):
+        saved = dict(C._TOKEN_BUDGETS)
+        try:
+            C._TOKEN_BUDGETS.clear()
+            C._TOKEN_BUDGETS["PLAN_REVIEWER"] = 2000
             assert C.token_budget("PLAN_REVIEWER") == 2000
+        finally:
+            C._TOKEN_BUDGETS.clear()
+            C._TOKEN_BUDGETS.update(saved)
 
 
 # --- run_agent integration --------------------------------------------------
@@ -330,7 +313,7 @@ class TestRunAgentIntegration:
 
     def test_over_budget_rewrites_and_emits_degraded(self, monkeypatch, tmp_path):
         debates = self._setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         # 5 rounds, ~1845 chars each -> ~9235 chars -> ~2308 est-tokens > 2000.
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
@@ -373,7 +356,7 @@ class TestRunAgentIntegration:
         templates.mkdir()
         monkeypatch.setattr(C, "TEMPLATES", templates)
         (templates / "debate_review.md").write_text("<debate>{debate_history}</debate>")
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t3.md").write_text(text)
@@ -392,7 +375,7 @@ class TestRunAgentIntegration:
 
     def test_no_budget_is_noop(self, monkeypatch, tmp_path):
         debates = self._setup_env(monkeypatch, tmp_path)
-        monkeypatch.delenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", raising=False)
+        monkeypatch.setattr(C, "_TOKEN_BUDGETS", {k: v for k, v in C._TOKEN_BUDGETS.items() if k != "PLAN_REVIEWER"})
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t3.md").write_text(text)
 
@@ -404,7 +387,7 @@ class TestRunAgentIntegration:
     def test_under_budget_is_noop(self, monkeypatch, tmp_path):
         debates = self._setup_env(monkeypatch, tmp_path)
         # Budget huge relative to the file -> not over budget -> no rewrite.
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "100000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 100000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         text = "".join("\n\n" + _round(n) for n in range(1, 3))
         (debates / "DEBATE-t3.md").write_text(text)
@@ -416,7 +399,7 @@ class TestRunAgentIntegration:
 
     def test_missing_debate_is_noop(self, monkeypatch, tmp_path):
         debates = self._setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         # No debate file written, no debate_history in conversation.
         assert not (debates / "DEBATE-t3.md").exists()
@@ -428,7 +411,7 @@ class TestRunAgentIntegration:
 
     def test_stabilized_file_no_rewrite_no_event(self, monkeypatch, tmp_path):
         debates = self._setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "1")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 1)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         # Already-fully-condensed file: only marker lines, no `## Round N —`
         # headers left, but still over the tiny budget. condense() cannot

@@ -217,27 +217,15 @@ class TestDebateStuckRoundsConfig(unittest.TestCase):
             self.assertEqual(C.DEBATE_STUCK_ROUNDS, 1)
 
     def test_clamps_to_condenser_keep_recent_when_smaller(self):
-        # Item 7: when CONDENSER_KEEP_RECENT < DEBATE_STUCK_ROUNDS, clamp down.
-        with self._with_env({
-            "PIPELINE_DEBATE_STUCK_ROUNDS": "5",
-            "PIPELINE_CONDENSER_KEEP_RECENT": "3",
-        }):
-            self.assertEqual(C.DEBATE_STUCK_ROUNDS, 3)
+        # Item 7: when keep_recent < stuck, clamp down (yaml keep_recent, not env).
+        self.assertEqual(C._clamp_stuck_to_keep_recent(5, 3), 3)
 
     def test_condenser_keep_recent_0_forces_stuck_to_0(self):
-        # Item 7: CONDENSER_KEEP_RECENT == 0 → DEBATE_STUCK_ROUNDS = 0 override.
-        with self._with_env({
-            "PIPELINE_DEBATE_STUCK_ROUNDS": "2",
-            "PIPELINE_CONDENSER_KEEP_RECENT": "0",
-        }):
-            self.assertEqual(C.DEBATE_STUCK_ROUNDS, 0)
+        # Item 7: keep_recent == 0 → stuck window 0 (guard disabled).
+        self.assertEqual(C._clamp_stuck_to_keep_recent(2, 0), 0)
 
     def test_within_bounds_unchanged(self):
-        with self._with_env({
-            "PIPELINE_DEBATE_STUCK_ROUNDS": "3",
-            "PIPELINE_CONDENSER_KEEP_RECENT": "5",
-        }):
-            self.assertEqual(C.DEBATE_STUCK_ROUNDS, 3)
+        self.assertEqual(C._clamp_stuck_to_keep_recent(3, 5), 3)
 
 
 # --- _check_early_escalation (items 8-12) ------------------------------------

@@ -125,17 +125,24 @@ _DEFAULT_ROLE_CONFIG = {
     },
 }
 
-# Override defaults from monkeforge.yaml (agents: section). The yaml is the
-# ONLY override path for role model/cmd — no env vars, so a stale terminal
-# session can't silently shadow the yaml and rerun a deprecated/expired model.
+# Override defaults from monkeforge.yaml. For agents: and condenser:, the yaml
+# is the only source (no env bridge).
 _yaml_file = MF_ROOT / "monkeforge.yaml"
-ROLE_CONFIG: dict[str, dict[str, str]] = {}
-_yaml_agents: dict[str, dict[str, str]] = {}
+_yaml_root: dict = {}
 if _yaml_file.exists():
     import yaml as _yaml
-    _yaml_agents = (_yaml.safe_load(_yaml_file.read_text()) or {}).get("agents") or {}
+    _loaded = _yaml.safe_load(_yaml_file.read_text()) or {}
+    if isinstance(_loaded, dict):
+        _yaml_root = _loaded
+
+ROLE_CONFIG: dict[str, dict[str, str]] = {}
+_yaml_agents: dict[str, dict[str, str]] = _yaml_root.get("agents") or {}
+if not isinstance(_yaml_agents, dict):
+    _yaml_agents = {}
 for _role, _cfg in _DEFAULT_ROLE_CONFIG.items():
     _over = _yaml_agents.get(_role, {})
+    if not isinstance(_over, dict):
+        _over = {}
     ROLE_CONFIG[_role] = {
         "model": _over.get("model", _cfg["model"]),
         "cmd":   _over.get("cmd",   _cfg["cmd"]),
@@ -233,23 +240,55 @@ def role_cmd_with_stdin(role: str, prompt_file: Path, prompt: str) -> tuple[list
     return role_cmd(role, prompt_file, prompt), None
 
 
+def _parse_token_budget_value(role: str, raw) -> int | None:
+    """Validate one condenser budget. Non-int → None + stderr warning (P4)."""
+    if raw is None:
+        return None
+    if isinstance(raw, bool):
+        print(f"condenser.{role}={raw!r} not an int; treating as unset",
+              file=sys.stderr)
+        return None
+    if isinstance(raw, int):
+        return raw
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        print(f"condenser.{role}={raw!r} not an int; treating as unset",
+              file=sys.stderr)
+        return None
+
+
+def _load_token_budgets(condenser: dict) -> dict[str, int]:
+    """Build role→int map from the yaml ``condenser:`` mapping (sans keep_recent)."""
+    out: dict[str, int] = {}
+    for key, val in condenser.items():
+        if key == "keep_recent":
+            continue
+        role = str(key).upper()
+        parsed = _parse_token_budget_value(role, val)
+        if parsed is not None:
+            out[role] = parsed
+    return out
+
+
+# Per-role budgets from yaml ``condenser:`` (not env). Mutable for tests.
+_yaml_condenser = _yaml_root.get("condenser") or {}
+if not isinstance(_yaml_condenser, dict):
+    _yaml_condenser = {}
+_TOKEN_BUDGETS: dict[str, int] = _load_token_budgets(_yaml_condenser)
+
+
 def token_budget(role: str) -> int | None:
     """Per-role token budget for the debate condenser, or None if unset.
 
-    ``PIPELINE_TOKEN_BUDGET_<ROLE>`` unset/blank -> None (condenser is a no-op
-    for that role, the default backward-compatible state). A non-integer value
-    is treated as unset with a stderr warning rather than raising — a config
-    typo must not kill the whole pipeline process (P4).
+    Read from ``monkeforge.yaml`` ``condenser.<ROLE>`` only (same policy as
+    ``agents:``). Unset → None (condenser no-op for that role).
     """
-    raw = os.environ.get(f"PIPELINE_TOKEN_BUDGET_{role}")
-    if not raw or not raw.strip():
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        print(f"PIPELINE_TOKEN_BUDGET_{role}={raw!r} not an int; treating as unset",
-              file=sys.stderr)
-        return None
+    return _TOKEN_BUDGETS.get(str(role).upper())
+
 
 # No timeout by default: this is the whole point of leaving the Bash-tool ceiling behind.
 AGENT_TIMEOUT = int(os.environ.get("PIPELINE_AGENT_TIMEOUT", "0")) or None
@@ -408,23 +447,35 @@ def effort_choices() -> dict[str, str]:
 MAX_UX_RENDER_CYCLES = int(os.environ.get("PIPELINE_MAX_UX_RENDER_CYCLES", "3"))
 
 # Condenser: how many trailing debate rounds to keep verbatim when a role's
-# token budget is exceeded. Older rounds collapse to one-line markers. Validated
-# parse: a non-integer falls back to the default (3) with a stderr warning, and a
-# negative value clamps to 0 (an unclamped negative inverts `rounds[:-keep_recent]`
-# slice semantics — a silent-corruption class of bug). Read once at import time;
-# tests that need a different value use `monkeypatch.setattr(C, ...)` rather than
-# `setenv` (which would silently leave the import-time default).
-_raw_keep_recent = os.environ.get("PIPELINE_CONDENSER_KEEP_RECENT", "3")
-try:
-    CONDENSER_KEEP_RECENT = int(_raw_keep_recent)
-except ValueError:
-    print(f"PIPELINE_CONDENSER_KEEP_RECENT={_raw_keep_recent!r} not an int; using default 3",
-          file=sys.stderr)
-    CONDENSER_KEEP_RECENT = 3
-if CONDENSER_KEEP_RECENT < 0:
-    print(f"PIPELINE_CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT} negative; clamping to 0",
-          file=sys.stderr)
-    CONDENSER_KEEP_RECENT = 0
+# token budget is exceeded. Older rounds collapse to one-line markers.
+# Source: yaml ``condenser.keep_recent`` only.
+# Non-integer → default 3 + stderr warning; negative → clamp 0 (unclamped
+# negative inverts `rounds[:-keep_recent]` — silent-corruption class).
+def _parse_condenser_keep_recent(raw, *, default: int = 3) -> int:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        print(f"condenser.keep_recent={raw!r} not an int; using default {default}",
+              file=sys.stderr)
+        return default
+    if isinstance(raw, int):
+        val = raw
+    else:
+        try:
+            val = int(str(raw).strip())
+        except ValueError:
+            print(f"condenser.keep_recent={raw!r} not an int; using default {default}",
+                  file=sys.stderr)
+            return default
+    if val < 0:
+        print(f"condenser.keep_recent={val} negative; clamping to 0", file=sys.stderr)
+        return 0
+    return val
+
+
+CONDENSER_KEEP_RECENT = _parse_condenser_keep_recent(
+    _yaml_condenser.get("keep_recent") if isinstance(_yaml_condenser, dict) else None
+)
 
 # Stuck-claim detection (TASK-017 batch 1): how many consecutive trailing rounds
 # to scan for a repeated BLOCKER claim before declaring the debate "stuck" and
@@ -436,6 +487,17 @@ if CONDENSER_KEEP_RECENT < 0:
 # must not exceed the number of rounds the condenser keeps verbatim — when
 # CONDENSER_KEEP_RECENT is 0 (condense-all), DEBATE_STUCK_ROUNDS is forced to 0
 # too (the guard is disabled because there are no verbatim rounds to scan).
+def _clamp_stuck_to_keep_recent(stuck: int, keep_recent: int) -> int:
+    """Clamp stuck-round window to the condenser verbatim window.
+
+    When ``keep_recent`` is 0 (condense-all) this returns 0 — the stuck guard
+    is disabled because there are no verbatim rounds to scan.
+    """
+    if keep_recent < stuck:
+        return keep_recent
+    return stuck
+
+
 _raw_stuck = os.environ.get("PIPELINE_DEBATE_STUCK_ROUNDS", "2")
 try:
     DEBATE_STUCK_ROUNDS = int(_raw_stuck)
@@ -447,14 +509,17 @@ if DEBATE_STUCK_ROUNDS < 1:
     print(f"PIPELINE_DEBATE_STUCK_ROUNDS={DEBATE_STUCK_ROUNDS} below 1; clamping to 1",
           file=sys.stderr)
     DEBATE_STUCK_ROUNDS = 1
-if CONDENSER_KEEP_RECENT < DEBATE_STUCK_ROUNDS:
+_stuck_before_clamp = DEBATE_STUCK_ROUNDS
+DEBATE_STUCK_ROUNDS = _clamp_stuck_to_keep_recent(
+    DEBATE_STUCK_ROUNDS, CONDENSER_KEEP_RECENT
+)
+if DEBATE_STUCK_ROUNDS != _stuck_before_clamp:
     print(
-        f"PIPELINE_DEBATE_STUCK_ROUNDS={DEBATE_STUCK_ROUNDS} exceeds "
+        f"PIPELINE_DEBATE_STUCK_ROUNDS={_stuck_before_clamp} exceeds "
         f"CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT}; clamping to "
-        f"{CONDENSER_KEEP_RECENT}",
+        f"{DEBATE_STUCK_ROUNDS}",
         file=sys.stderr,
     )
-    DEBATE_STUCK_ROUNDS = CONDENSER_KEEP_RECENT
 
 # Thrashing detection (TASK-022): how many consecutive trailing rounds the
 # deterministic thrashing_report scans for a churning trend (blockers not

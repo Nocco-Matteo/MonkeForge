@@ -107,7 +107,7 @@ def _degraded_events():
 class TestArchiveCreationAccumulation:
     def test_first_condensation_writes_verbatim_archive(self, monkeypatch, tmp_path):
         debates, final = _setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t4.md").write_text(text)
@@ -126,7 +126,7 @@ class TestArchiveCreationAccumulation:
 
     def test_second_condensation_appends_with_snapshot_header(self, monkeypatch, tmp_path):
         debates, final = _setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t4.md").write_text(text)
@@ -162,7 +162,7 @@ class TestArchiveCreationAccumulation:
 
     def test_degraded_event_names_archive_path(self, monkeypatch, tmp_path):
         debates, final = _setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t4.md").write_text(text)
@@ -184,7 +184,7 @@ class TestProgressPointer:
         """The PROGRESS pointer is written at archive-creation time, without
         a subsequent _write_progress call."""
         debates, final = _setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t4.md").write_text(text)
@@ -202,7 +202,7 @@ class TestProgressPointer:
 
     def test_pointer_not_duplicated_on_second_condensation(self, monkeypatch, tmp_path):
         debates, final = _setup_env(monkeypatch, tmp_path)
-        monkeypatch.setenv("PIPELINE_TOKEN_BUDGET_PLAN_REVIEWER", "2000")
+        monkeypatch.setitem(C._TOKEN_BUDGETS, "PLAN_REVIEWER", 2000)
         monkeypatch.setattr(C, "CONDENSER_KEEP_RECENT", 2)
         text = "".join("\n\n" + _round(n) for n in range(1, 6))
         (debates / "DEBATE-t4.md").write_text(text)

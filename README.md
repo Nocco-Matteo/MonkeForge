@@ -434,13 +434,20 @@ Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
 | `PIPELINE_RENDER_CMD` | vuoto | comando di render-profile; **vuoto = cancello perf disattivato (opt-in)** |
 | `PIPELINE_RENDER_CWD` | vuoto | working dir del render-profile (opt-in) |
 | `PIPELINE_AGENT_TRANSIENT_RETRIES` | `1` | retry automatici su fallimenti agente transitori |
-| `PIPELINE_CONDENSER_KEEP_RECENT` | `3` | round verbatim nel condenser (negativo → 0, non-intero → default) |
-| `PIPELINE_TOKEN_BUDGET_<ROLE>` | — | tetto token per il condenser del ruolo; assente = no-op, non-intero = trattato come assente |
 | `PIPELINE_LINT_DEBT_RULES` | vedi `config.py` | regole eslint `;`-separate il cui debito preesistente non è "nuovo" |
 | `PIPELINE_TEST_AMBIENT_PATTERNS` | vedi `config.py` | sottostringhe `;`-separate di test ambient-sensitive (DB-gated) |
 | `PIPELINE_REPO` | da `git rev-parse` | root del repo |
-| `PIPELINE_CONDENSER_KEEP_RECENT` | `3` | round verbatim nel condenser (negativo → 0; non-intero → default con warning) |
-| `PIPELINE_TOKEN_BUDGET_<ROLE>` | — | budget token per ruolo; assente = condenser no-op; non-intero = trattato come assente |
+
+Condenser (come `agents:` / `test_suites:`): solo `monkeforge.yaml` —
+
+```yaml
+condenser:
+  keep_recent: 3
+  PLAN_REVIEWER: 3000
+  PROPOSER: 3000
+```
+
+Niente variabili d'ambiente per questi knobs.
 
 ## Lo stack e2e
 

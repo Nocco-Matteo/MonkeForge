@@ -15,8 +15,9 @@ from pathlib import Path
 
 # Load monkeforge.yaml (or .env as fallback) into os.environ.
 # Priority: real env vars > yaml > .env > defaults in config.py.
-# Exception: agent role model/cmd — yaml is the only override path (read
-# directly by config.py), so stale terminal env vars can't shadow it.
+# Exceptions (read directly by config.py from yaml — no env bridge):
+#   agents: role model/cmd; condenser: keep_recent + per-role token budgets;
+#   test_suites: gate suite list.
 _MF_ROOT = Path(__file__).resolve().parent
 _yaml_file = _MF_ROOT / "monkeforge.yaml"
 _env_file = _MF_ROOT / ".env"
@@ -50,23 +51,9 @@ def _load_yaml_to_env(path: Path) -> None:
     if isinstance(effort, dict):
         os.environ.setdefault("PIPELINE_EFFORT_JSON", json.dumps(effort))
 
-    # agents: read directly by config.py from monkeforge.yaml — no env var
-    # bridge, so a stale terminal session can't shadow the yaml with a
-    # deprecated/expired model.
-    # test_suites: likewise read directly by config.py from the top-level
-    # `test_suites:` yaml key — NOT bridged here. The legacy
-    # PIPELINE_TEST_SUITES env var remains a debug-only override.
-
-    # condenser: -> PIPELINE_TOKEN_BUDGET_<ROLE> per-role token budgets,
-    # and PIPELINE_CONDENSER_KEEP_RECENT for the verbatim-round count.
-    condenser = data.get("condenser")
-    if isinstance(condenser, dict):
-        keep_recent = condenser.pop("keep_recent", None)
-        if keep_recent is not None:
-            os.environ.setdefault("PIPELINE_CONDENSER_KEEP_RECENT", str(keep_recent))
-        for role, budget in condenser.items():
-            if budget is not None:
-                os.environ.setdefault(f"PIPELINE_TOKEN_BUDGET_{role.upper()}", str(budget))
+    # agents: / condenser: / test_suites: read directly by config.py from
+    # monkeforge.yaml — NOT bridged into env here. Legacy PIPELINE_TEST_SUITES
+    # remains a debug-only override for suites only.
 
     # tools: -> direct env var names (with explicit mapping)
     _tool_keys = {"gemini_trust_workspace": "GEMINI_CLI_TRUST_WORKSPACE"}
