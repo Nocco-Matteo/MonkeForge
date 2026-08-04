@@ -1,12 +1,12 @@
-"""F4: judge() strips only the fenced BATCHES json block from FINAL-{tid}.md,
-preserving unrelated fenced JSON in the judge prose. The BATCHES-{tid}.json
-file is written unchanged.
+"""F4: judge() writes FINAL-{tid}.md from stdout. The BATCHES block is kept
+in the FINAL report (the file is the primary source); unrelated fenced JSON
+in the judge prose also survives. The BATCHES-{tid}.json file is written
+unchanged.
 
 Both cases patch ``C.FINAL`` to ``tmp_path`` and use the real ``_extract_json``
-and real ``_save`` (no stubs) so the strip helper's value-equality match is
-exercised against the same extraction production uses. The BATCHES fenced
-block is placed BEFORE the unrelated example in stdout so the first-match
-extraction order is the one under test.
+and real ``_save`` (no stubs) so the extraction is exercised against the same
+path production uses. The BATCHES fenced block is placed BEFORE the unrelated
+example in stdout so the first-match extraction order is the one under test.
 
 Case 1: BATCHES in a ```json fence; the unrelated example is a second ```json
         block with different (object) content.
@@ -53,7 +53,7 @@ class TestStripsBatchesBlock:
     def test_strips_batches_json_fence_preserves_example(self, monkeypatch, tmp_path):
         batches_block = "```json\n" + json.dumps(BATCHES, indent=2) + "\n```"
         # A second, distinct ```json block (object, not the batches array) plus
-        # the HAS_UI line must survive the strip.
+        # the HAS_UI line must survive.
         example_block = '```json\n{"example": true, "note": "kept"}\n```'
         out = (
             "Judge report — verdict and reasoning.\n"
@@ -65,12 +65,8 @@ class TestStripsBatchesBlock:
         assert not d.get("escalation"), f"valid batches must not escalate: {d.get('escalation')}"
 
         final_text = (tmp_path / "FINAL-strip.md").read_text()
-        # The BATCHES block is gone (no fenced block parses to BATCHES).
-        assert json.dumps(BATCHES, indent=2) not in final_text, \
-            "FINAL still contains the BATCHES json block"
-        assert _extract_json(final_text) != BATCHES, \
-            "FINAL still has a fenced block parsing to the BATCHES array"
-        # The unrelated example and HAS_UI survive.
+        # The BATCHES block is kept in the FINAL report (file is primary source).
+        # The unrelated example and HAS_UI also survive.
         assert '{"example": true, "note": "kept"}' in final_text
         assert "HAS_UI: NO" in final_text
 
@@ -93,11 +89,32 @@ class TestStripsBatchesBlock:
         assert not d.get("escalation"), f"valid batches must not escalate: {d.get('escalation')}"
 
         final_text = (tmp_path / "FINAL-strip.md").read_text()
-        assert _extract_json(final_text) != BATCHES, \
-            "FINAL still has a fenced block parsing to the BATCHES array"
         # The unrelated plain-fence example and HAS_UI survive.
         assert "this is a prose example, not json" in final_text
         assert "HAS_UI: NO" in final_text
 
         saved = json.loads((tmp_path / "BATCHES-strip.json").read_text())
         assert saved == BATCHES
+
+    def test_existing_batches_file_not_overwritten_by_stdout(self, monkeypatch, tmp_path):
+        """F2: when a valid BATCHES file already exists, stdout must NOT
+        overwrite it — the file is the primary source."""
+        import json as _json
+
+        existing = [{"n": 1, "scope": "existing", "checklist": [1]}]
+        batches_file = tmp_path / "BATCHES-strip.json"
+        batches_file.write_text(_json.dumps(existing))
+        # stdout contains a DIFFERENT batches array (a decoy).
+        decoy = [{"n": 99, "scope": "decoy", "checklist": [99]}]
+        out = (
+            "Judge report — verdict and reasoning.\n"
+            "HAS_UI: NO\n\n"
+            "```json\n" + _json.dumps(decoy) + "\n```\n"
+        )
+        d = _run_judge(monkeypatch, tmp_path, out)
+        assert not d.get("escalation"), f"valid batches must not escalate: {d.get('escalation')}"
+        # The file was NOT overwritten by the decoy stdout.
+        saved = _json.loads(batches_file.read_text())
+        assert saved == existing
+        # The loaded batches are from the file, not stdout.
+        assert [b["n"] for b in d["batches"]] == [1]

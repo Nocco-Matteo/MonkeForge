@@ -24,6 +24,7 @@ from .common import (
     _strip_batches_block,
     _trust_output,
     _write_progress,
+    validate_batches_schema,
 )
 
 
@@ -98,15 +99,22 @@ def judge(state):
         }
 
     batches_file = C.FINAL / f"BATCHES-{tid}.json"
-    # Try to parse BATCHES json from agent stdout first
-    batches_json = _extract_json(out)
-    if batches_json:
-        _save(batches_file, json.dumps(batches_json, indent=2))
-    # Save the FINAL report from stdout, with the fenced BATCHES block stripped
-    # so unrelated fenced JSON examples in the judge prose survive (F4).
+    # F2: file-primary. If a valid BATCHES file already exists, use it and do
+    # NOT overwrite it with stdout — a decoy stdout (prose false positive) must
+    # never clobber a real file. Only extract from stdout when no file exists.
+    if batches_file.exists():
+        batches_json = None
+    else:
+        batches_json = _extract_json(out)
+        if batches_json:
+            _save(batches_file, json.dumps(batches_json, indent=2))
+    # Save the FINAL report from stdout. Pass None (not batches_json) so
+    # unrelated fenced JSON examples in the judge prose survive (F4) — the
+    # BATCHES block stays in the report for human readability; the file is the
+    # primary source.
     final_path = C.FINAL / f"FINAL-{tid}.md"
     if out.strip():
-        report_text = _strip_batches_block(out, batches_json)
+        report_text = _strip_batches_block(out, None)
         _save(final_path, report_text)
     if not final_path.exists():
         _recover_artifact(tid, f"FINAL-{tid}.md", final_path)
@@ -116,50 +124,39 @@ def judge(state):
             "escalation": "judge did not produce BATCHES json",
             "journal": ["judge: no batch file"],
         }
+
+    # F2: file-primary load with unlink-on-corrupt. A corrupt or invalid
+    # BATCHES file is unlinked BEFORE escalating so a retry_judge re-entry
+    # does not re-read the same corrupt file and trap permanently. The
+    # stdout-extracted json (if any) was already saved above; on retry the
+    # judge re-runs and re-writes it.
     try:
         raw = json.loads(batches_file.read_text())
-    except json.JSONDecodeError as exc:
-        return {"escalation": f"BATCHES json invalid: {exc}", "journal": ["judge: bad batch json"]}
-
-    # Defense-in-depth: if _extract_json picked a prose false positive (e.g.
-    # ["baseline_failures"] from delta["key"] in code-discussion text), the
-    # raw list contains only strings/scalars, not dicts. Reject early instead
-    # of crashing on b["n"] with TypeError: string indices must be integers.
-    # A mixed list (some dicts + some non-dicts) is handled by the F2 guard
-    # below, which gives a more specific "malformed batch" message per-item.
-    if not isinstance(raw, list) or (
-        raw and not any(isinstance(b, dict) for b in raw)
-    ):
+    except (json.JSONDecodeError, OSError) as exc:
+        # Unlink the corrupt file before escalating so retry re-runs the judge.
+        batches_file.unlink(missing_ok=True)
         return {
-            "escalation": "BATCHES json is not a list of objects — judge output may contain a prose false positive",
-            "journal": [f"judge: BATCHES json has wrong shape (type={type(raw).__name__}, len={len(raw) if isinstance(raw, list) else 'n/a'})"],
+            "escalation": f"BATCHES json invalid: {exc}",
+            "journal": ["judge: bad batch json — file unlinked before retry"],
         }
 
-    # F2: defend against a malformed BATCHES item before any .get/["n"] access —
-    # a non-dict element would otherwise raise AttributeError/KeyError and crash
-    # the run instead of escalating cleanly.
-    batches = []
-    for b in raw:
-        if not isinstance(b, dict):
-            return {
-                "escalation": f"malformed batch (no n) — BATCHES item is not an object: {b!r}",
-                "journal": ["judge: malformed batch (non-dict element)"],
-            }
-        n = b.get("n")
-        if not isinstance(n, int) or isinstance(n, bool):
-            return {
-                "escalation": f"malformed batch (no n) — missing or non-integer n: {b!r}",
-                "journal": ["judge: malformed batch (missing/non-int n)"],
-            }
-        batches.append({
-            "n": n,
-            "scope": b.get("scope", ""),
-            "status": "PENDING",
-            "outcome": "",
-            "deviations": "",
-            "checklist": b.get("checklist", []),
-            "test_failure_allowlist": b.get("test_failure_allowlist", []),
-        })
+    batches, schema_err = validate_batches_schema(raw)
+    if batches is None:
+        # Schema validation failed — unlink the bad file before escalating.
+        batches_file.unlink(missing_ok=True)
+        shape_note = ""
+        if isinstance(raw, list):
+            shape_note = (
+                f" (type={type(raw).__name__}, len={len(raw)})"
+            )
+        else:
+            shape_note = f" (type={type(raw).__name__})"
+        return {
+            "escalation": schema_err,
+            "journal": [
+                f"judge: BATCHES json rejected — {schema_err}{shape_note} — file unlinked before retry"
+            ],
+        }
     # has_ui was decided at plan-time (before the debate) and is not the judge's
     # to reset; the UX critique already happened during the debate.
     _write_progress(tid, batches)

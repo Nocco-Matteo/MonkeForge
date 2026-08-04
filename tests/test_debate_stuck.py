@@ -144,6 +144,25 @@ class TestStuckClaims(unittest.TestCase):
         )
         self.assertEqual(condenser.stuck_claims(text, 3), [])
 
+    def test_stuck_with_id_uses_critic_qualified_token(self):
+        """D2: when ids are present, stuck_claims uses `f"{critic}{id}"` tokens
+        so Reviewer B1 and UX B1 are distinct."""
+        text = _debate(
+            _round(1, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B1: foo\n"),
+            _round(2, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B1: foo\n"),
+        )
+        stuck = condenser.stuck_claims(text, 2)
+        self.assertEqual(stuck, ["ReviewerB1"])
+
+    def test_stuck_same_id_different_critics_not_stuck(self):
+        """Reviewer B1 and UX B1 are distinct tokens — not stuck across critics."""
+        text = _debate(
+            _round(1, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B1: foo\n"),
+            _round(2, "UX", "VERDICT: REJECT\n[BLOCKER] B1: bar\n"),
+        )
+        stuck = condenser.stuck_claims(text, 2)
+        self.assertEqual(stuck, [])
+
 
 # --- DEBATE_STUCK_ROUNDS config (items 5-7) ----------------------------------
 
@@ -424,6 +443,63 @@ class TestDebateNodesImportNoCycle(unittest.TestCase):
         import pipeline_graph.condenser as _c  # noqa: F401
         self.assertTrue(hasattr(_c, "stuck_claims"))
         self.assertTrue(hasattr(_d, "_check_early_escalation"))
+
+
+# --- helper functions (items 12-13) ----------------------------------------
+
+
+class TestSectionHasBlockersWithoutIds(unittest.TestCase):
+    """Item 12: _section_has_blockers_without_ids — True when any [BLOCKER]
+    raise line lacks an id, False when all carry ids or no blockers."""
+
+    def test_blocker_without_id_returns_true(self):
+        body = "VERDICT: REJECT\n[BLOCKER] foo\n"
+        self.assertTrue(condenser._section_has_blockers_without_ids(body))
+
+    def test_blocker_with_id_returns_false(self):
+        body = "VERDICT: REJECT\n[BLOCKER] B1: foo\n"
+        self.assertFalse(condenser._section_has_blockers_without_ids(body))
+
+    def test_mixed_id_and_no_id_returns_true(self):
+        body = "VERDICT: REJECT\n[BLOCKER] B1: foo\n[BLOCKER] bar\n"
+        self.assertTrue(condenser._section_has_blockers_without_ids(body))
+
+    def test_all_with_ids_returns_false(self):
+        body = "VERDICT: REJECT\n[BLOCKER] B1: foo\n[BLOCKER] B2: bar\n"
+        self.assertFalse(condenser._section_has_blockers_without_ids(body))
+
+    def test_suggestion_only_returns_false(self):
+        body = "VERDICT: APPROVE_WITH_CHANGES\n[SUGGESTION] foo\n"
+        self.assertFalse(condenser._section_has_blockers_without_ids(body))
+
+    def test_empty_returns_false(self):
+        self.assertFalse(condenser._section_has_blockers_without_ids(""))
+        self.assertFalse(condenser._section_has_blockers_without_ids(None))
+
+
+class TestRaisesMissingIds(unittest.TestCase):
+    """Item 13: _raises_missing_ids — list of claim texts for raise lines
+    without ids."""
+
+    def test_blocker_without_id_listed(self):
+        body = "VERDICT: REJECT\n[BLOCKER] foo\n"
+        self.assertEqual(condenser._raises_missing_ids(body), ["foo"])
+
+    def test_blocker_with_id_not_listed(self):
+        body = "VERDICT: REJECT\n[BLOCKER] B1: foo\n"
+        self.assertEqual(condenser._raises_missing_ids(body), [])
+
+    def test_mixed_returns_only_missing(self):
+        body = "VERDICT: REJECT\n[BLOCKER] B1: foo\n[BLOCKER] bar\n[SUGGESTION] S1: baz\n[SUGGESTION] qux\n"
+        result = condenser._raises_missing_ids(body)
+        self.assertIn("bar", result)
+        self.assertIn("qux", result)
+        self.assertNotIn("foo", result)
+        self.assertNotIn("baz", result)
+
+    def test_empty_returns_empty(self):
+        self.assertEqual(condenser._raises_missing_ids(""), [])
+        self.assertEqual(condenser._raises_missing_ids(None), [])
 
 
 if __name__ == "__main__":

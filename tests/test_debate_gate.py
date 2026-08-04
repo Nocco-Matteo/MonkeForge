@@ -173,5 +173,26 @@ class EscalationReturnToJudge(unittest.TestCase):
         self.assertEqual(G.route_escalation_return(state), "judge")
 
 
+class F1dMissingIdsJournalLine(unittest.TestCase):
+    """F1d: when a critic raises blockers without ids, _journal_missing_ids
+    records a journal line (not a degradation) with the 'debate ids missing:'
+    prefix, deduped against state.get('journal', [])."""
+
+    def test_missing_ids_produces_journal_line(self):
+        delta = {}
+        D._journal_missing_ids(delta, {}, "VERDICT: REJECT\n[BLOCKER] foo\n", 1, "t", "tech")
+        self.assertTrue(any("debate ids missing" in j for j in delta.get("journal", [])))
+
+    def test_missing_ids_no_degradation(self):
+        delta = {}
+        D._journal_missing_ids(delta, {}, "VERDICT: REJECT\n[BLOCKER] foo\n", 1, "t", "tech")
+        self.assertNotIn("degradations", delta)
+
+    def test_all_with_ids_no_journal_line(self):
+        delta = {}
+        D._journal_missing_ids(delta, {}, "VERDICT: REJECT\n[BLOCKER] B1: foo\n", 1, "t", "tech")
+        self.assertNotIn("journal", delta)
+
+
 if __name__ == "__main__":
     unittest.main()

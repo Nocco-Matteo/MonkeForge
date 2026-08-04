@@ -32,10 +32,15 @@ METHOD, per item:
    found before deciding.
 2. Begin each item answer with the reviewer's exact severity tag AND provenance
    suffix AND claim text, copied verbatim from the critic's block — one of:
-     `[BLOCKER:PLAN] <claim>`
-     `[BLOCKER:REQUIREMENTS] <claim>`
-     `[BLOCKER] <claim>`        (bare form — copy it as-is)
-     `[SUGGESTION] <claim>`
+     `[BLOCKER:PLAN] <id>: <claim>`
+     `[BLOCKER:REQUIREMENTS] <id>: <claim>`
+     `[BLOCKER] <id>: <claim>`   (bare form — copy it as-is)
+     `[SUGGESTION] <id>: <claim>`
+   When the critic tagged the item with an id (e.g. `B1:`, `S2:`), you MUST
+   cite the id AND the critic name in your reply so the ledger resolves the
+   right entry:
+     `B1 (Reviewer): ACCEPTED — …`
+     `B2 (UX): REJECTED — …`
    The pipeline matches your reply to the raised item by this tag, so the
    severity AND the provenance suffix must be copied verbatim. If the critic
    tagged a blocker `[BLOCKER:REQUIREMENTS]`, your reply MUST begin with
@@ -65,10 +70,12 @@ OUTPUT -> print the reply to stdout (the pipeline appends it to the debate file
 automatically) under "## Round {round} — Proposer", in this order:
 1. Technical items first, then UX items, then any TECH-LIMIT lines — one block
    per item. Each block begins with the reviewer's exact tag, copied verbatim
-   from the critic's block — one of `[BLOCKER:PLAN] <claim>`,
-   `[BLOCKER:REQUIREMENTS] <claim>`, `[BLOCKER] <claim>`, or
-   `[SUGGESTION] <claim>` (severity AND provenance suffix verbatim) — then the
-   ACCEPTED / REJECTED / PARTIAL and RESOLVED markers as before.
+   from the critic's block — one of `[BLOCKER:PLAN] <id>: <claim>`,
+   `[BLOCKER:REQUIREMENTS] <id>: <claim>`, `[BLOCKER] <id>: <claim>`, or
+   `[SUGGESTION] <id>: <claim>` (severity AND provenance suffix verbatim) —
+   then the ACCEPTED / REJECTED / PARTIAL and RESOLVED markers as before.
+   When the critic used an id, cite it with the critic name:
+   `B1 (Reviewer): ACCEPTED — …` so the ledger resolves the right entry.
 2. Then a PLAN PATCH — one `=== PLAN PATCH START ===` … `=== PLAN PATCH END ===`
    envelope containing one or more `@@@ REPLACE section: "<title>" … @@@ END`
    blocks, one per plan section you changed. The pipeline applies the patch to

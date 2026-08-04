@@ -598,6 +598,34 @@ def _check_requirements_escalation(debate_text: str) -> dict | None:
     }
 
 
+def _journal_missing_ids(
+    delta: dict, state: dict, section_body: str, rnd: int, tid: str, critic_label: str
+) -> None:
+    """F1d: when a critic raises blockers/suggestions without ids, record a
+    journal line so the final report surfaces it.
+
+    Round-dedup: only journal once per ``(round, critic_label)`` pair — a
+    re-entry (e.g. after an escalation resolve) must not duplicate the entry.
+    The dedup key is the journal line itself, checked against
+    ``state.get("journal", [])`` so a re-entry does not duplicate the entry.
+    """
+    from ..condenser import _raises_missing_ids, _section_has_blockers_without_ids
+
+    if not _section_has_blockers_without_ids(section_body):
+        return
+    missing = _raises_missing_ids(section_body)
+    if not missing:
+        return
+    line = (
+        f"debate ids missing: r{rnd} {critic_label}: {len(missing)} raise(s) without ids — "
+        f"{', '.join(missing[:3])}{'…' if len(missing) > 3 else ''}"
+    )
+    prior_journal = list(state.get("journal", []))
+    if line in prior_journal:
+        return
+    delta.setdefault("journal", []).append(line)
+
+
 def debate_tech(state):
     """The technical critic. Critiques the plan AND certifies TECH-LIMIT claims.
 
@@ -668,6 +696,11 @@ def debate_tech(state):
             f"{len(limits)} tech-limit(s) verified"
         ],
     }
+    # F1d: missing-id journaling. When the critic raises blockers/suggestions
+    # without ids, record a journal line so the final report surfaces it.
+    # Round-dedup: only journal once per round number so a re-entry (e.g.
+    # after escalation) does not duplicate the entry.
+    _journal_missing_ids(delta, state, latest_tech, rnd, tid, "tech")
     if not state.get("has_ui") or not C.UX_RENDER_CMD.strip():
         # No UX critic on this task: decide the round here. This also covers a
         # UI task whose repo has no render command configured (UX_RENDER_CMD
@@ -807,13 +840,22 @@ def debate_ux(state):
     # demands RESOLVED/STILL OPEN lines; if a clean APPROVE has none while prior
     # blockers existed, don't trust it — keep the round open so the designer must
     # actually verify (or the cap escalates honestly) instead of false-converging.
+    # D5: widened to accept id-based RESOLVED markers — a line like
+    # ``B1: RESOLVED — …`` or ``S1: STILL OPEN — …`` proves the designer walked
+    # the prior blockers by id, even when the bare word "RESOLVED" is absent.
     prior_blockers = state.get("ux_blockers", 0)
+    # Check for either bare RESOLVED or id-based [BS]\d+: markers.
+    from ..condenser import _UX_ID_RESOLVED_RE as _id_resolved_re
+    has_resolution_signal = (
+        "RESOLVED" in review.upper()
+        or bool(_id_resolved_re.search(review))
+    )
     if (
         rnd > 1
         and prior_blockers > 0
         and verdict == "APPROVE"
         and blockers == 0
-        and "RESOLVED" not in review.upper()
+        and not has_resolution_signal
     ):
         verdict = "APPROVE_WITH_CHANGES"
         blockers = prior_blockers
@@ -841,6 +883,9 @@ def debate_ux(state):
             f"debate r{rnd} ux: {verdict}, {blockers} blockers{delta_note}",
         ],
     }
+    # F1d: missing-id journaling (same as debate_tech).
+    latest_ux = _latest_section(debate_text, "UX")
+    _journal_missing_ids(delta, state, latest_ux, rnd, tid, "ux")
     is_verification = rnd > C.resolved_debate_rounds(state)
     # Precedence chain (TASK-022): requirements > early(stuck) > thrashing
     # > _debate_decision. Checked after the debate file append (so the

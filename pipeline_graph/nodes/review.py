@@ -13,7 +13,7 @@ from ..agents import (
     run_agent,
 )
 from ..state import Conversation
-from .common import _current_batch, _file_or_stdout, _git, _recover_artifact, _stage_all, _trust_output
+from .common import _current_batch, _file_or_stdout, _git, _recover_artifact, _stage_all, _trust_output, parse_verify_statuses
 
 
 def code_review(state):
@@ -130,7 +130,7 @@ def code_verify(state):
                 f"exit={code}, {len(out)} bytes"
             ],
         }
-    if "NOT_FIXED" in out:
+    if "NOT_FIXED" in parse_verify_statuses(out):
         if cycle >= C.resolved_fix_cycles(state):
             return {
                 "escalation": f"batch {b['n']}: blockers still unfixed after "

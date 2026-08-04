@@ -237,3 +237,18 @@ class TestRoutingFunctions:
     def test_route_escalation_return_no_branch(self):
         state = _dry_state(branch=None)
         assert self.G.route_escalation_return(state) == "init"
+
+
+class TestF3ParserContracts:
+    """F3: parse_verify_statuses returns a list; parse_deviations_line
+    returns 'none' when unmatched."""
+
+    def test_parse_verify_statuses_returns_list(self):
+        from pipeline_graph.nodes.common import parse_verify_statuses
+        result = parse_verify_statuses("item 1: NOT_FIXED — broken\nitem 2: CONFIRMED\n")
+        assert isinstance(result, list)
+        assert "NOT_FIXED" in result
+
+    def test_parse_deviations_line_returns_none_when_unmatched(self):
+        from pipeline_graph.nodes.common import parse_deviations_line
+        assert parse_deviations_line("no markers here") == "none"

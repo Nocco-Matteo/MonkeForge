@@ -45,32 +45,41 @@ TECH_LIMIT_LINE_RE = re.compile(
 
 # Raise lines in critic sections: `[BLOCKER] <claim>` or `[SUGGESTION] <claim>`,
 # optionally carrying a provenance suffix (`[BLOCKER:PLAN]` / `[BLOCKER:REQUIREMENTS]`)
-# between the severity tag and the claim, and optionally wrapped in markdown bold
-# (`**[BLOCKER] foo**`). Group 1 = severity, group 2 = provenance (optional, None
-# when absent — callers default to "PLAN"), group 3 = claim.
+# between the severity tag and the claim, optionally carrying a blocker/suggestion
+# id (`B1:` / `S1:`) between the tag and the claim, and optionally wrapped in
+# markdown bold (`**[BLOCKER] foo**`). Group 1 = severity, group 2 = provenance
+# (optional, None when absent — callers default to "PLAN"), group 3 = id
+# (optional `[BS]\d+`, None when absent), group 4 = claim.
 _RAISE_LINE_RE = re.compile(
-    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*(.+?)\s*\*{0,2}\s*$",
+    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*"
+    r"(?:([BS]\d+):\s*)?(.+?)\s*\*{0,2}\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
 # `### [SEVERITY] <claim>` header in Reply/Proposer sections (explicit preferred
-# form). Same 3-group structure as _RAISE_LINE_RE (group 2 = optional provenance).
+# form). Same 4-group structure as _RAISE_LINE_RE (group 2 = optional provenance,
+# group 3 = optional id, group 4 = claim).
 _HEADER_CLAIM_RE = re.compile(
-    r"^##+\s*\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*(.+?)\s*$",
+    r"^##+\s*\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*"
+    r"(?:([BS]\d+):\s*)?(.+?)\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
 # `[SEVERITY] <claim>` inline tag line in Reply/Proposer sections (primary
-# matcher). Same 3-group structure as _RAISE_LINE_RE (group 2 = optional
-# provenance).
+# matcher). Same 4-group structure as _RAISE_LINE_RE (group 2 = optional
+# provenance, group 3 = optional id, group 4 = claim).
 _TAG_CLAIM_RE = re.compile(
-    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*(.+?)\s*\*{0,2}\s*$",
+    r"^\s*\*{0,2}\[(BLOCKER|SUGGESTION)(?::(PLAN|REQUIREMENTS))?\]\s*"
+    r"(?:([BS]\d+):\s*)?(.+?)\s*\*{0,2}\s*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
 # ACCEPTED / REJECTED / PARTIAL markers that delimit reply item blocks.
+# Matches both the bare form (`ACCEPTED — …`) and the id-qualified form
+# (`B1 (Reviewer): ACCEPTED — …`).
 _REPLY_MARKER_RE = re.compile(
-    r"^\s*(ACCEPTED|REJECTED|PARTIAL)\b", re.MULTILINE | re.IGNORECASE
+    r"^\s*(?:[BS]\d+\s+\(\w+\)\s*:\s*)?(ACCEPTED|REJECTED|PARTIAL)\b",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 # Standalone RESOLVED marker (word-boundary, case-insensitive); rejects
@@ -83,6 +92,26 @@ _UX_RESOLVED_RE = re.compile(
 )
 _UX_STILL_OPEN_RE = re.compile(
     r"^\s*STILL\s+OPEN\s+(\d+)\s*:", re.MULTILINE | re.IGNORECASE
+)
+
+# Id-qualified reply resolution: `B1 (Reviewer): ACCEPTED — ...` or
+# `S1 (UX): REJECTED — ...`. Group 1 = id (`[BS]\d+`), group 2 = critic
+# (`Reviewer` or `UX`). A reply block carrying an id WITHOUT a critic qualifier
+# (bare `B1:`) resolves nothing — the critic must be explicit to avoid
+# false cross-critic resolution (D6).
+_REPLY_ID_RE = re.compile(
+    r"^\s*([BS]\d+)\s+\((Reviewer|UX)\)\s*:",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+# Id-based RESOLVED marker for UX re-review rubber-stamp guard: a line like
+# `B1: RESOLVED — ...` or `S1: STILL OPEN — ...` proves the designer walked the
+# prior blockers by id, even when the bare word "RESOLVED" is absent. A bare
+# `B1: <claim>` without a RESOLVED/STILL OPEN keyword does NOT count — the
+# designer must explicitly rule on each prior blocker by id.
+_UX_ID_RESOLVED_RE = re.compile(
+    r"^\s*[BS]\d+\s*:\s*(?:RESOLVED|STILL\s+OPEN)\b",
+    re.MULTILINE | re.IGNORECASE,
 )
 
 _LEDGER_HEADER = "## Debate ledger (prior rounds, deduplicated)\n"
@@ -221,10 +250,17 @@ def stuck_claims(debate_text: str, k: int) -> list[str]:
             # Item 2: only BLOCKER raises (skip SUGGESTION).
             for m in _RAISE_LINE_RE.finditer(body):
                 if m.group(1).upper() == "BLOCKER":
-                    # group(3) is the claim (group(2) is the optional provenance).
-                    claim = _normalize_claim(_clean_claim(m.group(3)))
-                    if claim:
-                        round_claims.add(claim)
+                    # D2: per-round ID identity — when an id is present, use the
+                    # critic-qualified single-token form `f"{critic}{id}"` (e.g.
+                    # "ReviewerB1") so a Reviewer B1 and a UX B1 are distinct.
+                    # When no id, fall back to the normalized claim text.
+                    rid = m.group(3)
+                    if rid:
+                        token = f"{critic}{rid.upper()}"
+                    else:
+                        token = _normalize_claim(_clean_claim(m.group(4)))
+                    if token:
+                        round_claims.add(token)
         per_round_claims.append(round_claims)
 
     if not per_round_claims:
@@ -328,9 +364,15 @@ def thrashing_report(debate_text: str, k: int) -> dict:
                 continue
             for m in _RAISE_LINE_RE.finditer(last_body[critic]):
                 if m.group(1).upper() == "BLOCKER":
-                    claim = _normalize_claim(_clean_claim(m.group(3)))
-                    if claim:
-                        claims.add(claim)
+                    # D2: critic-qualified single-token when id present, else
+                    # normalized claim text (same form as stuck_claims).
+                    rid = m.group(3)
+                    if rid:
+                        token = f"{critic}{rid.upper()}"
+                    else:
+                        token = _normalize_claim(_clean_claim(m.group(4)))
+                    if token:
+                        claims.add(token)
         active.append((bc, claims))
 
     window = active[-k:] if k else active
@@ -477,12 +519,45 @@ def latest_requirements_blockers(debate_text: str) -> list[str]:
             provenance = (m.group(2) or "PLAN").upper()
             if provenance != "REQUIREMENTS":
                 continue
-            claim = _clean_claim(m.group(3))
+            claim = _clean_claim(m.group(4))
             norm = _normalize_claim(claim)
             if norm and norm not in seen:
                 seen.add(norm)
                 claims.append(claim)
     return claims
+
+
+def _section_has_blockers_without_ids(body: str) -> bool:
+    """Item 12: return True iff the section body contains at least one
+    ``[BLOCKER]`` raise line WITHOUT an id (``B1:``/``S1:``).
+
+    Used by the UX rubber-stamp guard (D5): when the latest UX section's
+    blockers all carry ids, the designer walked the prior ledger and a bare
+    APPROVE is a real sign-off; when any blocker lacks an id, the bare
+    APPROVE is treated as a rubber stamp and the round is forced to reply.
+    """
+    for m in _RAISE_LINE_RE.finditer(body or ""):
+        if m.group(1).upper() == "BLOCKER" and not m.group(3):
+            return True
+    return False
+
+
+def _raises_missing_ids(body: str) -> list[str]:
+    """Item 13: return the list of claim texts for raise lines in the section
+    body that lack an id (``B1:``/``S1:``). Used by the F1d escalation to
+    surface which claims the critic failed to id.
+
+    Only ``[BLOCKER]`` and ``[SUGGESTION]`` raise lines are considered
+    (TECH-LIMIT lines are not raise lines).
+    """
+    missing: list[str] = []
+    for m in _RAISE_LINE_RE.finditer(body or ""):
+        if m.group(3):
+            continue
+        claim = _clean_claim(m.group(4))
+        if claim:
+            missing.append(claim)
+    return missing
 
 
 def condense(text: str, keep_recent: int) -> str:
@@ -576,30 +651,42 @@ def _match_claim_in_block(preceding: str, block: str) -> tuple[str | None, str |
     # (i) header
     headers = _HEADER_CLAIM_RE.findall(preceding)
     if headers:
-        sev, _prov, claim = headers[-1]
+        sev, _prov, _id, claim = headers[-1]
         return _clean_claim(claim), sev.upper()
     # (ii) inline tag in preceding text
     tags = _TAG_CLAIM_RE.findall(preceding)
     if tags:
-        sev, _prov, claim = tags[-1]
+        sev, _prov, _id, claim = tags[-1]
         return _clean_claim(claim), sev.upper()
     # Also check the block itself (tag at/preceding block start).
     tags_in_block = _TAG_CLAIM_RE.findall(block)
     if tags_in_block:
-        sev, _prov, claim = tags_in_block[0]
+        sev, _prov, _id, claim = tags_in_block[0]
         return _clean_claim(claim), sev.upper()
     return None, None
 
 
 def _process_reply_section(body: str, items: dict) -> None:
-    """Scan a Reply/Proposer section for tag-based resolution blocks.
+    """Scan a Reply/Proposer section for tag-based or id-based resolution blocks.
 
     Splits at ACCEPTED/REJECTED/PARTIAL markers; a block is a RESOLVED signal
-    iff it contains the standalone ``RESOLVED`` marker. The claim is identified
-    via :func:`_match_claim_in_block`. A resolution resolves ALL critics'
-    entries for that ``(normalized_claim, severity)`` (deterministic target for
-    critic-less replies). TECH-LIMIT items are exempt (severity ``TECH-LIMIT``
-    is never matched by ``[BLOCKER]``/``[SUGGESTION]`` tags).
+    iff it contains the standalone ``RESOLVED`` marker. Resolution is attempted
+    in two modes (D6):
+
+    (i) Id-qualified: when the block (or its preceding text) carries a
+        ``B1 (Reviewer):`` / ``S1 (UX):`` id+critic prefix, only the matching
+        ``(critic, id, sev)`` ledger entry is resolved. A bare ``B1:`` with no
+        critic qualifier resolves NOTHING — the critic must be explicit to
+        avoid false cross-critic resolution. When an id is present, there is
+        NO fallback to the tag-based path for that block.
+
+    (ii) Legacy tag-based: when no id is present at all, the claim is
+        identified via :func:`_match_claim_in_block` and the resolution
+        targets ALL critics' entries for that ``(normalized_claim, severity)``
+        (the pre-id behaviour, preserved unchanged).
+
+    TECH-LIMIT items are exempt (severity ``TECH-LIMIT`` is never matched by
+    ``[BLOCKER]``/``[SUGGESTION]`` tags).
     """
     markers = list(_REPLY_MARKER_RE.finditer(body))
     for i, m in enumerate(markers):
@@ -610,12 +697,36 @@ def _process_reply_section(body: str, items: dict) -> None:
             continue
         search_start = markers[i - 1].start() if i > 0 else 0
         preceding = body[search_start:block_start]
+
+        # (i) Id-qualified resolution — check preceding text and block.
+        id_match = _REPLY_ID_RE.search(preceding) or _REPLY_ID_RE.search(block)
+        if id_match:
+            rid = id_match.group(1).upper()
+            critic = id_match.group(2).upper()
+            # Resolve only the matching (critic, id, sev) entry.
+            for key in list(items.keys()):
+                if key[0] == critic and key[1] == rid:
+                    items[key]["status"] = "RESOLVED"
+            # An id was present (with critic) — no fallback to tag-based.
+            continue
+
+        # Check for a bare id (no critic qualifier) — resolves nothing.
+        # _REPLY_ID_RE requires the (Critic) group, so a bare `B1:` would not
+        # match it. We check for any [BS]\d+: line prefix to detect a bare id
+        # and skip tag-based fallback for that block (D6).
+        bare_id = re.match(r"^\s*[BS]\d+\s*:", block.strip(), re.IGNORECASE)
+        if bare_id:
+            continue
+
+        # (ii) Legacy tag-based resolution — no id present.
         claim, sev = _match_claim_in_block(preceding, block)
         if claim is None:
             continue
         norm = _normalize_claim(claim)
         for key in list(items.keys()):
-            if key[0] == norm and key[1] == sev:
+            # New key format: (critic, id_or_norm, sev). Legacy resolution
+            # matches on id_or_norm == norm (items without ids) and sev.
+            if key[1] == norm and key[2] == sev:
                 items[key]["status"] = "RESOLVED"
 
 
@@ -636,7 +747,10 @@ def debate_ledger(debate_text: str) -> str:
     if not rounds:
         return ""
 
-    # key = (normalized_claim, severity_kind, critic) → item dict
+    # key = (critic, id_or_norm, severity_kind) → item dict. When an id is
+    # present, id_or_norm is the id (e.g. "B1"); otherwise it is the normalized
+    # claim text. This keeps id-keyed items distinct from text-keyed items and
+    # from cross-critic same-id items (D2).
     items: dict[tuple[str, str, str], dict] = {}
     items_order: list[tuple[str, str, str]] = []
 
@@ -644,7 +758,7 @@ def debate_ledger(debate_text: str) -> str:
         # UX-sourced [BLOCKER] items from rounds < round_num, in ledger order.
         # <n> in RESOLVED <n>:/STILL OPEN <n>: indexes this set (1-based).
         ux_blocker_keys = [
-            k for k in items_order if k[1] == "BLOCKER" and k[2] == "UX"
+            k for k in items_order if k[0] == "UX" and k[2] == "BLOCKER"
         ]
 
         for critic, body in sections:
@@ -666,9 +780,13 @@ def debate_ledger(debate_text: str) -> str:
     lines = [_LEDGER_HEADER]
     for key in sorted_keys:
         item = items[key]
-        _norm, sev, critic = key
+        critic, _id_or_norm, sev = key
+        # Item 8: prefix the claim with `f"{id}: "` when the item's id is set.
+        claim_display = (
+            f"{item['id']}: {item['claim']}" if item.get("id") else item["claim"]
+        )
         lines.append(
-            f"[R{item['round']} · {critic} · {sev} · {item['status']}] {item['claim']}"
+            f"[R{item['round']} · {critic} · {sev} · {item['status']}] {claim_display}"
         )
     return "\n".join(lines) + "\n"
 
@@ -705,12 +823,13 @@ def _process_critic_section(
             if m:
                 claim = _clean_claim(m.group(1))
                 norm = _normalize_claim(claim)
-                key = (norm, "TECH-LIMIT", "REVIEWER")
+                key = ("REVIEWER", norm, "TECH-LIMIT")
                 if key not in items:
                     items[key] = {
                         "round": round_num,
                         "claim": claim,
                         "status": "RESOLVED",
+                        "id": None,
                     }
                     items_order.append(key)
 
@@ -741,15 +860,22 @@ def _process_critic_section(
             # Item 25: provenance from group(2), defaulting to "PLAN" when the
             # optional :PLAN/:REQUIREMENTS suffix is absent.
             provenance = (m_raise.group(2) or "PLAN").upper()
-            claim = _clean_claim(m_raise.group(3))
+            # D2: id from group(3) (optional), claim from group(4).
+            rid = m_raise.group(3)
+            rid = rid.upper() if rid else None
+            claim = _clean_claim(m_raise.group(4))
             norm = _normalize_claim(claim)
-            key = (norm, sev, critic_upper)
+            # Item 7: key on (critic, id_or_norm, sev) — id takes precedence
+            # over text.
+            id_or_norm = rid if rid else norm
+            key = (critic_upper, id_or_norm, sev)
             if key not in items:
                 items[key] = {
                     "round": round_num,
                     "claim": claim,
                     "status": "OPEN",
                     "provenance": provenance,
+                    "id": rid,
                 }
                 items_order.append(key)
             else:

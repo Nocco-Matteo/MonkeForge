@@ -152,6 +152,22 @@ class TestPromptPlaceholders:
             "prefix instruction for the tag-based parser."
         )
 
+    def test_judge_uses_write_primary_not_stdout(self):
+        """judge.md must use WRITE-primary wording, not PRINT-to-stdout, to
+        reflect the file-primary BATCHES load path."""
+        text = (PROMPTS_DIR / "judge.md").read_text()
+        assert "WRITE" in text, (
+            "judge.md must use WRITE-primary wording for the FINAL/BATCHES "
+            "content, not PRINT-to-stdout."
+        )
+        # The old "PRINT ... to stdout" channel wording must be gone.
+        assert "PRINT the FINAL" not in text, (
+            "judge.md still uses 'PRINT the FINAL' stdout wording."
+        )
+        assert "PRINT the BATCHES" not in text, (
+            "judge.md still uses 'PRINT the BATCHES' stdout wording."
+        )
+
 
 # --- structural markers ----------------------------------------------------
 
