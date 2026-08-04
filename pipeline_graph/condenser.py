@@ -290,7 +290,8 @@ def thrashing_report(debate_text: str, k: int) -> dict:
     the module-level surface to ``parse_verdict`` only.
     """
     text = debate_text or ""
-    empty = {"mode": "unknown", "blocker_counts": [], "repeated": [], "new": []}
+    empty = {"mode": "unknown", "blocker_counts": [], "repeated": [], "new": [],
+             "prior": []}
     if not text.strip() or k < 1:
         return empty
     from .agents import count_blockers  # function-local (item 2)
@@ -350,7 +351,7 @@ def thrashing_report(debate_text: str, k: int) -> dict:
     # C15: a single active round carries no trend → unknown, regardless of k.
     if len(window) < 2:
         return {"mode": "unknown", "blocker_counts": blocker_counts,
-                "repeated": repeated, "new": new}
+                "repeated": repeated, "new": new, "prior": []}
 
     def _strictly_decreasing(seq: list[int]) -> bool:
         return all(seq[i] < seq[i - 1] for i in range(1, len(seq)))
@@ -367,7 +368,67 @@ def thrashing_report(debate_text: str, k: int) -> dict:
     else:
         mode = "unknown"
     return {"mode": mode, "blocker_counts": blocker_counts,
-            "repeated": repeated, "new": new}
+            "repeated": repeated, "new": new,
+            "prior": sorted(window[-2][1]) if len(window) >= 2 else []}
+
+
+# --- thrashing-refinement policy (TASK-024) ---------------------------------
+#
+# Theme-overlap helpers that classify whether the "new" BLOCKER claims in a
+# thrashing window are refinements of the prior round's themes (the proposer is
+# iterating on the same surface) or genuinely fresh surface area (more rounds
+# will not help). Pure string-in/string-out — no LLM, no IO, no events (C1).
+
+
+# Splits a claim into alphanumeric tokens. Length-1 tokens are dropped (a bare
+# "a" or "1" carries no theme information and would inflate the token set with
+# noise). Reused by claim_theme_overlap.
+_TOKEN_SPLIT_RE = re.compile(r"[^a-zA-Z0-9]+")
+
+
+def claim_theme_overlap(a: str, b: str) -> float:
+    """Jaccard overlap between the theme-token sets of two claims.
+
+    Both inputs are normalized via ``_normalize_claim(_clean_claim(x))`` before
+    tokenizing, so smart-quote/whitespace differences do not deflate the
+    overlap. Tokenization splits on non-alphanumeric runs and drops empty and
+    length-1 tokens. Returns ``0.0`` when either resulting token set is empty
+    (no division by zero), ``1.0`` for identical token sets, and a value
+    strictly in ``(0, 1)`` for partial overlap.
+    """
+    ta = {t for t in _TOKEN_SPLIT_RE.split(_normalize_claim(_clean_claim(a or ""))) if len(t) > 1}
+    tb = {t for t in _TOKEN_SPLIT_RE.split(_normalize_claim(_clean_claim(b or ""))) if len(t) > 1}
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def majority_new_refine_prior(new, prior, threshold: float) -> bool:
+    """True iff a majority of ``new`` claims refine a ``prior`` claim's theme.
+
+    A claim ``n`` in ``new`` "refines" the prior when its max theme overlap
+    with any claim in ``prior`` is ``>= threshold`` (``0.0`` when ``prior`` is
+    empty — nothing to refine against). Returns ``True`` iff the count of
+    refining claims is ``>= ceil(len(new)/2)``. Returns ``False`` when ``new``
+    is empty (no claims to classify) or when ``prior`` is empty (every claim is
+    fresh surface area by definition, so the majority cannot be refining).
+
+    ``prior`` may be a ``list[str]`` or ``set[str]``; it is iterated, not
+    indexed.
+    """
+    new_list = list(new or [])
+    if not new_list:
+        return False
+    prior_list = list(prior or [])
+    if not prior_list:
+        return False
+    import math as _math
+    refining = 0
+    for n in new_list:
+        best = max((claim_theme_overlap(n, p) for p in prior_list), default=0.0)
+        if best >= threshold:
+            refining += 1
+    return refining >= _math.ceil(len(new_list) / 2)
 
 
 def latest_requirements_blockers(debate_text: str) -> list[str]:

@@ -394,7 +394,8 @@ def _in_debate_grace(state: dict, rnd: int) -> bool:
     return until > 0 and rnd <= until
 
 
-def _check_thrashing_escalation(debate_text: str, rnd: int) -> dict | None:
+def _check_thrashing_escalation(debate_text: str, rnd: int,
+                                *, debate_round_bonus: int = 0) -> dict | None:
     """Detect a churning debate and escalate before the round cap is wasted.
 
     Uses ``condenser.thrashing_report`` over the last
@@ -403,6 +404,11 @@ def _check_thrashing_escalation(debate_text: str, rnd: int) -> dict | None:
     churning, not converging — escalate early with a ``"debate thrashing:"``
     prefix so the human gets the same continue/redo/stop/ok menu as a stuck
     debate, plus a triage block (mode/blocker trend/repeated/new/recommended).
+
+    ``debate_round_bonus`` is threaded into ``_build_triage`` so the
+    TASK-024 refinement policy (bonus > 0 → ok; else refine-majority →
+    continue; else ok) reaches the early-escalation surface, matching the
+    ``debate exhausted`` thrashing surface (item 21).
 
     Returns ``None`` when the mode is anything other than ``"thrashing"``
     (stuck/converging/unknown are handled by their own branches or by
@@ -417,7 +423,8 @@ def _check_thrashing_escalation(debate_text: str, rnd: int) -> dict | None:
     report = thrashing_report(debate_text, C.DEBATE_THRASH_ROUNDS)
     if report.get("mode") != "thrashing":
         return None
-    triage = _build_triage(debate_text, "debate thrashing")
+    triage = _build_triage(debate_text, "debate thrashing",
+                           debate_round_bonus=debate_round_bonus)
     trend = " → ".join(str(n) for n in report.get("blocker_counts", []))
     return {
         "escalation": (
@@ -458,38 +465,86 @@ _RATIONALE = {
                      "— amend the brief and regenerate the plan",
 }
 
+# TASK-024: thrashing-refinement rationale strings. Distinct from
+# _RATIONALE["thrashing"] so a caller inspecting the rationale can tell which
+# branch of the refinement policy fired.
+_RATIONALE_THRASHING_BONUS = (
+    "the debate is thrashing but the human already extended it once "
+    "(debate_round_bonus > 0) — proceed to the verdict rather than looping"
+)
+_RATIONALE_THRASHING_REFINE = (
+    "the new blockers refine the prior round's themes (theme-Jaccard >= "
+    "threshold) — the proposer is iterating on the same surface, so more "
+    "rounds may converge"
+)
+_RATIONALE_THRASHING_FRESH = (
+    "the new blockers are fresh surface area (no theme overlap with the prior "
+    "round) — more rounds will not converge, proceed to the verdict"
+)
 
-def _build_triage(debate_text: str, reason_prefix: str) -> dict:
+
+def _build_triage(debate_text: str, reason_prefix: str,
+                  *, debate_round_bonus: int = 0) -> dict:
     """Build the triage dict attached to a debate escalation.
 
     Always calls ``condenser.thrashing_report`` first to populate
-    mode/blocker_counts/repeated/new, then adds ``recommended`` and
+    mode/blocker_counts/repeated/new/prior, then adds ``recommended`` and
     ``rationale`` according to ``reason_prefix``:
 
-    - ``"debate thrashing"`` → recommended ``"ok"`` (proceed to the verdict).
+    - ``"debate thrashing"`` → applies the TASK-024 refinement policy:
+        * ``debate_round_bonus > 0`` → ``"ok"`` (the human already extended
+          once; proceed to the verdict instead of looping).
+        * else ``majority_new_refine_prior(new, prior, threshold)`` →
+          ``"continue"`` (the new claims refine prior themes; the proposer is
+          iterating, not churning onto unrelated surface).
+        * else → ``"ok"`` (the new claims are fresh surface area; more rounds
+          will not help).
     - ``"debate stuck"`` → recommended ``"ok"`` (proceed to the verdict).
-    - ``"debate exhausted"`` → recommended mode-mapped via
-      ``_EXHAUSTED_RECOMMENDED`` (converging → ``"continue"``; else ``"ok"``).
+    - ``"debate exhausted"`` → mode-mapped via ``_EXHAUSTED_RECOMMENDED``
+      (converging → ``"continue"``; else ``"ok"``), EXCEPT when
+      ``mode == "thrashing"`` the same refinement policy as the
+      ``"debate thrashing"`` branch applies (so both thrashing surfaces agree).
     - ``"debate requirements"`` → forces ``mode="requirements"`` and
       ``recommended="stop"`` (the blocker is in the brief, not the plan), while
       still calling ``thrashing_report`` first so blocker_counts/repeated/new
       are populated for the CLI/bot rendering.
 
+    ``debate_round_bonus`` is the keyword-only state proxy for "the human
+    already extended the debate once". It defaults to ``0`` (fresh surface)
+    so any caller not yet updated degrades to the pre-change behaviour rather
+    than crashing.
+
     The returned dict always has the six keys
     mode/blocker_counts/repeated/new/recommended/rationale.
     """
-    from ..condenser import thrashing_report
+    from ..condenser import thrashing_report, majority_new_refine_prior
 
     report = thrashing_report(debate_text, C.DEBATE_THRASH_ROUNDS)
     mode = report.get("mode", "unknown")
+    new = report.get("new", [])
+    prior = report.get("prior", [])
+
+    def _thrashing_refinement_recommendation():
+        """Return (recommended, rationale) for the TASK-024 thrashing policy."""
+        if debate_round_bonus > 0:
+            return "ok", _RATIONALE_THRASHING_BONUS
+        if majority_new_refine_prior(new, prior, C.DEBATE_THRASH_THEME_JACCARD):
+            return "continue", _RATIONALE_THRASHING_REFINE
+        return "ok", _RATIONALE_THRASHING_FRESH
+
     if reason_prefix == "debate requirements":
         recommended = "stop"
         rationale = _RATIONALE["requirements"]
         mode = "requirements"
     elif reason_prefix == "debate exhausted":
-        recommended = _EXHAUSTED_RECOMMENDED.get(mode, "ok")
-        rationale = _RATIONALE.get(mode, _RATIONALE["unknown"])
-    elif reason_prefix in ("debate thrashing", "debate stuck"):
+        if mode == "thrashing":
+            recommended, rationale = _thrashing_refinement_recommendation()
+        else:
+            recommended = _EXHAUSTED_RECOMMENDED.get(mode, "ok")
+            rationale = _RATIONALE.get(mode, _RATIONALE["unknown"])
+    elif reason_prefix == "debate thrashing":
+        recommended, rationale = _thrashing_refinement_recommendation()
+    elif reason_prefix == "debate stuck":
         recommended = "ok"
         rationale = _RATIONALE.get(mode, _RATIONALE["unknown"])
     else:
@@ -635,7 +690,8 @@ def debate_tech(state):
         # until debate_grace_until (requirements still fire).
         grace = _in_debate_grace({**state, **delta}, rnd)
         early = None if grace else _check_early_escalation(text, rnd)
-        thrash = None if grace else _check_thrashing_escalation(text, rnd)
+        thrash = None if grace else _check_thrashing_escalation(
+            text, rnd, debate_round_bonus=state.get("debate_round_bonus") or 0)
         req = _check_requirements_escalation(text)
         if req:
             decision = req
@@ -798,7 +854,8 @@ def debate_ux(state):
     # until debate_grace_until (requirements still fire).
     grace = _in_debate_grace(state, rnd)
     early = None if grace else _check_early_escalation(debate_text, rnd)
-    thrash = None if grace else _check_thrashing_escalation(debate_text, rnd)
+    thrash = None if grace else _check_thrashing_escalation(
+        debate_text, rnd, debate_round_bonus=state.get("debate_round_bonus") or 0)
     req = _check_requirements_escalation(debate_text)
     if req:
         delta.update(req)
@@ -858,7 +915,8 @@ def _debate_decision(state, is_verification: bool = False) -> dict:
         # delta by debate_tech/debate_ux (item 11) and threaded into state via
         # the {**state, **delta} merge at the call site.
         debate_text = state.get("debate_text", "")
-        triage = _build_triage(debate_text, "debate exhausted")
+        triage = _build_triage(debate_text, "debate exhausted",
+                               debate_round_bonus=state.get("debate_round_bonus") or 0)
         return {
             "debate_next": "summary",
             "escalation": f"debate exhausted {C.resolved_debate_rounds(state)} rounds + "
