@@ -417,5 +417,16 @@ class EscalateStopIsUniversal(unittest.TestCase):
         self.assertFalse(d.get("retry_judge"))
 
 
+class JudgeUnlinkMissingOk(unittest.TestCase):
+    """F2: judge uses unlink(missing_ok=True) so a missing file does not raise."""
+
+    def test_unlink_missing_ok_does_not_raise(self, ):
+        """The unlink calls in judge use missing_ok=True so a retry that
+        already cleared the file does not crash on the second unlink."""
+        import inspect
+        source = inspect.getsource(_finalize.judge)
+        self.assertIn("unlink(missing_ok=True)", source)
+
+
 if __name__ == "__main__":
     unittest.main()

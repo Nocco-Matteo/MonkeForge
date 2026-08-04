@@ -516,3 +516,94 @@ class TestPlanPlaceholderVerbatim:
         assert "claim with {plan} inside" in out
         # The template's {plan} IS replaced.
         assert "<plan>the real plan</plan>" in out
+
+
+# --- id-aware ledger (D2 / item 7-8) ----------------------------------------
+
+
+class TestIdAwareLedger:
+    """Blocker ids (B1:, S1:) are parsed, keyed, and displayed in the ledger."""
+
+    def test_raise_with_id_displayed_with_id_prefix(self):
+        text = _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER] B1: foo")
+        lines = _ledger_lines(text)
+        assert any("B1: foo" in l for l in lines), lines
+
+    def test_raise_with_id_and_provenance(self):
+        text = _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER:PLAN] B1: foo")
+        lines = _ledger_lines(text)
+        assert any("B1: foo" in l for l in lines), lines
+
+    def test_suggestion_with_id(self):
+        text = _round_reviewer(1, "VERDICT: APPROVE_WITH_CHANGES\n[SUGGESTION] S1: bar")
+        lines = _ledger_lines(text)
+        assert any("S1: bar" in l for l in lines), lines
+
+    def test_raise_without_id_no_prefix(self):
+        text = _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER] foo")
+        lines = _ledger_lines(text)
+        # No "B1:" prefix — just the claim.
+        foo_lines = [l for l in lines if "foo" in l]
+        assert len(foo_lines) == 1
+        assert "B1:" not in foo_lines[0]
+
+    def test_same_id_different_critics_two_entries(self):
+        """Reviewer B1 and UX B1 are distinct (D2 per-round ID identity)."""
+        text = (
+            _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER] B1: foo")
+            + _round_ux(1, "VERDICT: REJECT\n[BLOCKER] B1: bar")
+        )
+        lines = _ledger_lines(text)
+        foo_lines = [l for l in lines if "foo" in l]
+        bar_lines = [l for l in lines if "bar" in l]
+        assert len(foo_lines) == 1
+        assert len(bar_lines) == 1
+        assert "REVIEWER" in foo_lines[0]
+        assert "UX" in bar_lines[0]
+
+    def test_same_id_same_critic_deduped(self):
+        """Re-raising B1 in a later round reopens, not duplicates."""
+        text = (
+            _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER] B1: foo")
+            + _round_reviewer(2, "VERDICT: REJECT\n[BLOCKER] B1: foo")
+        )
+        lines = _ledger_lines(text)
+        foo_lines = [l for l in lines if "foo" in l]
+        assert len(foo_lines) == 1
+
+    def test_id_resolved_by_critic_qualified_reply(self):
+        """B1 (Reviewer): ACCEPTED — RESOLVED resolves only the Reviewer B1."""
+        text = (
+            _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER] B1: foo")
+            + _round_ux(1, "VERDICT: REJECT\n[BLOCKER] B1: bar")
+            + _round_reply(1, "B1 (Reviewer): ACCEPTED — fixed\nRESOLVED")
+        )
+        lines = _ledger_lines(text)
+        foo_lines = [l for l in lines if "foo" in l]
+        bar_lines = [l for l in lines if "bar" in l]
+        assert len(foo_lines) == 1
+        assert len(bar_lines) == 1
+        assert "RESOLVED" in foo_lines[0]
+        assert "OPEN" in bar_lines[0]
+
+    def test_bare_id_reply_resolves_nothing(self):
+        """A bare B1: without (Critic) qualifier resolves nothing (D6)."""
+        text = (
+            _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER] B1: foo")
+            + _round_reply(1, "B1: ACCEPTED — fixed\nRESOLVED")
+        )
+        lines = _ledger_lines(text)
+        foo_lines = [l for l in lines if "foo" in l]
+        assert len(foo_lines) == 1
+        assert "OPEN" in foo_lines[0]
+
+    def test_cross_critic_id_not_resolved(self):
+        """B1 (UX): must NOT resolve Reviewer's B1 (D6)."""
+        text = (
+            _round_reviewer(1, "VERDICT: REJECT\n[BLOCKER] B1: foo")
+            + _round_reply(1, "B1 (UX): ACCEPTED — fixed\nRESOLVED")
+        )
+        lines = _ledger_lines(text)
+        foo_lines = [l for l in lines if "foo" in l]
+        assert len(foo_lines) == 1
+        assert "OPEN" in foo_lines[0]

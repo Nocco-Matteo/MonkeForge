@@ -18,3 +18,9 @@ RULES:
 OUTPUT (max 20 lines): one line per item — FIXED (with file:line) | DISPUTED
 (with evidence) — then test results, then DEVIATIONS introduced by the fixes,
 or "none".
+
+DEVIATIONS must be printed on a single line starting with `DEVIATIONS:` —
+the pipeline's parser matches the marker only at the start of a line. Example:
+  DEVIATIONS: none
+  DEVIATIONS: renamed helper to avoid collision with new import
+Do not embed the word `DEVIATIONS` in prose on other lines.

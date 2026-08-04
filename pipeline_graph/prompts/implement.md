@@ -71,3 +71,9 @@ plan specified and what you actually built, or "none"; anything you could not
 do and why. If and only if you hit a genuine plan/code contradiction, precede
 this section with a single `PLAN_DISCREPANCY: <what and where>` line (see the
 PRIOR STATE rule above); otherwise emit no such line.
+
+DEVIATIONS must be printed on a single line starting with `DEVIATIONS:` —
+the pipeline's parser matches the marker only at the start of a line. Example:
+  DEVIATIONS: none
+  DEVIATIONS: skipped test X because the DB fixture was missing
+Do not embed the word `DEVIATIONS` in prose on other lines.

@@ -1035,5 +1035,127 @@ class TestDebateThrashThemeJaccardEnv(unittest.TestCase):
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.5)
 
 
+# --- F1d: missing-id journal line -------------------------------------------
+
+
+class TestJournalMissingIds(unittest.TestCase):
+    """F1d: _journal_missing_ids records a journal line when a critic raises
+    blockers without ids, with round-dedup against state journal."""
+
+    def test_missing_ids_journal_line(self):
+        delta = {}
+        state = {}
+        section = "VERDICT: REJECT\n[BLOCKER] foo\n[BLOCKER] bar\n"
+        D._journal_missing_ids(delta, state, section, 1, "t1", "tech")
+        self.assertIn("journal", delta)
+        self.assertTrue(any("debate ids missing" in j for j in delta["journal"]))
+        self.assertNotIn("degradations", delta)
+
+    def test_all_with_ids_no_journal_line(self):
+        delta = {}
+        state = {}
+        section = "VERDICT: REJECT\n[BLOCKER] B1: foo\n[BLOCKER] B2: bar\n"
+        D._journal_missing_ids(delta, state, section, 1, "t1", "tech")
+        self.assertNotIn("journal", delta)
+
+    def test_round_dedup_via_state_journal(self):
+        """Re-journaling the same (round, critic) pair does not duplicate."""
+        delta1 = {}
+        state = {}
+        section = "VERDICT: REJECT\n[BLOCKER] foo\n"
+        D._journal_missing_ids(delta1, state, section, 1, "t1", "tech")
+        self.assertEqual(len(delta1["journal"]), 1)
+
+        # Second call with the same line already in state journal — no dup.
+        delta2 = {}
+        state2 = {"journal": list(delta1["journal"])}
+        D._journal_missing_ids(delta2, state2, section, 1, "t1", "tech")
+        self.assertNotIn("journal", delta2)
+
+    def test_different_critic_same_round_both_journal(self):
+        delta = {}
+        state = {}
+        section = "VERDICT: REJECT\n[BLOCKER] foo\n"
+        D._journal_missing_ids(delta, state, section, 1, "t1", "tech")
+        D._journal_missing_ids(delta, state, section, 1, "t1", "ux")
+        missing_lines = [j for j in delta.get("journal", []) if "debate ids missing" in j]
+        self.assertEqual(len(missing_lines), 2)
+
+    def test_empty_section_no_journal_line(self):
+        delta = {}
+        state = {}
+        D._journal_missing_ids(delta, state, "", 1, "t1", "tech")
+        self.assertNotIn("journal", delta)
+
+
+# --- D5: critic-qualified thrash with blocker IDs ---------------------------
+
+
+class TestCriticQualifiedThrashIds(unittest.TestCase):
+    """D2: when blockers carry ids, the thrashing/stuck token is
+    critic-qualified (``ReviewerB1``, ``UXB1``) so a Reviewer B1 and a UX B1
+    are distinct claims. A B1 raised by Reviewer in r1 and a B1 raised by UX
+    in r2 must NOT be "stuck" (different tokens), while the same Reviewer B1
+    across rounds IS stuck."""
+
+    def test_same_reviewer_b1_across_rounds_is_stuck(self):
+        text = _debate(
+            _round(1, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B1: alpha\n"),
+            _round(2, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B1: alpha\n"),
+        )
+        r = condenser.thrashing_report(text, 2)
+        self.assertEqual(r["mode"], "stuck")
+
+    def test_reviewer_b1_and_ux_b1_are_distinct(self):
+        # Reviewer B1 in r1, UX B1 in r2 — different critic-qualified tokens,
+        # so the intersection is empty and this is NOT stuck.
+        text = _debate(
+            _round(1, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B1: alpha\n"),
+            _round(2, "UX", "VERDICT: REJECT\n[BLOCKER] B1: alpha\n"),
+        )
+        r = condenser.thrashing_report(text, 2)
+        self.assertNotEqual(r["mode"], "stuck")
+
+    def test_reviewer_b1_and_reviewer_b2_are_distinct(self):
+        # Different ids from the same critic are distinct tokens.
+        text = _debate(
+            _round(1, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B1: alpha\n"),
+            _round(2, "Reviewer", "VERDICT: REJECT\n[BLOCKER] B2: beta\n"),
+        )
+        r = condenser.thrashing_report(text, 2)
+        self.assertNotEqual(r["mode"], "stuck")
+
+
+# --- D5: UX rubber-stamp widened for id-based RESOLVED ----------------------
+
+
+class TestUxRubberStampWidened(unittest.TestCase):
+    """D5: the rubber-stamp guard accepts id-based RESOLVED markers
+    (B1: RESOLVED — …) as proof the designer walked prior blockers."""
+
+    def test_id_resolved_marker_prevents_rubber_stamp(self):
+        """A bare APPROVE with B1: RESOLVED lines should NOT be treated as
+        a rubber stamp — the designer walked the prior blockers by id."""
+        import inspect
+        source = inspect.getsource(D.debate_ux)
+        # The widened check uses _UX_ID_RESOLVED_RE from condenser.
+        self.assertIn("_UX_ID_RESOLVED_RE", source)
+        self.assertIn("has_resolution_signal", source)
+
+    def test_bare_id_without_resolved_does_not_bypass_guard(self):
+        """A bare ``B1: <claim>`` without RESOLVED/STILL OPEN must NOT count
+        as a resolution signal — the designer must explicitly rule on each
+        prior blocker by id."""
+        from pipeline_graph.condenser import _UX_ID_RESOLVED_RE
+        # B1: RESOLVED matches.
+        self.assertTrue(_UX_ID_RESOLVED_RE.search("B1: RESOLVED — fixed it\n"))
+        # S1: STILL OPEN matches.
+        self.assertTrue(_UX_ID_RESOLVED_RE.search("S1: STILL OPEN — not done\n"))
+        # Bare B1: <claim> does NOT match.
+        self.assertFalse(_UX_ID_RESOLVED_RE.search("B1: this is still a problem\n"))
+        # Bare B1: with no keyword does NOT match.
+        self.assertFalse(_UX_ID_RESOLVED_RE.search("B1: alpha\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

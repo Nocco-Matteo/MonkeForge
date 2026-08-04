@@ -72,6 +72,20 @@ human instead of burning more debate rounds the plan cannot fix. Use one of:
                           use the explicit suffix when you can
 [SUGGESTION] items do not take a provenance suffix.
 
+BLOCKER ID — every [BLOCKER] and [SUGGESTION] item MUST carry a stable id so
+the proposer and the ledger can reference it unambiguously. Number your items
+sequentially within this round, prefixed by severity:
+  [BLOCKER] B1: <one-line claim>
+  [BLOCKER] B2: <one-line claim>
+  [SUGGESTION] S1: <one-line claim>
+The id is per-round and per-critic — your B1 and the tech reviewer's B1 are
+distinct (the pipeline qualifies them internally). Reuse the SAME id in a
+later round only when re-raising the same item; a new item always gets a new
+id. The proposer's reply MUST cite the id with your critic name:
+  B1 (UX): ACCEPTED — …
+so the ledger resolves the right entry. A raise without an id is recorded as
+a degradation and may not be tracked correctly across rounds.
+
 Never reopen an item marked RESOLVED in a prior round unless the new plan
 reintroduces the problem — then raise it as NEW.
 
@@ -98,7 +112,7 @@ Print exactly this block and nothing else around it:
   then, on rounds after the first, one RESOLVED/STILL OPEN line per prior blocker
   (see RE-REVIEW above);
   then at most 5 items, max 3 lines each:
-    [BLOCKER:PLAN|BLOCKER:REQUIREMENTS|BLOCKER|SUGGESTION] <one-line claim>
+    [BLOCKER:PLAN|BLOCKER:REQUIREMENTS|BLOCKER|SUGGESTION] <id>: <one-line claim>
     Evidence: <file:line or PLAN section> · Principle: <Pn>
     Consequence: <what the user experiences>
   APPROVE only when every blocker is resolved or accepted under a verified limit.

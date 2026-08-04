@@ -643,3 +643,50 @@ class TestNewFailuresSinceBaseline:
 
     def test_empty(self):
         assert new_failures_since_baseline(set(), set(), []) == set()
+
+
+# --- F3: parse_verify_statuses / parse_deviations_line ----------------------
+
+
+class TestParseVerifyStatuses:
+    """F3: parse_verify_statuses returns a list of status markers."""
+
+    def test_not_fixed_detected(self):
+        from pipeline_graph.nodes.common import parse_verify_statuses
+        assert "NOT_FIXED" in parse_verify_statuses("item 1: NOT_FIXED — broken")
+
+    def test_confirmed_detected(self):
+        from pipeline_graph.nodes.common import parse_verify_statuses
+        assert "CONFIRMED" in parse_verify_statuses("item 1: CONFIRMED")
+
+    def test_both_detected(self):
+        from pipeline_graph.nodes.common import parse_verify_statuses
+        result = parse_verify_statuses("item 1: CONFIRMED\nitem 2: NOT_FIXED — bad\n")
+        assert "CONFIRMED" in result
+        assert "NOT_FIXED" in result
+
+    def test_prose_not_detected(self):
+        from pipeline_graph.nodes.common import parse_verify_statuses
+        assert "NOT_FIXED" not in parse_verify_statuses("The previous NOT_FIXED was resolved")
+
+    def test_empty_returns_empty_list(self):
+        from pipeline_graph.nodes.common import parse_verify_statuses
+        assert parse_verify_statuses("") == []
+        assert parse_verify_statuses(None) == []
+
+
+class TestParseDeviationsLine:
+    """F3: parse_deviations_line returns "none" when no DEVIATIONS: line."""
+
+    def test_deviations_extracted(self):
+        from pipeline_graph.nodes.common import parse_deviations_line
+        assert parse_deviations_line("out\nDEVIATIONS: skipped X\nmore") == "skipped X"
+
+    def test_no_line_returns_none(self):
+        from pipeline_graph.nodes.common import parse_deviations_line
+        assert parse_deviations_line("no markers") == "none"
+
+    def test_empty_returns_none(self):
+        from pipeline_graph.nodes.common import parse_deviations_line
+        assert parse_deviations_line("") == "none"
+        assert parse_deviations_line(None) == "none"

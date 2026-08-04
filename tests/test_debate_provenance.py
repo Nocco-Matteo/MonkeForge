@@ -51,58 +51,101 @@ def _debate(*sections: str) -> str:
 
 
 class TestProvenanceRegex(unittest.TestCase):
-    def test_raise_line_bare_blocker_three_groups(self):
+    def test_raise_line_bare_blocker_four_groups(self):
         m = condenser._RAISE_LINE_RE.match("[BLOCKER] the plan is wrong")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1).upper(), "BLOCKER")
         self.assertIsNone(m.group(2))  # no provenance suffix
-        self.assertEqual(m.group(3), "the plan is wrong")
+        self.assertIsNone(m.group(3))  # no id
+        self.assertEqual(m.group(4), "the plan is wrong")
 
     def test_raise_line_plan_provenance(self):
         m = condenser._RAISE_LINE_RE.match("[BLOCKER:PLAN] the plan is wrong")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1).upper(), "BLOCKER")
         self.assertEqual(m.group(2).upper(), "PLAN")
-        self.assertEqual(m.group(3), "the plan is wrong")
+        self.assertIsNone(m.group(3))
+        self.assertEqual(m.group(4), "the plan is wrong")
 
     def test_raise_line_requirements_provenance(self):
         m = condenser._RAISE_LINE_RE.match("[BLOCKER:REQUIREMENTS] brief is wrong")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1).upper(), "BLOCKER")
         self.assertEqual(m.group(2).upper(), "REQUIREMENTS")
-        self.assertEqual(m.group(3), "brief is wrong")
+        self.assertIsNone(m.group(3))
+        self.assertEqual(m.group(4), "brief is wrong")
 
     def test_raise_line_suggestion_no_provenance(self):
         m = condenser._RAISE_LINE_RE.match("[SUGGESTION] minor thing")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1).upper(), "SUGGESTION")
         self.assertIsNone(m.group(2))
-        self.assertEqual(m.group(3), "minor thing")
+        self.assertIsNone(m.group(3))
+        self.assertEqual(m.group(4), "minor thing")
 
     def test_raise_line_bold_wrapped(self):
         m = condenser._RAISE_LINE_RE.match("**[BLOCKER:PLAN] bold claim**")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(2).upper(), "PLAN")
-        self.assertEqual(m.group(3), "bold claim")
+        self.assertIsNone(m.group(3))
+        self.assertEqual(m.group(4), "bold claim")
 
-    def test_tag_claim_re_three_groups(self):
+    def test_raise_line_with_id(self):
+        m = condenser._RAISE_LINE_RE.match("[BLOCKER] B1: the plan is wrong")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1).upper(), "BLOCKER")
+        self.assertIsNone(m.group(2))
+        self.assertEqual(m.group(3), "B1")
+        self.assertEqual(m.group(4), "the plan is wrong")
+
+    def test_raise_line_with_id_and_provenance(self):
+        m = condenser._RAISE_LINE_RE.match("[BLOCKER:PLAN] B2: claim text")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(2).upper(), "PLAN")
+        self.assertEqual(m.group(3), "B2")
+        self.assertEqual(m.group(4), "claim text")
+
+    def test_raise_line_suggestion_with_id(self):
+        m = condenser._RAISE_LINE_RE.match("[SUGGESTION] S1: minor thing")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(1).upper(), "SUGGESTION")
+        self.assertEqual(m.group(3), "S1")
+        self.assertEqual(m.group(4), "minor thing")
+
+    def test_tag_claim_re_four_groups(self):
         m = condenser._TAG_CLAIM_RE.match("[BLOCKER:REQUIREMENTS] foo")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(2).upper(), "REQUIREMENTS")
-        self.assertEqual(m.group(3), "foo")
+        self.assertIsNone(m.group(3))
+        self.assertEqual(m.group(4), "foo")
 
-    def test_header_claim_re_three_groups(self):
+    def test_tag_claim_re_with_id(self):
+        m = condenser._TAG_CLAIM_RE.match("[BLOCKER:REQUIREMENTS] B1: foo")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(2).upper(), "REQUIREMENTS")
+        self.assertEqual(m.group(3), "B1")
+        self.assertEqual(m.group(4), "foo")
+
+    def test_header_claim_re_four_groups(self):
         m = condenser._HEADER_CLAIM_RE.match("### [BLOCKER:PLAN] foo")
         self.assertIsNotNone(m)
         self.assertEqual(m.group(2).upper(), "PLAN")
-        self.assertEqual(m.group(3), "foo")
+        self.assertIsNone(m.group(3))
+        self.assertEqual(m.group(4), "foo")
 
-    def test_claim_is_group_3_not_group_2(self):
-        # Regression guard: the claim moved from group(2) to group(3). A
-        # group(2) read would now return the provenance, not the claim.
+    def test_header_claim_re_with_id(self):
+        m = condenser._HEADER_CLAIM_RE.match("### [BLOCKER:PLAN] B1: foo")
+        self.assertIsNotNone(m)
+        self.assertEqual(m.group(2).upper(), "PLAN")
+        self.assertEqual(m.group(3), "B1")
+        self.assertEqual(m.group(4), "foo")
+
+    def test_claim_is_group_4_not_group_3(self):
+        # Regression guard: the claim moved from group(3) to group(4). A
+        # group(3) read would now return the id (or None), not the claim.
         m = condenser._RAISE_LINE_RE.match("[BLOCKER:REQUIREMENTS] the real claim")
-        self.assertNotEqual(m.group(2), "the real claim")
-        self.assertEqual(m.group(3), "the real claim")
+        self.assertNotEqual(m.group(3), "the real claim")
+        self.assertEqual(m.group(4), "the real claim")
 
 
 # --- count_blockers (item 26) -----------------------------------------------

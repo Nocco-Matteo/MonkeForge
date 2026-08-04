@@ -1183,3 +1183,115 @@ def escalate(state):
         f"answered {answer!r}" + (" — forcing batch closed" if forced else "") + f"; was: {reason}",
     )
     return delta
+
+
+# --- F2/F3: line-anchored parsers and batch schema validation ----------------
+
+
+# NOT_FIXED as a line-anchored status marker: either a standalone line
+# (``NOT_FIXED``) or after a colon (``item 1: NOT_FIXED — reason``). A
+# bare word ``NOT_FIXED`` embedded in prose (``The previous NOT_FIXED was
+# resolved``) is NOT a status marker — the old ``"NOT_FIXED" in out``
+# substring check false-positived on it.
+_NOT_FIXED_LINE_RE = re.compile(
+    r"^\s*(?:\S.*:\s*)?NOT_FIXED\s*(?:[——-]|$)", re.MULTILINE | re.IGNORECASE
+)
+# F3: line-anchored status markers — CONFIRMED and NOT_FIXED. Each line whose
+# trimmed content is a standalone status (optionally preceded by an item ref
+# and colon) is parsed. A bare word embedded in prose is NOT a marker.
+_STATUS_LINE_RE = re.compile(
+    r"^\s*(?:\S.*:\s*)?(CONFIRMED|NOT_FIXED)\s*(?:[——-]|$)",
+    re.MULTILINE | re.IGNORECASE,
+)
+_DEVIATIONS_LINE_RE = re.compile(
+    r"^\s*DEVIATIONS\s*:\s*(.*)$", re.MULTILINE | re.IGNORECASE
+)
+
+
+def parse_verify_statuses(text: str) -> list[str]:
+    """F3: return the list of line-anchored status markers (CONFIRMED/NOT_FIXED)
+    found in the text, in order of appearance.
+
+    The old ``"NOT_FIXED" in out`` substring check false-positived on prose
+    quoting the word (e.g. a reviewer writing "the previous NOT_FIXED was
+    resolved"). Line-anchoring ensures only a real status marker — a line
+    whose trimmed content is exactly ``CONFIRMED`` or ``NOT_FIXED`` — is
+    returned. The caller checks ``"NOT_FIXED" in statuses`` to decide the
+    retry/give-up branch in ``code_verify``.
+    """
+    return [m.group(1).upper() for m in _STATUS_LINE_RE.finditer(text or "")]
+
+
+def parse_deviations_line(text: str) -> str:
+    """F3: extract the deviations text from a line-anchored ``DEVIATIONS:`` line.
+
+    The old ``text.split("DEVIATIONS", 1)[1]`` approach grabbed everything
+    after the first occurrence of the substring — including unrelated prose
+    that happened to mention the word. Line-anchoring matches only a line
+    whose trimmed content starts with ``DEVIATIONS:`` and returns the text
+    after the colon on that same line (trimmed, capped at 200 chars by the
+    caller). Returns ``"none"`` when no ``DEVIATIONS:`` line is found.
+    """
+    m = _DEVIATIONS_LINE_RE.search(text or "")
+    return m.group(1).strip() if m else "none"
+
+
+def validate_batches_schema(raw) -> tuple[list[dict] | None, str | None]:
+    """F2: validate a raw BATCHES json list and return (batches, None) on
+    success or (None, escalation_message) on failure.
+
+    Extracted from ``finalize.judge`` so the file-primary load path and the
+    stdout-extraction path share one validation routine. Each element must be
+    a dict with an integer ``n``; non-dict elements and missing/non-int ``n``
+    produce a specific ``"malformed batch"`` escalation message. A raw value
+    that is not a list, or a list with no dict elements at all (prose false
+    positive), is rejected with a shape error.
+    """
+    if not isinstance(raw, list) or (
+        raw and not any(isinstance(b, dict) for b in raw)
+    ):
+        return None, (
+            "BATCHES json is not a list of objects — judge output may contain "
+            "a prose false positive"
+        )
+    batches: list[dict] = []
+    for b in raw:
+        if not isinstance(b, dict):
+            return None, (
+                f"malformed batch (no n) — BATCHES item is not an object: {b!r}"
+            )
+        n = b.get("n")
+        if not isinstance(n, int) or isinstance(n, bool):
+            return None, (
+                f"malformed batch (no n) — missing or non-integer n: {b!r}"
+            )
+        scope = b.get("scope", "")
+        if not isinstance(scope, str):
+            return None, (
+                f"malformed batch (bad scope) — scope must be a string: {b!r}"
+            )
+        checklist = b.get("checklist", [])
+        if not isinstance(checklist, list):
+            return None, (
+                f"malformed batch (bad checklist) — checklist must be a list: {b!r}"
+            )
+        allowlist = b.get("test_failure_allowlist", [])
+        if not isinstance(allowlist, list):
+            return None, (
+                f"malformed batch (bad allowlist) — test_failure_allowlist must be a list: {b!r}"
+            )
+        for item in allowlist:
+            if not isinstance(item, str):
+                return None, (
+                    f"malformed batch (bad allowlist) — test_failure_allowlist elements must be strings: {b!r}"
+                )
+        batches.append({
+            "n": n,
+            "scope": scope,
+            "status": "PENDING",
+            "outcome": "",
+            "deviations": "",
+            "checklist": checklist,
+            "test_failure_allowlist": allowlist,
+        })
+    return batches, None

@@ -10,7 +10,7 @@ from .. import config as C
 from .. import events as ev
 from .. import test_runner as tr
 from ..state import Conversation
-from .common import _current_batch, _db_note, _dirty_paths, _git, _stage_all, _write_progress
+from .common import _current_batch, _db_note, _dirty_paths, _git, _stage_all, _write_progress, parse_deviations_line
 
 
 def _capture_test_baseline(state, b: dict, db_ok: bool) -> dict:
@@ -216,12 +216,8 @@ def close_batch(state):
     impl_log = sorted(C.RAW.glob(f"{tid}-impl-b{b['n']}-*.log"))
     if impl_log:
         text = impl_log[-1].read_text()
-        marker = "DEVIATIONS"
-        b["deviations"] = (
-            (text.split(marker, 1)[1].strip().splitlines() or ["none"])[0][:200]
-            if marker in text
-            else "none"
-        )
+        dev = parse_deviations_line(text)
+        b["deviations"] = dev[:200] if dev else "none"
     else:
         b["deviations"] = b["deviations"] or "none"
 

@@ -38,7 +38,7 @@ the task's scope. To escalate, write ESCALATE: <reason> as the first line of
 your final message and stop. If you are NOT escalating, omit the ESCALATE line
 entirely — do not write "ESCALATE: none" or similar.
 
-PRINT the FINAL-{task_id}.md content to stdout (the pipeline files it automatically):
+WRITE the FINAL-{task_id}.md content (the pipeline saves it from your output to the file as the primary source):
 1. Rulings — one line per open point: decision + the criterion that decided it.
 2. Consolidated plan (or delta vs the plan), including the batch list.
 3. Risk notes for implementation.
@@ -60,7 +60,7 @@ PRINT the FINAL-{task_id}.md content to stdout (the pipeline files it automatica
    "VERIFIED AT FINAL GATE" — it is checked once by the final check, never by a
    batch review, and its lines must not appear in BATCHES-{task_id}.json.
 
-ALSO PRINT the BATCHES-{task_id}.json content to stdout — machine-readable array, one object per batch:
+ALSO WRITE the BATCHES-{task_id}.json content (the pipeline saves it from your output to the file as the primary source) — machine-readable array, one object per batch:
 [{"n": 1, "scope": "<short scope>", "checklist": [1,2,3],
   "test_failure_allowlist": ["creationMatrixManifest.test.ts > drift check"]}, ...]
 Required keys per object: "n", "scope", "checklist" (checklist item numbers for that batch).
@@ -69,6 +69,9 @@ Optional "test_failure_allowlist": strings matched as substrings against vitest 
 known-expected failures the batch must not fix (e.g. manifest hash drift forbidden until
 final gate). Omit the key or use [] when not needed.
 This file drives the implementation loop: it must be valid JSON and nothing else.
+The pipeline saves the BATCHES array to a file and reads it back as the primary
+source — a corrupt or invalid array will be rejected and the file deleted before
+escalating, so produce clean, valid JSON.
 
 FINALLY, print on the last line of your message:
 HAS_UI: YES|NO   (does this task change any user-facing surface?)

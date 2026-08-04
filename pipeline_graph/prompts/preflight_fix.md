@@ -35,3 +35,9 @@ RULES:
 OUTPUT (max 30 lines): one line per failure — FIXED (with file:line) |
 INFRA (with explanation) | CANNOT FIX (with reason) — then test results,
 then DEVIATIONS introduced by the fixes, or "none".
+
+DEVIATIONS must be printed on a single line starting with `DEVIATIONS:` —
+the pipeline's parser matches the marker only at the start of a line. Example:
+  DEVIATIONS: none
+  DEVIATIONS: added missing import to satisfy type checker
+Do not embed the word `DEVIATIONS` in prose on other lines.

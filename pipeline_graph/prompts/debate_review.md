@@ -58,6 +58,20 @@ human instead of burning more debate rounds the plan cannot fix. Use one of:
                           use the explicit suffix when you can
 [SUGGESTION] items do not take a provenance suffix.
 
+BLOCKER ID — every [BLOCKER] and [SUGGESTION] item MUST carry a stable id so
+the proposer and the ledger can reference it unambiguously. Number your items
+sequentially within this round, prefixed by severity:
+  [BLOCKER] B1: <one-line claim>
+  [BLOCKER] B2: <one-line claim>
+  [SUGGESTION] S1: <one-line claim>
+The id is per-round and per-critic — your B1 and the UX critic's B1 are
+distinct (the pipeline qualifies them internally). Reuse the SAME id in a
+later round only when re-raising the same item; a new item always gets a new
+id. The proposer's reply MUST cite the id with your critic name:
+  B1 (Reviewer): ACCEPTED — …
+so the ledger resolves the right entry. A raise without an id is recorded as
+a degradation and may not be tracked correctly across rounds.
+
 SCOPE: regression risk, missed edge cases, feasibility, performance, security,
 and whether the batch split is coherent (including backwards dependencies).
 NOT: architecture you would have chosen differently, naming, formatting.
@@ -82,7 +96,7 @@ OUTPUT -> print the review to stdout (the pipeline appends it to the debate file
 "## Round {round} — Reviewer":
   VERDICT: APPROVE | APPROVE_WITH_CHANGES | REJECT
   then at most 5 items, max 4 lines each:
-    [BLOCKER:PLAN|BLOCKER:REQUIREMENTS|BLOCKER|SUGGESTION] <one-line claim>
+    [BLOCKER:PLAN|BLOCKER:REQUIREMENTS|BLOCKER|SUGGESTION] <id>: <one-line claim>
     Evidence: <file:line or PLAN section>
     Impact: <what breaks, concretely>
   then any `TECH-LIMIT VERIFIED:` / `TECH-LIMIT REJECTED:` lines.
