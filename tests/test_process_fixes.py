@@ -66,7 +66,9 @@ class EslintParsing(unittest.TestCase):
 class FinalGateBaseline(unittest.TestCase):
     def test_preexisting_failures_are_tolerated(self):
         # Only baseline failures remain → no fixer runs, gate passes.
-        with patch.object(N.tr, "run_repo_tests", return_value=(0, {"A", "B"}, "s")), \
+        from pipeline_graph import config as C
+        with patch.object(C, "DRY_RUN", False), \
+             patch.object(N.tr, "run_repo_tests", return_value=(0, {"A", "B"}, "s")), \
              patch.object(N, "run_agent") as ra:
             out = N._final_test_fix_loop(_conv("t"), True, {"A", "B"})
         self.assertIsNone(out)
@@ -74,7 +76,9 @@ class FinalGateBaseline(unittest.TestCase):
 
     def test_new_failure_is_fixed(self):
         # C is new vs baseline {A}; after one fix attempt it is gone → green.
-        with patch.object(N.tr, "run_repo_tests",
+        from pipeline_graph import config as C
+        with patch.object(C, "DRY_RUN", False), \
+             patch.object(N.tr, "run_repo_tests",
                           side_effect=[(0, {"A", "C"}, "s1"), (0, {"A"}, "s2")]), \
              patch.object(N, "run_agent", return_value=(0, "")) as ra, \
              patch.object(N, "_stage_all"), patch.object(N, "_git"), \
@@ -84,7 +88,9 @@ class FinalGateBaseline(unittest.TestCase):
         ra.assert_called_once()
 
     def test_unfixable_new_failure_escalates(self):
-        with patch.object(N.tr, "run_repo_tests", return_value=(0, {"A", "C"}, "s")), \
+        from pipeline_graph import config as C
+        with patch.object(C, "DRY_RUN", False), \
+             patch.object(N.tr, "run_repo_tests", return_value=(0, {"A", "C"}, "s")), \
              patch.object(N, "run_agent", return_value=(0, "")), \
              patch.object(N, "_stage_all"), patch.object(N, "_git"), \
              patch.object(N.ev, "emit"):

@@ -525,14 +525,20 @@ class TestYamlEffortLoading(unittest.TestCase):
         import run
         with tempfile.TemporaryDirectory() as td:
             yaml_path = Path(td) / "monkeforge.yaml"
+            # dry_run is only a filler key so the yaml is non-empty; must not
+            # leak PIPELINE_DRY_RUN into the process env for later tests.
             yaml_path.write_text("pipeline:\n  dry_run: true\n")
-            old = os.environ.pop("PIPELINE_EFFORT_JSON", None)
+            old_effort = os.environ.pop("PIPELINE_EFFORT_JSON", None)
+            old_dry = os.environ.pop("PIPELINE_DRY_RUN", None)
             try:
                 run._load_yaml_to_env(yaml_path)
                 self.assertIsNone(os.environ.get("PIPELINE_EFFORT_JSON"))
             finally:
-                if old is not None:
-                    os.environ["PIPELINE_EFFORT_JSON"] = old
+                os.environ.pop("PIPELINE_DRY_RUN", None)
+                if old_dry is not None:
+                    os.environ["PIPELINE_DRY_RUN"] = old_dry
+                if old_effort is not None:
+                    os.environ["PIPELINE_EFFORT_JSON"] = old_effort
 
     def test_effort_not_dict_does_not_set_env_var(self):
         import run

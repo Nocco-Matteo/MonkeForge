@@ -115,11 +115,29 @@ class SummaryGuard(unittest.TestCase):
 
 class JudgeGuard(unittest.TestCase):
     def test_untrustworthy_output_escalates_after_escalate_check(self):
+        # File-primary rescue (TASK-027) prefers on-disk BATCHES+FINAL when
+        # stdout is untrusted. Seed a valid BATCHES but no usable FINAL so
+        # rescue cannot succeed — hard untrustworthy escalate must fire.
+        import json
+        import tempfile
+        from pathlib import Path
+        from pipeline_graph import config as C
+        from pipeline_graph.agents import MIN_OUTPUT_BYTES
+
         st = _base_state()
-        with patch.object(N, "run_agent", return_value=_UNTRUSTWORTHY), \
-             patch.object(N.ev, "emit"):
-            d = _finalize.judge(st)
+        with tempfile.TemporaryDirectory() as td:
+            final = Path(td)
+            (final / "BATCHES-fl.json").write_text(json.dumps([
+                {"n": 1, "scope": "s", "checklist": [1]},
+            ]))
+            # FINAL missing or below MIN_OUTPUT_BYTES → no rescue.
+            (final / "FINAL-fl.md").write_text("x" * max(0, MIN_OUTPUT_BYTES - 1))
+            with patch.object(C, "FINAL", final), \
+                 patch.object(N, "run_agent", return_value=_UNTRUSTWORTHY), \
+                 patch.object(N.ev, "emit"):
+                d = _finalize.judge(st)
         self.assertIn("escalation", d)
+        self.assertIn("untrustworthy", d["escalation"])
         self.assertNotIn("health=", d["escalation"])
         self.assertIn("health=", d["journal"][-1])
 
