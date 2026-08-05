@@ -1,6 +1,8 @@
 """agents: models are required in monkeforge.yaml — no built-in defaults."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pipeline_graph import config as C
@@ -20,21 +22,35 @@ class TestBuildRoleConfig:
         assert "{model}" in cfg["IMPLEMENTER"]["cmd"]
 
     def test_missing_agents_map_raises(self):
-        with pytest.raises(RuntimeError, match="must define a non-empty"):
-            C.build_role_config(None)
-        with pytest.raises(RuntimeError, match="must define a non-empty"):
+        with pytest.raises(C.AgentsConfigError) as ei:
+            C.build_role_config(None, yaml_path=Path("/tmp/monkeforge.yaml"))
+        msg = ei.value.cli_message()
+        assert msg.startswith("error: /tmp/monkeforge.yaml:")
+        assert "missing required top-level `agents:`" in msg
+        assert "monkeforge.example.yaml" in msg
+        assert "traceback" not in msg.lower()
+        with pytest.raises(C.AgentsConfigError):
             C.build_role_config({})
 
     def test_missing_one_model_raises(self):
         agents = dict(_MINIMAL_AGENTS)
         del agents["JUDGE"]
-        with pytest.raises(RuntimeError, match="JUDGE"):
-            C.build_role_config(agents)
+        with pytest.raises(C.AgentsConfigError) as ei:
+            C.build_role_config(
+                agents,
+                yaml_path=Path("/x/monkeforge.yaml"),
+                example_path=Path("/x/monkeforge.example.yaml"),
+            )
+        msg = ei.value.cli_message()
+        assert msg.startswith("error: /x/monkeforge.yaml:")
+        assert "- JUDGE" in msg
+        assert "model: <your-model>" in msg
+        assert "/x/monkeforge.example.yaml" in msg
 
     def test_empty_model_raises(self):
         agents = dict(_MINIMAL_AGENTS)
         agents["PROPOSER"] = {"model": "   "}
-        with pytest.raises(RuntimeError, match="PROPOSER"):
+        with pytest.raises(C.AgentsConfigError, match="PROPOSER"):
             C.build_role_config(agents)
 
     def test_cmd_override_wins(self):

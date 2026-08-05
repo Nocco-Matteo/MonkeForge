@@ -126,24 +126,90 @@ _DEFAULT_ROLE_CMD: dict[str, str] = {
 }
 
 
+class AgentsConfigError(Exception):
+    """Missing/invalid ``agents:`` in monkeforge.yaml (expected, not a crash).
+
+    Carry a human CLI message (clig.dev): catch in ``run.py``, print to
+    stderr, exit 2 — never dump a traceback for this.
+    """
+
+    def __init__(
+        self,
+        *,
+        kind: str,
+        missing: list[str] | None = None,
+        yaml_path: Path | None = None,
+        example_path: Path | None = None,
+    ):
+        self.kind = kind
+        self.missing = list(missing or [])
+        self.yaml_path = yaml_path
+        self.example_path = example_path
+        super().__init__(self.cli_message())
+
+    def cli_message(self) -> str:
+        """Multi-line ``error:`` text for humans (stderr, no traceback)."""
+        ypath = str(self.yaml_path) if self.yaml_path else "monkeforge.yaml"
+        epath = (
+            str(self.example_path)
+            if self.example_path
+            else "monkeforge.example.yaml"
+        )
+        lines: list[str]
+        if self.kind == "missing_block":
+            lines = [
+                f"error: {ypath}: missing required top-level `agents:` block",
+                "",
+                "  Every role needs `agents.<ROLE>.model` — there are no",
+                "  built-in model defaults in code.",
+                "",
+                "  Roles that need a model:",
+                "    " + ", ".join(REQUIRED_ROLES),
+                "",
+                "  Fix: copy the `agents:` section from",
+                f"    {epath}",
+                f"  into {ypath}, then set the models you want to run.",
+            ]
+        else:
+            listed = "\n".join(f"    - {r}" for r in self.missing) or "    (none)"
+            sample = self.missing[0] if self.missing else "JUDGE"
+            lines = [
+                f"error: {ypath}: `agents:` is missing `model:` "
+                f"for {len(self.missing)} role(s)",
+                "",
+                listed,
+                "",
+                "  There are no built-in model defaults. Add e.g.:",
+                "",
+                "    agents:",
+                f"      {sample}:",
+                "        model: <your-model>",
+                "",
+                f"  Full template: {epath}",
+            ]
+        return "\n".join(lines)
+
+
 def build_role_config(
     yaml_agents: dict | None,
     *,
     default_cmds: dict[str, str] | None = None,
     required_roles: tuple[str, ...] | None = None,
+    yaml_path: Path | None = None,
+    example_path: Path | None = None,
 ) -> dict[str, dict[str, str]]:
-    """Build ROLE_CONFIG from yaml ``agents:``. Raises if any model is missing.
+    """Build ROLE_CONFIG from yaml ``agents:``.
 
-    Pure helper (also used by tests). No model string is invented here.
+    Raises ``AgentsConfigError`` if any model is missing. No model string is
+    invented here.
     """
     roles = required_roles if required_roles is not None else REQUIRED_ROLES
     cmds = default_cmds if default_cmds is not None else _DEFAULT_ROLE_CMD
     if not isinstance(yaml_agents, dict) or not yaml_agents:
-        raise RuntimeError(
-            "monkeforge.yaml must define a non-empty top-level `agents:` map "
-            "with a `model:` for every role "
-            f"({', '.join(roles)}). There are no built-in model defaults — "
-            "copy monkeforge.example.yaml and set the models you want."
+        raise AgentsConfigError(
+            kind="missing_block",
+            yaml_path=yaml_path,
+            example_path=example_path,
         )
     missing: list[str] = []
     out: dict[str, dict[str, str]] = {}
@@ -161,16 +227,18 @@ def build_role_config(
             continue
         out[role] = {"model": model, "cmd": cmd}
     if missing:
-        raise RuntimeError(
-            "monkeforge.yaml `agents:` is missing `model:` for: "
-            + ", ".join(missing)
-            + ". Every required role must declare a model — no code defaults."
+        raise AgentsConfigError(
+            kind="missing_models",
+            missing=missing,
+            yaml_path=yaml_path,
+            example_path=example_path,
         )
     return out
 
 
 # For agents: and condenser:, the yaml is the only source (no env bridge).
 _yaml_file = MF_ROOT / "monkeforge.yaml"
+_example_yaml = MF_ROOT / "monkeforge.example.yaml"
 _yaml_root: dict = {}
 if _yaml_file.exists():
     import yaml as _yaml
@@ -180,6 +248,8 @@ if _yaml_file.exists():
 
 ROLE_CONFIG: dict[str, dict[str, str]] = build_role_config(
     _yaml_root.get("agents"),
+    yaml_path=_yaml_file if _yaml_file.exists() else MF_ROOT / "monkeforge.yaml",
+    example_path=_example_yaml,
 )
 
 # Line-buffering / process wrappers that precede the real agent CLI in a

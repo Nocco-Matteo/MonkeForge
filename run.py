@@ -89,9 +89,19 @@ from rich.prompt import Confirm, Prompt
 from rich.table import Table
 from rich.text import Text
 
-from pipeline_graph import config as C, events as ev
-from pipeline_graph.graph import build_graph, open_checkpointer
-from pipeline_graph import test_runner as tr
+# Config import can raise AgentsConfigError (missing agents:/model:). That is
+# an expected operator mistake — print a clig-style `error:` and exit 2, never
+# a traceback (https://clig.dev/#errors).
+try:
+    from pipeline_graph import config as C, events as ev
+    from pipeline_graph.graph import build_graph, open_checkpointer
+    from pipeline_graph import test_runner as tr
+except Exception as _cfg_exc:
+    _cli = getattr(_cfg_exc, "cli_message", None)
+    if callable(_cli):
+        print(_cli(), file=sys.stderr)
+        raise SystemExit(2) from None
+    raise
 
 
 # --- Rich TTY rendering (TASK-027) ------------------------------------------
