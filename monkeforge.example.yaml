@@ -1,7 +1,7 @@
 # MonkeForge configuration example.
 # Copy this file to monkeforge.yaml for a local configuration.
 # Precedence: real environment variables > monkeforge.yaml > .env > code defaults
-# (where any remain). agents.*.model has NO code default — required in this file.
+# (where any remain). agents.*: both model: and cmd: required — no code defaults.
 # Keep secrets (tokens, credentials, private paths) out of this file.
 
 pipeline:
@@ -68,34 +68,43 @@ effort:
     gates: full
     fix_cycles: 3
 
-# REQUIRED. Every role must declare `model:`. There are NO built-in model
-# defaults in code — missing entries fail at import. `cmd:` is optional
-# (falls back to the role's invocation template in config.py); override when
-# you want a different CLI. Values below are examples, not sacred defaults —
-# pick the models you actually want to run.
+# REQUIRED. Every role must declare BOTH `model:` and `cmd:`. There are NO
+# built-in defaults in code — not for models, not for CLI templates. Missing
+# entries fail at import (CLI prints `error:`, no traceback).
+#
+# Placeholders in cmd: {model} {prompt} {prompt_file} {docs_dir}.
+# Values below are EXAMPLES only — pick the models/CLIs you actually run.
 agents:
   INTERVIEWER:
     model: gemini-3.1-pro-preview
-    # cmd: "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
+    cmd: "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
   PROPOSER:
     model: glm-5.2
-    # cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
+    cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
   PLAN_REVIEWER:
     model: codex
+    cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
   IMPLEMENTER:
     model: glm-5.2
+    cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
   CODE_REVIEWER:
     model: codex
+    cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
   UX_REVIEWER:
     model: gemini-3.6-flash
+    cmd: "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
   VISUAL_REVIEWER:
     model: sonnet
+    cmd: "claude -p {prompt} --model {model} --add-dir {docs_dir}"
   VISUAL_FIXER:
     model: sonnet
+    cmd: "claude -p {prompt} --model {model} --add-dir {docs_dir}"
   SUMMARIZER:
     model: glm-5.2
+    cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
   JUDGE:
     model: sonnet
+    cmd: "claude -p {prompt} --model {model} --add-dir {docs_dir}"
 
 # Optional condenser: keep_recent + per-role token budgets. Read directly by
 # config.py from this yaml key (no env bridge — yaml is the only source).

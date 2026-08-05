@@ -69,11 +69,12 @@ def arch_docs_block() -> str:
     return "\n".join(f"- {p}" for p in present) or "- (none configured)"
 
 # --- Role -> {model, command} mapping ---------------------------------------
-# MODELS: there are NO built-in defaults. Every role must declare ``model:``
-# under ``agents:`` in monkeforge.yaml. Missing/empty → fail at import.
-# CMDS: optional per-role override; if omitted, the invocation template below
-# is used (binary + flags only — still no model choice).
-# Placeholders in cmd: {model}, {prompt}, {prompt_file}, {docs_dir}.
+# BOTH ``model:`` and ``cmd:`` are REQUIRED under ``agents:`` in
+# monkeforge.yaml for every role. There are NO built-in defaults in code —
+# not for models, not for invocation templates. Missing/empty → fail at
+# import with a clig-style ``error:`` (no traceback).
+# Placeholders the operator may use in cmd: {model}, {prompt}, {prompt_file},
+# {docs_dir}.
 REQUIRED_ROLES: tuple[str, ...] = (
     "INTERVIEWER",
     "PROPOSER",
@@ -86,44 +87,6 @@ REQUIRED_ROLES: tuple[str, ...] = (
     "SUMMARIZER",
     "JUDGE",
 )
-
-_DEFAULT_ROLE_CMD: dict[str, str] = {
-    "INTERVIEWER": (
-        "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
-    ),
-    "PROPOSER": (
-        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
-        "--permission-mode dangerous --respect-workspace-trust false"
-    ),
-    "PLAN_REVIEWER": (
-        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
-        "--permission-mode dangerous --respect-workspace-trust false"
-    ),
-    "IMPLEMENTER": (
-        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
-        "--permission-mode dangerous --respect-workspace-trust false"
-    ),
-    "CODE_REVIEWER": (
-        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
-        "--permission-mode dangerous --respect-workspace-trust false"
-    ),
-    "UX_REVIEWER": (
-        "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
-    ),
-    "VISUAL_REVIEWER": (
-        "claude -p {prompt} --model {model} --add-dir {docs_dir}"
-    ),
-    "VISUAL_FIXER": (
-        "claude -p {prompt} --model {model} --add-dir {docs_dir}"
-    ),
-    "SUMMARIZER": (
-        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
-        "--permission-mode dangerous --respect-workspace-trust false"
-    ),
-    "JUDGE": (
-        "claude -p {prompt} --model {model} --add-dir {docs_dir}"
-    ),
-}
 
 
 class AgentsConfigError(Exception):
@@ -155,56 +118,55 @@ class AgentsConfigError(Exception):
             if self.example_path
             else "monkeforge.example.yaml"
         )
-        lines: list[str]
         if self.kind == "missing_block":
-            lines = [
+            return "\n".join([
                 f"error: {ypath}: missing required top-level `agents:` block",
                 "",
-                "  Every role needs `agents.<ROLE>.model` — there are no",
-                "  built-in model defaults in code.",
+                "  Every role needs BOTH `model:` and `cmd:` — there are no",
+                "  built-in agent defaults in code (not models, not commands).",
                 "",
-                "  Roles that need a model:",
+                "  Roles:",
                 "    " + ", ".join(REQUIRED_ROLES),
                 "",
                 "  Fix: copy the `agents:` section from",
                 f"    {epath}",
-                f"  into {ypath}, then set the models you want to run.",
-            ]
-        else:
-            listed = "\n".join(f"    - {r}" for r in self.missing) or "    (none)"
-            sample = self.missing[0] if self.missing else "JUDGE"
-            lines = [
-                f"error: {ypath}: `agents:` is missing `model:` "
-                f"for {len(self.missing)} role(s)",
-                "",
-                listed,
-                "",
-                "  There are no built-in model defaults. Add e.g.:",
-                "",
-                "    agents:",
-                f"      {sample}:",
-                "        model: <your-model>",
-                "",
-                f"  Full template: {epath}",
-            ]
-        return "\n".join(lines)
+                f"  into {ypath}, then set the models/CLIs you want to run.",
+            ])
+        listed = "\n".join(f"    - {r}" for r in self.missing) or "    (none)"
+        sample = self.missing[0].split(" ", 1)[0] if self.missing else "JUDGE"
+        return "\n".join([
+            f"error: {ypath}: `agents:` incomplete for "
+            f"{len(self.missing)} role(s)",
+            "",
+            listed,
+            "",
+            "  Each role needs BOTH keys. Example:",
+            "",
+            "    agents:",
+            f"      {sample}:",
+            "        model: <your-model>",
+            "        cmd: \"<your-cli> --model {model} ...\"",
+            "",
+            "  Placeholders you may use in cmd: {model} {prompt}",
+            "  {prompt_file} {docs_dir}",
+            "",
+            f"  Full template: {epath}",
+        ])
 
 
 def build_role_config(
     yaml_agents: dict | None,
     *,
-    default_cmds: dict[str, str] | None = None,
     required_roles: tuple[str, ...] | None = None,
     yaml_path: Path | None = None,
     example_path: Path | None = None,
 ) -> dict[str, dict[str, str]]:
     """Build ROLE_CONFIG from yaml ``agents:``.
 
-    Raises ``AgentsConfigError`` if any model is missing. No model string is
-    invented here.
+    Raises ``AgentsConfigError`` if any role lacks ``model:`` or ``cmd:``.
+    Nothing is invented here — yaml is the only source.
     """
     roles = required_roles if required_roles is not None else REQUIRED_ROLES
-    cmds = default_cmds if default_cmds is not None else _DEFAULT_ROLE_CMD
     if not isinstance(yaml_agents, dict) or not yaml_agents:
         raise AgentsConfigError(
             kind="missing_block",
@@ -218,17 +180,19 @@ def build_role_config(
         if not isinstance(over, dict):
             over = {}
         model = str(over.get("model") or "").strip()
+        cmd = str(over.get("cmd") or "").strip()
+        gaps = []
         if not model:
-            missing.append(role)
-            continue
-        cmd = str(over.get("cmd") or "").strip() or cmds.get(role, "")
+            gaps.append("model")
         if not cmd:
-            missing.append(f"{role} (no cmd template)")
+            gaps.append("cmd")
+        if gaps:
+            missing.append(f"{role} (missing {', '.join(gaps)})")
             continue
         out[role] = {"model": model, "cmd": cmd}
     if missing:
         raise AgentsConfigError(
-            kind="missing_models",
+            kind="missing_fields",
             missing=missing,
             yaml_path=yaml_path,
             example_path=example_path,

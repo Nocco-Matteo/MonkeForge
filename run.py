@@ -15,7 +15,7 @@ from pathlib import Path
 
 # Load monkeforge.yaml (or .env as fallback) into os.environ.
 # Priority: real env vars > yaml > .env > code defaults (where any remain).
-# agents.*.model: yaml-only, required — no built-in model defaults.
+# agents.*: yaml-only; every role requires model: AND cmd: (no code defaults).
 # Exceptions (read directly by config.py from yaml — no env bridge):
 #   agents: role model/cmd; condenser: keep_recent + per-role token budgets;
 #   test_suites: gate suite list.

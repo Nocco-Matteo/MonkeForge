@@ -438,8 +438,9 @@ Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
 | `PIPELINE_TEST_AMBIENT_PATTERNS` | vedi `config.py` | sottostringhe `;`-separate di test ambient-sensitive (DB-gated) |
 | `PIPELINE_REPO` | da `git rev-parse` | root del repo |
 
-`agents:` (ogni ruolo con `model:`) è **obbligatorio** in `monkeforge.yaml` —
-non esistono modelli di default nel codice. Condenser (come `test_suites:`): solo `monkeforge.yaml` —
+`agents:` (ogni ruolo con **`model:` e `cmd:`**) è **obbligatorio** in
+`monkeforge.yaml` — zero default in codice (né modelli né template CLI).
+Condenser (come `test_suites:`): solo `monkeforge.yaml` —
 
 ```yaml
 condenser:
