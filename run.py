@@ -9,7 +9,7 @@
   ./run.py graph            # print the graph as mermaid
 """
 from __future__ import annotations
-import argparse, contextlib, json, os, re, shutil, subprocess, sys, threading, tomllib
+import argparse, contextlib, io, json, os, re, shutil, subprocess, sys, threading, tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -457,6 +457,8 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False,
     if in_session:
         sys.stderr.write(
             f"  {_c('pick an option above (or type a key) and press Enter:', 'dim', color=color)}\n")
+        sys.stderr.write(
+            f"  {_c('Discord buttons also work — they answer this pause in-place.', 'dim', color=color)}\n")
     else:
         sys.stderr.write(
             f"  {_c('action:', 'dim', color=color)} "
@@ -518,6 +520,7 @@ def _print_pause_rich(data: dict, task_id: str, *, in_session: bool = False) -> 
             body_lines.append(Text("    ") + key + marker + Text(" — ") + label)
     if in_session:
         body_lines.append(Text("pick an option above (or type a key) and press Enter:"))
+        body_lines.append(Text("Discord buttons also work — they answer this pause in-place."))
     else:
         body_lines.append(Text(f"action: ./run.py resume {task_id} --answer \"<choice>\""))
     panel = Panel(Text("\n").join(body_lines), title=title, border_style="cyan")
@@ -591,8 +594,80 @@ def _validate_answer(answer, options, *, free_text_allowed=False,
             f"(stop, no, abort, cancel)")
 
 
+def _read_answer_line(*, eof_raises: bool = False,
+                      pending_task_id: str | None = None) -> str:
+    """Read one answer line from stdin and/or a Discord pending-answer file.
+
+    When ``pending_task_id`` is set (interactive session loop), poll the
+    shared pending-answer file so a Discord button can unblock this process
+    without spawning a second ``run.py resume``. Stdin still wins when the
+    human types first.
+    """
+    import select
+    import time
+    from pipeline_graph import pending_answer as PA
+
+    def _from_pending() -> str | None:
+        if not pending_task_id:
+            return None
+        return PA.take_pending_answer(pending_task_id)
+
+    def _consume_stdin() -> str | None:
+        """Return stripped line, ``""`` for empty Enter, or raise EOFError."""
+        if eof_raises:
+            raw = sys.stdin.readline()
+            if raw == "":
+                raise EOFError
+            return raw.strip()
+        try:
+            return sys.stdin.readline().strip()
+        except EOFError:
+            return ""
+
+    # Fast path: Discord already wrote before we entered the wait.
+    taken = _from_pending()
+    if taken is not None:
+        sys.stderr.write(f"  (answered via Discord: {taken})\n")
+        sys.stderr.flush()
+        return taken
+
+    fd = None
+    if pending_task_id:
+        try:
+            fd = sys.stdin.fileno()
+        except (AttributeError, io.UnsupportedOperation, ValueError):
+            fd = None
+
+    if pending_task_id and fd is not None:
+        while True:
+            taken = _from_pending()
+            if taken is not None:
+                sys.stderr.write(f"  (answered via Discord: {taken})\n")
+                sys.stderr.flush()
+                return taken
+            ready, _, _ = select.select([sys.stdin], [], [], 0.25)
+            if not ready:
+                continue
+            return _consume_stdin()
+
+    # No live Discord poll (tests / non-session): one blocking readline.
+    # If a pending file was written just before the call, the fast path above
+    # already returned it.
+    if pending_task_id and fd is None:
+        # Fake stdin (unit tests): spin briefly so a concurrent writer can land.
+        for _ in range(4):
+            taken = _from_pending()
+            if taken is not None:
+                sys.stderr.write(f"  (answered via Discord: {taken})\n")
+                sys.stderr.flush()
+                return taken
+            time.sleep(0.05)
+    return _consume_stdin()
+
+
 def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
-              eof_raises: bool = False, render: bool = True) -> str:
+              eof_raises: bool = False, render: bool = True,
+              pending_task_id: str | None = None) -> str:
     """Interactive picker: list the pending options and read a choice from stdin.
 
     Returns the chosen option's canonical key. Falls back to the hint (or
@@ -611,6 +686,8 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
         renders the pause chrome via ``_print_pause(..., in_session=True)``
         first and then calls ``_tty_pick(..., render=False, eof_raises=True)``
         to read ONLY the answer line — no double render (item 41 / S5).
+      * ``pending_task_id`` — when set, also accept a Discord answer written
+        to ``pending-answer-{id}.json`` (CLI ↔ Discord synergy).
 
     The prompt is written to ``sys.stderr`` (C9 — not via ``input()`` to
     stdout) and stdin is read via ``sys.stdin.readline()`` so the prompt and
@@ -649,34 +726,17 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
                     f"{_c(key, 'cyan', color=color)}{marker} — {label}\n")
             sys.stderr.write(
                 f"  {_c(f'pick [1-{len(options)}] or type a key:', 'dim', color=color)} ")
+        if pending_task_id:
+            sys.stderr.write(
+                f"\n  {_c('(Discord buttons also work — they answer this pause)', 'dim', color=color)}\n")
     if not options:
         if render:
             sys.stderr.write("> ")
-        # Item 39: capture the raw readline result; raise EOFError BEFORE
-        # .strip() when eof_raises and the raw result is "" (Ctrl-D). Item 40:
-        # the legacy ``except EOFError: line = ""`` fallback runs only when
-        # ``not eof_raises`` so the resume call site stays behaviour-identical.
-        if eof_raises:
-            raw = sys.stdin.readline()
-            if raw == "":
-                raise EOFError
-            line = raw.strip()
-        else:
-            try:
-                line = sys.stdin.readline().strip()
-            except EOFError:
-                line = ""
+        line = _read_answer_line(eof_raises=eof_raises,
+                                 pending_task_id=pending_task_id)
         return line or "ok"
-    if eof_raises:
-        raw = sys.stdin.readline()
-        if raw == "":
-            raise EOFError
-        line = raw.strip()
-    else:
-        try:
-            line = sys.stdin.readline().strip()
-        except EOFError:
-            line = ""
+    line = _read_answer_line(eof_raises=eof_raises,
+                             pending_task_id=pending_task_id)
     if not line:
         return _canonical_key(hint) if hint else "ok"
     if line.isdigit() and 1 <= int(line) <= len(options):
@@ -1085,9 +1145,13 @@ def _drive(graph, task_id, payload, args=None) -> int:
                     # render (S5/item 41).
                     _print_pause(data, task_id, color=color, in_session=True)
                     _opts = _options_from_data(data)
+                    # Clear any stale Discord answer from a previous pause.
+                    from pipeline_graph import pending_answer as _PA
+                    _PA.clear_pending_answer(task_id)
                     try:
                         answer = _tty_pick(_opts, data, color=color,
-                                           render=False, eof_raises=True)
+                                           render=False, eof_raises=True,
+                                           pending_task_id=task_id)
                     except (EOFError, KeyboardInterrupt):
                         # Human bailed (Ctrl-D / Ctrl-C) at the in-session
                         # picker. The task is at a clean pause point — mark

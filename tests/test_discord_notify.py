@@ -682,19 +682,24 @@ class TestBotHelp:
         captured = {}
 
         class FakeResponse:
+            async def defer(self, ephemeral=False):
+                captured["deferred"] = True
+
             async def send_message(self, text, ephemeral=False):
+                captured["text"] = text
+
+        class FakeFollowup:
+            async def send(self, text, ephemeral=False):
                 captured["text"] = text
 
         class FakeInteraction:
             response = FakeResponse()
+            followup = FakeFollowup()
 
-        # Find the /help command handler in the tree.
-        # The handler is registered via @tree.command(name="help", ...).
-        # @tree.command wraps the function in an app_commands.Command, so
-        # reach the underlying coroutine via .callback to invoke it directly.
         help_fn = bot._help.callback
         import asyncio
         asyncio.run(help_fn(FakeInteraction()))
+        assert captured.get("deferred")
         text = captured["text"]
         assert "https://github.com/Nocco-Matteo/MonkeForge" in text
         found = sum(1 for sub in ("resume", "--answer", "status") if sub in text)

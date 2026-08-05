@@ -6,7 +6,9 @@ Run:  python bot/bot.py     (needs discord.py; see requirements.txt / README)
 It connects OUT to Discord (no open ports, no VPN), tails events.jsonl, and:
   - posts each escalation as a card with one BUTTON per valid answer (from the
     run_paused event's `answers` menu), plus the screenshots for a visual block;
-  - on a button press (allowed users only) runs `run.py resume <id> --answer X`;
+  - on a button press (allowed users only) delivers the answer to a live CLI
+    session via pending-answer file, or runs `run.py resume <id> --answer X`
+    when no live session owns the pause;
   - answers /status, /doctor, /resume.
 
 It cannot start a run — only manage blocks of runs already under way.
@@ -26,6 +28,7 @@ _MF_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _MF_ROOT not in sys.path:
     sys.path.insert(0, _MF_ROOT)
 import config as C  # noqa: E402
+from pipeline_graph import pending_answer as PA  # noqa: E402
 from pipeline_graph.nodes.common import button_specs  # noqa: E402
 
 try:
@@ -38,6 +41,8 @@ except ImportError:
 intents = discord.Intents.default()
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+_RESUME_CUSTOM_ID_RE = re.compile(r"^resume:([^:]+):(.*)$")
 
 
 def _allowed(user_id: int) -> bool:
@@ -66,6 +71,88 @@ async def _cli(*args: str) -> str:
     return (out or b"").decode("utf-8", "replace")
 
 
+async def _deliver_answer(task_id: str, answer: str) -> str:
+    """Hand an answer to a live CLI session, or spawn ``run.py resume``.
+
+    Live session (interactive pause still holding the checkpoint): write the
+    pending-answer file and wait for the CLI to consume it.
+    Otherwise: classic subprocess resume.
+    """
+    pid = PA.live_session_pid(task_id)
+    if pid is not None:
+        PA.write_pending_answer(task_id, answer, source="discord")
+        path = PA.pending_answer_path(task_id)
+        for _ in range(80):  # ~20s
+            await asyncio.sleep(0.25)
+            if not path.exists():
+                return (
+                    f"(delivered to live CLI session pid={pid} for task "
+                    f"{task_id} — watch that terminal)"
+                )
+        # CLI did not take it — fall back to subprocess resume so the pause
+        # is not stranded. Clear the stale file first to avoid double-apply.
+        PA.clear_pending_answer(task_id)
+        out = await _cli("resume", task_id, "--answer", answer)
+        return (
+            f"(live CLI pid={pid} did not consume the answer in time; "
+            f"fell back to run.py resume)\n{out}"
+        )
+    return await _cli("resume", task_id, "--answer", answer)
+
+
+async def _ack_resume(interaction: discord.Interaction, task_id: str,
+                      answer: str, meaning: str = "") -> bool:
+    """Ack within Discord's 3s window. Returns False if ack failed."""
+    note = f" ({meaning})" if meaning else ""
+    content = f"▶️ task {task_id}: answering with `{answer}`{note}…"
+    try:
+        if interaction.response.is_done():
+            return True
+        # Prefer editing the escalation card (removes buttons); fall back to defer.
+        try:
+            await interaction.response.edit_message(content=content, view=None)
+            return True
+        except (discord.HTTPException, discord.InteractionResponded):
+            pass
+        if not interaction.response.is_done():
+            await interaction.response.defer()
+        return True
+    except Exception as exc:
+        print(f"resume ack failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return False
+
+
+async def _handle_resume_interaction(interaction: discord.Interaction,
+                                     task_id: str, answer: str,
+                                     meaning: str = "") -> None:
+    """Shared path for live AnswerButton callbacks and stale-button recovery."""
+    if not _allowed(interaction.user.id):
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Not authorised.", ephemeral=True)
+        except Exception:
+            pass
+        return
+    if not await _ack_resume(interaction, task_id, answer, meaning):
+        return
+
+    async def _run():
+        try:
+            out = await _deliver_answer(task_id, answer)
+        except Exception as exc:
+            out = f"(deliver failed: {type(exc).__name__}: {exc})"
+        tail = (out or "").strip()[-1500:]
+        try:
+            await interaction.channel.send(
+                f"task {task_id} — answered with `{answer}`.\n```\n{tail}\n```")
+        except Exception as exc:
+            print(f"resume followup failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+
+    interaction.client.loop.create_task(_run())
+
+
 class AnswerButton(discord.ui.Button):
     def __init__(self, task_id: str, spec: dict, recommended: str = ""):
         answer = spec.get("answer") or spec.get("key", "ok")
@@ -77,20 +164,8 @@ class AnswerButton(discord.ui.Button):
         self.task_id, self.answer, self.meaning = task_id, answer, spec.get("label", "")
 
     async def callback(self, interaction: discord.Interaction):
-        if not _allowed(interaction.user.id):
-            await interaction.response.send_message("Not authorised.", ephemeral=True)
-            return
-        await interaction.response.edit_message(
-            content=f"▶️ task {self.task_id}: resuming with `{self.answer}` "
-                    f"({self.meaning})…", view=None)
-
-        async def _run():
-            out = await _cli("resume", self.task_id, "--answer", self.answer)
-            tail = out.strip()[-1500:]
-            await interaction.channel.send(
-                f"task {self.task_id} — resumed with `{self.answer}`.\n```\n{tail}\n```")
-
-        interaction.client.loop.create_task(_run())
+        await _handle_resume_interaction(
+            interaction, self.task_id, self.answer, self.meaning)
 
 
 class AnswerView(discord.ui.View):
@@ -99,6 +174,26 @@ class AnswerView(discord.ui.View):
         specs = button_specs(options)
         for spec in specs[:5]:   # Discord: 5 buttons/row
             self.add_item(AnswerButton(task_id, spec, recommended))
+
+
+@client.event
+async def on_interaction(interaction: discord.Interaction):
+    """Recover clicks on escalation buttons after a bot restart.
+
+    In-memory AnswerView callbacks handle fresh cards. After restart those
+    views are gone; without this handler Discord shows "interaction failed".
+    Skip when a View callback already acked the interaction.
+    """
+    if interaction.type is not discord.InteractionType.component:
+        return
+    if interaction.response.is_done():
+        return
+    data = interaction.data or {}
+    custom_id = str(data.get("custom_id") or "")
+    m = _RESUME_CUSTOM_ID_RE.match(custom_id)
+    if not m:
+        return
+    await _handle_resume_interaction(interaction, m.group(1), m.group(2))
 
 
 async def _post_escalation(channel, rec: dict):
@@ -320,13 +415,14 @@ async def resume(interaction: discord.Interaction, task_id: str, answer: str):
     await interaction.response.defer()
 
     async def _run():
-        out = await _cli("resume", task_id, "--answer", answer)
-        tail = out.strip()[-1500:]
+        out = await _deliver_answer(task_id, answer)
+        tail = (out or "").strip()[-1500:]
         await interaction.channel.send(
-            f"task {task_id} — resumed with `{answer}`.\n```\n{tail}\n```")
+            f"task {task_id} — answered with `{answer}`.\n```\n{tail}\n```")
 
     interaction.client.loop.create_task(_run())
-    await interaction.followup.send(f"▶️ task {task_id}: resuming with `{answer}`… (output will follow)")
+    await interaction.followup.send(
+        f"▶️ task {task_id}: answering with `{answer}`… (output will follow)")
 
 
 @tree.command(description="Stop the running pipeline for a task")
@@ -338,7 +434,8 @@ async def stop(interaction: discord.Interaction, task_id: str):
     import json as _json
     import os as _os
     import signal as _signal
-    cur = C.REPO / "docs" / "metrics" / "current.json"
+    # Same metrics dir the pipeline writes (respects PIPELINE_DOCS_DIR).
+    cur = C.EVENTS_LOG.parent / "current.json"
     if not cur.exists():
         await interaction.followup.send(f"No running pipeline found for task {task_id}.")
         return
@@ -346,6 +443,10 @@ async def stop(interaction: discord.Interaction, task_id: str):
         info = _json.loads(cur.read_text())
     except (OSError, ValueError):
         await interaction.followup.send("Could not read current.json — pipeline state unknown.")
+        return
+    if str(info.get("task", "")) != str(task_id):
+        await interaction.followup.send(
+            f"current.json is for task {info.get('task')!r}, not {task_id}.")
         return
     pid = info.get("pid")
     if not pid:
@@ -415,9 +516,8 @@ async def debate(interaction: discord.Interaction, task_id: str):
 
 @tree.command(name="help", description="Help, examples and support links")
 async def _help(interaction: discord.Interaction):
-    # Support URL: import lazily from run.py so the bot does not hardcode a
-    # second copy of the URL; fall back to the literal if run.py is not on
-    # the path (standalone launch without the pipeline root).
+    # Ack first — importing run.py can exceed Discord's 3s interaction window.
+    await interaction.response.defer(ephemeral=True)
     try:
         import run as _run  # noqa: E402
         url = getattr(_run, "_SUPPORT_URL", "https://github.com/Nocco-Matteo/MonkeForge")
@@ -429,13 +529,15 @@ async def _help(interaction: discord.Interaction):
         "Slash commands:\n"
         "- `/status <task_id>` — current node / batch / pause\n"
         "- `/doctor <task_id>` — what went wrong (failures, degradations)\n"
-        "- `/resume <task_id> answer: <choice>` — resume a paused task\n"
+        "- `/resume <task_id> answer: <choice>` — answer a paused task\n"
         "- `/stop <task_id>` — SIGTERM the running pipeline\n"
         "- `/debate <task_id>` — latest debate blockers\n\n"
-        "From the CLI: `./run.py resume <task_id> --answer <choice>`\n"
-        "Buttons on an escalation card run `resume --answer` for you."
+        "From the CLI: type the choice at the pause prompt, or "
+        "`./run.py resume <task_id> --answer <choice>` if the process exited.\n"
+        "Escalation buttons answer a live CLI session in-place (or resume "
+        "if no session is open). After a bot restart, old buttons still work."
     )
-    await interaction.response.send_message(text, ephemeral=True)
+    await interaction.followup.send(text, ephemeral=True)
 
 
 # Module-level singleton poller task (C16): on_ready fires on every (re)connect,
