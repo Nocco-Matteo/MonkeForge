@@ -23,6 +23,48 @@ def _git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=C.REPO, capture_output=True, text=True).stdout.strip()
 
 
+def git_identity() -> dict[str, str]:
+    """Live git facts for the current ``C.REPO`` (not pipeline state).
+
+    Returns ``repo``, ``branch``, ``sha``. Empty strings when git is unavailable
+    or ``NO_GIT`` / missing ``.git``. Used so wrap_up / batch_done never claim
+    ``state["branch"]`` as if it were HEAD.
+    """
+    repo = str(C.REPO.resolve())
+    if C.NO_GIT or C.DRY_RUN:
+        return {"repo": repo, "branch": "", "sha": ""}
+    if not (C.REPO / ".git").exists():
+        return {"repo": repo, "branch": "", "sha": ""}
+    branch = _git("rev-parse", "--abbrev-ref", "HEAD")
+    sha = _git("rev-parse", "HEAD")
+    return {"repo": repo, "branch": branch, "sha": sha}
+
+
+def branch_mismatch_reason(expected: str | None) -> str | None:
+    """If HEAD is not ``expected``, return an escalation reason; else None.
+
+    Skipped under DRY_RUN / NO_GIT. Empty ``expected`` skips (init has not set
+    the task branch yet). Detached HEAD (``HEAD``) always mismatches a named
+    branch.
+    """
+    if C.DRY_RUN or C.NO_GIT:
+        return None
+    expected = (expected or "").strip()
+    if not expected:
+        return None
+    ident = git_identity()
+    actual = ident["branch"]
+    if actual == expected:
+        return None
+    sha = ident["sha"][:12] if ident["sha"] else "?"
+    return (
+        f"git branch mismatch: HEAD is {actual!r} at {sha} but this task "
+        f"expects {expected!r} (repo={ident['repo']}). Checkout the task "
+        f"branch in that repo (or fix PIPELINE_REPO / --repo), then resume "
+        f"with ok — refusing to commit on the wrong branch."
+    )
+
+
 def _rel(path: Path) -> Path:
     """Relative to REPO if inside it, otherwise absolute."""
     try:
@@ -765,6 +807,13 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
         return [
             _opt("ok", "retry the judge (re-parse the verdict output, or re-run if needed)"),
             _opt("stop", "stop the run — inspect the verdict log, then resume or redo"),
+        ]
+    if "git branch mismatch" in r:
+        return [
+            _opt("ok",
+                 "retry after checking out the expected task branch in PIPELINE_REPO "
+                 "(see the escalation reason for repo path + expected name)"),
+            _opt("stop", "stop the run — fix repo/branch, then resume or redo"),
         ]
     return [
         _opt("ok", "retry / continue from here"),

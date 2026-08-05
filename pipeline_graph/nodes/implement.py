@@ -10,7 +10,17 @@ from .. import config as C
 from .. import events as ev
 from .. import test_runner as tr
 from ..state import Conversation
-from .common import _current_batch, _db_note, _dirty_paths, _git, _stage_all, _write_progress, parse_deviations_line
+from .common import (
+    _current_batch,
+    _db_note,
+    _dirty_paths,
+    _git,
+    _stage_all,
+    _write_progress,
+    branch_mismatch_reason,
+    git_identity,
+    parse_deviations_line,
+)
 
 
 def _capture_test_baseline(state, b: dict, db_ok: bool) -> dict:
@@ -102,6 +112,13 @@ def implement(state):
     # against it, not HEAD — the batch's work then shows whether the implementer
     # left it staged OR committed it (the false-REJECT that hit TASK-010 b1/b5).
     if attempt == 0 and not C.DRY_RUN:
+        mismatch = branch_mismatch_reason(state.get("branch"))
+        if mismatch:
+            return {
+                **baseline_delta,
+                "escalation": mismatch,
+                "journal": [f"impl b{b['n']}: refused — git branch mismatch"],
+            }
         # Scope guard: the tree must be clean before the implementer edits, so
         # close_batch's `git add -A` commits ONLY this batch's work. Any leftover
         # (a crashed run, a smoke sharing the working copy) gets its own clearly
@@ -296,7 +313,17 @@ def close_batch(state):
     else:
         b["deviations"] = b["deviations"] or "none"
 
+    mismatch = branch_mismatch_reason(state.get("branch"))
+    if mismatch:
+        # Do not mark the batch DONE on disk / progress until commit lands on
+        # the expected branch — leave progress write for the successful path.
+        return {
+            "escalation": mismatch,
+            "journal": [f"batch {b['n']}: refused commit — git branch mismatch"],
+        }
+
     _write_progress(tid, batches)
+    sha = ""
     if not C.DRY_RUN and not C.NO_GIT:
         subprocess.run(["git", "add", "-A"], cwd=C.REPO, capture_output=True)
         subprocess.run(
@@ -304,12 +331,27 @@ def close_batch(state):
             cwd=C.REPO,
             capture_output=True,
         )
+        sha = _git("rev-parse", "HEAD")
+    ident = git_identity()
+    # Prefer post-commit sha; fall back to identity helper (DRY_RUN → empty).
+    if sha:
+        ident = {**ident, "sha": sha}
+    short = (ident["sha"][:12] if ident.get("sha") else "dry")
+    branch = ident.get("branch") or state.get("branch") or "?"
+    repo = ident.get("repo") or str(C.REPO)
+    next_bit = (
+        f"batch {b['n'] + 1}" if idx + 1 < len(batches) else "final gate"
+    )
+    where = f"{short} on {branch} in {repo}"
     ev.emit(
         "batch_done",
         tid,
         "close_batch",
-        f"batch {b['n']}/{len(batches)} committed — next: "
-        f"{'batch ' + str(b['n'] + 1) if idx + 1 < len(batches) else 'final gate'}",
+        f"batch {b['n']}/{len(batches)} committed — {where} — next: {next_bit}",
+        repo=repo,
+        branch=branch,
+        sha=ident.get("sha") or "",
+        state_branch=state.get("branch") or "",
     )
     return {
         "batches": batches,
@@ -324,5 +366,5 @@ def close_batch(state):
         "last_gate_status": "",
         "baseline_batch_n": 0,
         "batch_test_baseline": [],
-        "journal": [f"batch {b['n']}: committed"],
+        "journal": [f"batch {b['n']}: committed — {where}"],
     }

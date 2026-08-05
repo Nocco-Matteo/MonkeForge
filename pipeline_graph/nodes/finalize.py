@@ -24,6 +24,7 @@ from .common import (
     _strip_batches_block,
     _trust_output,
     _write_progress,
+    git_identity,
     validate_batches_schema,
 )
 
@@ -489,8 +490,24 @@ def wrap_up(state):
     # each one mid-run.
     degradations = state.get("degradations", [])
     warnings = [f"DEGRADED: {d}" for d in degradations]
+    ident = git_identity()
+    state_branch = state.get("branch") or ""
+    git_branch = ident.get("branch") or ""
+    repo = ident.get("repo") or str(C.REPO)
+    sha = ident.get("sha") or ""
+    short = sha[:12] if sha else "n/a"
+    # Never claim state["branch"] alone — that lied when HEAD was main.
+    where = (
+        f"repo={repo} git_branch={git_branch or 'n/a'} "
+        f"state_branch={state_branch or 'n/a'} sha={short}"
+    )
+    if git_branch and state_branch and git_branch != state_branch:
+        warnings.append(
+            f"WARNING: git HEAD {git_branch!r} != state branch {state_branch!r} "
+            f"— commits may be on the wrong branch (see {where})"
+        )
     lines = [
-        f"TASK-{tid} complete on {state.get('branch')}",
+        f"TASK-{tid} complete — {where}",
         f"batches: {len(state.get('batches', []))}",
         f"degradations: {len(degradations)}" if degradations else "degradations: none",
         *warnings,
@@ -498,15 +515,24 @@ def wrap_up(state):
     ]
     report = "\n".join(lines)
     (C.FINAL / f"REPORT-{tid}.md").write_text(report + "\n")
+    mismatch_note = ""
+    if any(w.startswith("WARNING: git HEAD") for w in warnings):
+        mismatch_note = " — WARNING: git branch != state branch"
+    deg_note = (
+        f" — {len(degradations)} degradation(s), see the report" if degradations else ""
+    )
     ev.emit(
         "run_end",
         tid,
         "wrap_up",
-        f"all {len(state.get('batches', []))} batches done on "
-        f"{state.get('branch')}, branch ready for review"
-        + (f" — {len(degradations)} degradation(s), see the report" if degradations else ""),
-        degraded=bool(degradations),
+        f"all {len(state.get('batches', []))} batches done — {where}"
+        f"{mismatch_note}{deg_note}",
+        degraded=bool(degradations) or bool(mismatch_note),
         degradations=degradations,
+        repo=repo,
+        branch=git_branch,
+        state_branch=state_branch,
+        sha=sha,
     )
     C.sync_back_docs()
-    return {"finished": True, "journal": ["wrap up: report written"]}
+    return {"finished": True, "journal": [f"wrap up: report written — {where}"]}

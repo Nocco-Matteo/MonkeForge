@@ -41,8 +41,10 @@ from .common import (
     _write_progress,
     _set_router_error,
     _get_router_error,
+    branch_mismatch_reason,
     button_specs,
     escalate,
+    git_identity,
     instrument,
 )
 from .debate import (
@@ -135,6 +137,8 @@ __all__ = [
     "Conversation",
     # common
     "_git",
+    "git_identity",
+    "branch_mismatch_reason",
     "_rel",
     "_save",
     "_file_or_stdout",
