@@ -216,12 +216,16 @@ def intake_ask(state):
     # Gemini prints to stdout only; GLM/Cursor may edit files directly — fill gaps.
     # materialize refuses non-contract COMPLETE bodies so a chat summary cannot
     # clobber a seed brief the agent already wrote (or left untouched).
+    # Pass pre-agent mtimes so a tool-written intake is not appended again from
+    # the same stdout (duplicate "## Round N" blocks).
     materialize_intake_output(
         tid,
         rnd,
         out,
         intake_path=intake_file(tid),
         brief_path=brief_file(tid),
+        intake_mtime_before=intake_before,
+        brief_mtime_before=before,
     )
 
     bf = brief_file(tid)

@@ -147,6 +147,45 @@ class IntakeMaterialize(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(brief_p.read_text(), seed)
 
+    def test_materialize_questions_skips_when_tool_already_wrote(self):
+        """Cursor Write + stdout QUESTIONS must not double-append Round 1."""
+        with tempfile.TemporaryDirectory() as tmp:
+            intake_p = Path(tmp) / "intake.md"
+            brief_p = Path(tmp) / "brief.md"
+            # Simulate pre-agent: no file (mtime_before=None), agent Write:
+            body = sanitize_agent_doc(
+                extract_before_marker(SAMPLE_QUESTIONS, "INTAKE: QUESTIONS")
+            )
+            intake_p.write_text(body + "\n")
+            before = None  # did not exist before the agent
+            ok = materialize_intake_output(
+                "033", 1, SAMPLE_QUESTIONS,
+                intake_path=intake_p, brief_path=brief_p,
+                intake_mtime_before=before,
+            )
+            self.assertFalse(ok)
+            text = intake_p.read_text()
+            self.assertEqual(text.count("## Round 1"), 1)
+
+    def test_materialize_questions_still_appends_when_untouched(self):
+        """Gemini stdout-only on an existing prior-round file still appends."""
+        with tempfile.TemporaryDirectory() as tmp:
+            intake_p = Path(tmp) / "intake.md"
+            brief_p = Path(tmp) / "brief.md"
+            intake_p.write_text("## Round 1\n\n### Q1. old\n**A:** x\n")
+            before = intake_p.stat().st_mtime
+            # Keep mtime stable relative to snapshot (no tool write).
+            ok = materialize_intake_output(
+                "033", 2, SAMPLE_QUESTIONS,
+                intake_path=intake_p, brief_path=brief_p,
+                intake_mtime_before=before,
+            )
+            self.assertTrue(ok)
+            text = intake_p.read_text()
+            self.assertIn("### Q1. old", text)
+            self.assertIn("Q1. Ambito MVP", text)
+            self.assertEqual(text.count("## Round 1"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
