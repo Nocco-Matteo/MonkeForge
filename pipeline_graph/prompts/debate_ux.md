@@ -66,8 +66,10 @@ WHERE the issue lives, so the pipeline can route a brief-level blocker to a
 human instead of burning more debate rounds the plan cannot fix. Use one of:
   [BLOCKER:PLAN]          the issue is in the PLAN — the proposer can fix it
   [BLOCKER:REQUIREMENTS]  the issue is in the BRIEF/REQUIREMENTS — the plan
-                          cannot fix it; the human must amend the brief and
-                          regenerate the plan
+                          cannot fix it; stop and re-open intake
+                          (`./run.py redo <id> --from intake`) so the
+                          interviewer asks the human. Do NOT expect a hand-edited
+                          brief.
   [BLOCKER]               bare form — treated as [BLOCKER:PLAN] (the default);
                           use the explicit suffix when you can
 [SUGGESTION] items do not take a provenance suffix.

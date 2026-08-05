@@ -692,7 +692,7 @@ def _build_parser():
     rd = sub.add_parser("redo")
     rd.add_argument("task_id")
     rd.add_argument("--from", dest="from_phase",
-                    choices=["plan", "debate", "visual"], default="debate")
+                    choices=["intake", "plan", "debate", "visual"], default="debate")
     rd.add_argument("--effort", dest="effort", default=None,
                     choices=["scout-monke", "troop-monke", "barrel-monke"])
     return p

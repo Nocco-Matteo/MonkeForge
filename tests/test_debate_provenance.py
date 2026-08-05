@@ -15,7 +15,7 @@ Covers conformance checklist items 23-39:
   - TestRequirementsPrecedence: _check_requirements_escalation takes
     precedence over _check_early_escalation in debate_tech / debate_ux.
   - TestDebateRequirementsMenu: _escalation_options "debate requirements:"
-    branch keys (stop, ok only).
+    branch keys (continue/redo/stop/ok; stop recommended).
   - TestEscalateDebateRequirementsGate: escalate() prefix gate forces
     substring flags False; "ok" clears the bonus and sets redo_debate=False.
   - TestUxBlockerVerdictGate: debate_ux blocker count is verdict-gated.
@@ -386,8 +386,9 @@ class TestRequirementsPrecedence(unittest.TestCase):
 
     def test_requirements_wins_over_stuck_in_debate_tech(self):
         # A debate that is BOTH stuck (same BLOCKER across k rounds) AND has a
-        # REQUIREMENTS blocker in the last round: the requirements menu must
-        # win (stop/ok), not the stuck menu (continue/redo/stop/ok).
+        # REQUIREMENTS blocker in the last round: the requirements escalation
+        # must win (prefix debate requirements:), not stuck — menu keys are
+        # the same continue/redo/stop/ok set, with recommended=stop.
         text = _debate(
             _round(1, "Reviewer", "VERDICT: REJECT\n[BLOCKER:REQUIREMENTS] brief issue"),
             _round(2, "Reviewer", "VERDICT: REJECT\n[BLOCKER:REQUIREMENTS] brief issue"),
@@ -412,7 +413,9 @@ class TestDebateRequirementsMenu(unittest.TestCase):
         opts = _common._escalation_options(
             "debate requirements: 1 blocker(s) tagged as belonging to the REQUIREMENTS"
         )
-        self.assertEqual({o["key"] for o in opts}, {"stop", "ok"})
+        self.assertEqual(
+            {o["key"] for o in opts}, {"continue", "redo", "stop", "ok"}
+        )
 
     def test_debate_requirements_tested_before_intake_branch(self):
         # A reason that starts with "debate requirements:" but also contains
@@ -421,20 +424,28 @@ class TestDebateRequirementsMenu(unittest.TestCase):
             "debate requirements: intake brief is wrong"
         )
         keys = {o["key"] for o in opts}
-        self.assertIn("stop", keys)
+        self.assertEqual(keys, {"continue", "redo", "stop", "ok"})
         self.assertNotIn("skip / done", keys)
 
     def test_debate_requirements_no_skip_key(self):
         opts = _common._escalation_options("debate requirements: brief issue")
         keys = {o["key"] for o in opts}
         self.assertNotIn("skip", keys)
-        self.assertNotIn("continue", keys)
-        self.assertNotIn("redo", keys)
+        self.assertEqual(keys, {"continue", "redo", "stop", "ok"})
+
+    def test_stop_label_marks_recommended(self):
+        opts = _common._escalation_options("debate requirements: brief issue")
+        by_key = {o["key"]: o["label"] for o in opts}
+        self.assertIn("RECOMMENDED", by_key["stop"])
+        self.assertIn("--from intake", by_key["stop"])
+        self.assertIn("saved for", by_key["stop"].lower())
+        self.assertNotIn("amend the brief", by_key["stop"].lower())
 
     def test_case_insensitive_prefix(self):
         opts = _common._escalation_options("Debate Requirements: something")
-        self.assertEqual({o["key"] for o in opts}, {"stop", "ok"})
-
+        self.assertEqual(
+            {o["key"] for o in opts}, {"continue", "redo", "stop", "ok"}
+        )
 
 # --- escalate() prefix gate (items 34-35) -----------------------------------
 
@@ -470,6 +481,23 @@ class TestEscalateDebateRequirementsGate(unittest.TestCase):
     def test_stop_stops_run(self):
         d = self._escalate("stop", "debate requirements: brief issue")
         self.assertTrue(d.get("finished"))
+
+    def test_continue_extends_bonus(self):
+        # Full menu includes continue; resolution reuses the debate_escalation
+        # path (prefix gate includes debate requirements:).
+        state = {
+            "task_id": "dr",
+            "escalation": "debate requirements: brief issue",
+            "journal": [],
+            "debate_round": 1,
+            "debate_round_bonus": 0,
+        }
+        d = self._escalate(
+            "continue", "debate requirements: brief issue", state=state
+        )
+        self.assertEqual(d.get("debate_round_bonus"), 2)
+        self.assertEqual(d.get("escalation"), "")
+        self.assertFalse(d.get("finished", False))
 
     def test_does_not_fire_ux_branch(self):
         # The reason contains "blocker" but the prefix gate forces ux_escalation
@@ -607,6 +635,16 @@ class TestPromptProvenanceTags(unittest.TestCase):
         self.assertIn("[BLOCKER]", text)
         # Must instruct verbatim copy of the provenance suffix.
         self.assertIn("provenance", text.lower())
+        # Recovery is re-intake, not hand-editing the brief.
+        self.assertIn("--from intake", text)
+        self.assertNotIn("amend the brief", text.lower())
+
+    def test_intake_prefers_asking_on_policy_gaps(self):
+        from pipeline_graph import config as _C
+        text = (_C.TEMPLATES / "intake.md").read_text()
+        self.assertIn("Prefer asking", text)
+        self.assertIn("mutually exclusive", text.lower())
+        self.assertNotIn("Prefer finishing to asking", text)
 
 
 if __name__ == "__main__":

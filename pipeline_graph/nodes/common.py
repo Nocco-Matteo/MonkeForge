@@ -551,8 +551,8 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
                  "debate itself derailed — it cannot fix a plan that is wrong)"),
             _opt("stop",
                  "stop the run — the stuck blocker may be in the REQUIREMENTS, "
-                 "not the plan: amend the brief, then ./run.py redo <id> --from plan "
-                 "to regenerate the plan"),
+                 "not the plan: ./run.py redo <id> --from intake so the "
+                 "interviewer re-asks; then plan/debate regenerate"),
             _opt("ok",
                  "proceed to the verdict with the plan as it stands (the stuck "
                  "blocker is recorded in the report) — WARNING: implement will "
@@ -606,27 +606,32 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
                  "debate itself derailed — a fresh start may break the churn)"),
             _opt("stop",
                  "stop the run — the churning blockers may be in the "
-                 "REQUIREMENTS, not the plan: amend the brief, then "
-                 "./run.py redo <id> --from plan to regenerate the plan"),
+                 "REQUIREMENTS, not the plan: ./run.py redo <id> --from intake "
+                 "so the interviewer re-asks; then plan/debate regenerate"),
             _opt("ok", ok_label),
         ]
     if r.startswith("debate requirements:"):
-        # Item 33: a REQUIREMENTS-provenanced blocker is unfixable by debate
-        # iteration — the issue lives in the brief, not the plan. Only two
-        # sane choices: stop to amend the brief and regenerate the plan, or
-        # proceed to the verdict with the requirements blocker recorded.
-        # No "skip"/"continue"/"redo": continuing or redoing the debate on the
-        # same brief cannot fix a brief-level issue, and force-closing would
-        # rubber-stamp a plan the critics flagged as built on wrong requirements.
+        # Same keys as stuck/thrashing (continue/redo/stop/ok). A REQUIREMENTS
+        # tag means the *recommended* action is stop + re-intake, but the
+        # debate may also carry PLAN blockers that more rounds can fix — so
+        # continue/redo stay available. Hint/recommended stays "stop".
         return [
+            _opt("continue",
+                 "extend the debate by 2 more rounds (keeps history) — useful "
+                 "when PLAN blockers remain that more rounds can fix; will NOT "
+                 "clear a REQUIREMENTS/brief issue by itself"),
+            _opt("redo",
+                 "re-run the debate from round 1 on the SAME plan (fresh critic "
+                 "pass; still cannot invent a missing requirement)"),
             _opt("stop",
-                 "stop the run — the blocker is in the REQUIREMENTS (the brief), "
-                 "not the plan: amend the brief, then ./run.py redo <id> --from plan "
-                 "to regenerate the plan from the corrected requirements"),
+                 "RECOMMENDED — stop the run: the REQUIREMENTS blocker is in "
+                 "the brief, not the plan. The flagged claims are saved for "
+                 "re-intake — ./run.py redo <id> --from intake (interviewer "
+                 "gets those gaps; do not hand-edit the brief)"),
             _opt("ok",
                  "proceed to the verdict with the plan as it stands (the "
-                 "REQUIREMENTS blocker is recorded in the report) — the bonus is "
-                 "cleared so a later redo starts from the default cap"),
+                 "REQUIREMENTS blocker is recorded in the report) — the bonus "
+                 "is cleared so a later redo starts from the default cap"),
         ]
     if "intake" in r or "interviewer" in r:
         return [
@@ -707,9 +712,9 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
                  "debate itself derailed — it cannot fix a plan that is wrong)"),
             _opt("stop",
                  "stop the run — the blockers are in the REQUIREMENTS, not the "
-                 "plan: amend the brief, then ./run.py redo <id> --from plan to "
-                 "regenerate the plan (no number of debate rounds can fix a brief "
-                 "the proposer is not allowed to change)"),
+                 "plan: ./run.py redo <id> --from intake so the interviewer "
+                 "re-asks (no number of debate rounds can invent a missing "
+                 "requirement; do not hand-edit the brief as the recovery path)"),
         ]
     # Item 5: the render predicate matches the same 4 substrings as the
     # ``render_failed`` flag in escalate() — "render the ui", "render command",

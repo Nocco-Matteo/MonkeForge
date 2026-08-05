@@ -478,7 +478,8 @@ _RATIONALE = {
     "converging": "blockers are strictly decreasing — the debate is closing",
     "unknown": "no clear trend — proceed to the verdict",
     "requirements": "the blocker is in the brief (REQUIREMENTS), not the plan "
-                     "— amend the brief and regenerate the plan",
+                     "— stop and ./run.py redo <id> --from intake so the "
+                     "interviewer re-asks the human",
 }
 
 # TASK-024: thrashing-refinement rationale strings. Distinct from
@@ -576,16 +577,23 @@ def _build_triage(debate_text: str, reason_prefix: str,
     }
 
 
-def _check_requirements_escalation(debate_text: str) -> dict | None:
+def _check_requirements_escalation(
+    debate_text: str, *, task_id: str | None = None
+) -> dict | None:
     """Detect a REQUIREMENTS-provenanced blocker in the latest round.
 
     Item 29-31: a ``[BLOCKER:REQUIREMENTS]`` tag means the critic believes the
-    issue lives in the brief, not the plan — the debate cannot fix it by
-    iterating on the plan, so escalate immediately with a
-    ``"debate requirements:"`` prefix. The human gets the stop/ok menu (item
-    33): ``ok`` proceeds to the verdict (clearing the bonus so a later redo
-    starts from the default cap), ``stop`` ends the run so the brief can be
-    amended and the plan regenerated.
+    issue lives in the brief, not the plan — escalate immediately with a
+    ``"debate requirements:"`` prefix. The human menu is the full
+    continue/redo/stop/ok set (same keys as stuck/thrashing); ``recommended``
+    is ``"stop"`` so the CLI/bot highlight re-intake, while ``continue``
+    remains available when PLAN blockers can still be fixed by more rounds.
+    ``ok`` proceeds to the verdict (clearing the bonus); ``stop`` ends the run
+    so ``./run.py redo <id> --from intake`` can re-open the interview.
+
+    When ``task_id`` is set, the claims are persisted to
+    ``TASK-{id}-requirements-gap.md`` so re-intake receives the *same* gaps
+    (not a blind re-interview).
 
     The ``condenser`` import is function-local to avoid the
     ``condenser``↔``nodes.debate`` import cycle (condenser imports
@@ -597,6 +605,10 @@ def _check_requirements_escalation(debate_text: str) -> dict | None:
     claims = latest_requirements_blockers(debate_text)
     if not claims:
         return None
+    if task_id:
+        from ..requirements_gap import write_requirements_gap
+
+        write_requirements_gap(task_id, claims)
     joined = "; ".join(claims)
     triage = _build_triage(debate_text, "debate requirements")
     return {
@@ -741,7 +753,7 @@ def debate_tech(state):
         early = None if grace else _check_early_escalation(text, rnd)
         thrash = None if grace else _check_thrashing_escalation(
             text, rnd, debate_round_bonus=state.get("debate_round_bonus") or 0)
-        req = _check_requirements_escalation(text)
+        req = _check_requirements_escalation(text, task_id=tid)
         if req:
             decision = req
         elif early:
@@ -917,7 +929,7 @@ def debate_ux(state):
     early = None if grace else _check_early_escalation(debate_text, rnd)
     thrash = None if grace else _check_thrashing_escalation(
         debate_text, rnd, debate_round_bonus=state.get("debate_round_bonus") or 0)
-    req = _check_requirements_escalation(debate_text)
+    req = _check_requirements_escalation(debate_text, task_id=tid)
     if req:
         delta.update(req)
     elif early:

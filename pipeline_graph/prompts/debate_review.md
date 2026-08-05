@@ -48,15 +48,19 @@ Remediating a blocker costs roughly 10x what raising it costs, so a wrong
 blocker is expensive. When unsure, use [SUGGESTION].
 
 PROVENANCE TAG — every [BLOCKER] item MUST carry a provenance suffix that says
-WHERE the issue lives, so the pipeline can route a brief-level blocker to a
-human instead of burning more debate rounds the plan cannot fix. Use one of:
+WHERE the issue lives, so the pipeline can route a brief-level blocker back to
+intake instead of burning more debate rounds the plan cannot fix. Use one of:
   [BLOCKER:PLAN]          the issue is in the PLAN — the proposer can fix it
   [BLOCKER:REQUIREMENTS]  the issue is in the BRIEF/REQUIREMENTS — the plan
-                          cannot fix it; the human must amend the brief and
-                          regenerate the plan
+                          cannot fix it; the run should stop and re-open intake
+                          (`./run.py redo <id> --from intake`) so the
+                          interviewer asks the human the missing questions.
+                          Do NOT expect the human to hand-edit the brief.
   [BLOCKER]               bare form — treated as [BLOCKER:PLAN] (the default);
                           use the explicit suffix when you can
 [SUGGESTION] items do not take a provenance suffix.
+Use REQUIREMENTS only for true brief gaps (missing/contradictory intent). A
+plan that overclaims or contradicts a clear brief is [BLOCKER:PLAN].
 
 BLOCKER ID — every [BLOCKER] and [SUGGESTION] item MUST carry a stable id so
 the proposer and the ledger can reference it unambiguously. Number your items

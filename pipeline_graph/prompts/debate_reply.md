@@ -47,7 +47,9 @@ METHOD, per item:
    `[BLOCKER:REQUIREMENTS] <claim>` — do NOT downgrade it to `[BLOCKER]` or
    `[BLOCKER:PLAN]`, and do NOT drop the suffix. A REQUIREMENTS blocker is one
    you believe lives in the brief, not the plan: say so explicitly in your
-   answer (the human will be asked to amend the brief, not you to fix the plan).
+   answer (intake will re-ask the human via `./run.py redo <id> --from intake`;
+   you do not invent the missing requirement, and the human should not hand-edit
+   the brief as the recovery path).
    Then answer exactly one of:
    ACCEPTED  — the claim holds; apply the minimal fix to the plan.
    REJECTED  — the claim is factually wrong; quote the evidence that refutes it.

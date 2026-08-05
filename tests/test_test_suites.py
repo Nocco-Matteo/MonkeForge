@@ -598,7 +598,7 @@ class TestRunPyBridge(unittest.TestCase):
         rd = sub.add_parser("redo")
         rd.add_argument("task_id")
         rd.add_argument("--from", dest="from_phase",
-                        choices=["plan", "debate", "visual"], default="debate")
+                        choices=["intake", "plan", "debate", "visual"], default="debate")
         rd.add_argument("--no-input", action="store_true")
         r = sub.add_parser("resume"); r.add_argument("task_id")
         r.add_argument("--no-input", action="store_true")

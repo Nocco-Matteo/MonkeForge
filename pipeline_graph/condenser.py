@@ -478,8 +478,8 @@ def latest_requirements_blockers(debate_text: str) -> list[str]:
 
     Item 27: a REQUIREMENTS-provenanced blocker is one the critic believes
     belongs to the brief, not the plan — the debate cannot fix it by iterating
-    on the plan, so the run should escalate to a human (amend the brief, then
-    redo from plan) instead of burning more rounds.
+    on the plan, so the run should escalate to stop + re-intake
+    (``./run.py redo <id> --from intake``) instead of burning more rounds.
 
     Within the last round, only the LAST section per critic name is scanned
     (matches ``_collapse_round``'s / ``stuck_claims``'s "last wins" philosophy).

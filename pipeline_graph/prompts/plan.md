@@ -46,4 +46,8 @@ ACCEPTANCE CRITERIA for this plan:
 - Every path/symbol referenced exists in the repo, or is marked NEW.
 - No step says "refactor as needed", "etc." or "and so on" — enumerate.
 - Anything you could not verify goes under "Unverified assumptions".
+- If the brief is silent or contradictory on a mutually exclusive product/policy
+  choice, do NOT invent a side: put the gap under Unverified assumptions and
+  keep the plan from depending on a guessed policy. That gap belongs to intake
+  (REQUIREMENTS), not to debate thrash.
 - Max 400 lines. Do not restate the request back to me.

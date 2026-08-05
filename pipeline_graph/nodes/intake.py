@@ -16,9 +16,13 @@ from ..intake_materialize import (
     materialize_intake_output,
     missing_contract_sections,
 )
+from ..requirements_gap import clear_requirements_gap, gap_block_for_prompt
 from ..state import Conversation
 from .common import _dirty_blocks_interactive_init, _dirty_paths, _git, _rel
 
+
+def _gap_block(task_id: str) -> str:
+    return gap_block_for_prompt(task_id)
 
 def brief_file(task_id: str) -> Path:
     return C.TASKS / f"TASK-{task_id}-brief.md"
@@ -200,6 +204,7 @@ def intake_ask(state):
         refs_path=str(_rel(refs)),
         refs_list=ref_list,
         arch_docs=C.arch_docs_block(),
+        requirements_gaps=_gap_block(tid),
     )
     if code != 0:
         return {
@@ -285,6 +290,9 @@ def intake_ask(state):
             "intake_ask",
             f"brief written after {rnd} round(s): {_rel(brief_file(tid))}",
         )
+        # Re-intake handoff consumed: drop the gap file so a later unrelated
+        # redo does not re-ask stale debate claims.
+        clear_requirements_gap(tid)
         # The brief replaces the seed request as what `plan` works from.
         return {
             "intake_round": rnd,

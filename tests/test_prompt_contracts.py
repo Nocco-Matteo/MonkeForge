@@ -72,6 +72,7 @@ PROMPT_PLACEHOLDERS = {
         "refs_path",
         "refs_list",
         "arch_docs",
+        "requirements_gaps",
     },
     "plan": {"request", "brief", "arch_docs", "docs_dir"},
     "debate_review": {"plan_view", "debate_ledger", "round"},
@@ -265,6 +266,10 @@ class TestPromptArchDocsWiring:
         assert "arch_docs=" in src, (
             "intake.py::intake_ask must pass arch_docs= to run_agent so the "
             "{arch_docs} placeholder in intake.md renders."
+        )
+        assert "requirements_gaps=" in src, (
+            "intake.py::intake_ask must pass requirements_gaps= so re-intake "
+            "sees REQUIREMENTS claims from debate."
         )
 
     def test_code_review_forwards_arch_docs(self):

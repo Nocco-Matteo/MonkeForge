@@ -1880,6 +1880,7 @@ def _print_top_help(args=None) -> None:
         print("  ./run.py resume 005                       # resume after crash/suspend")
         print("  ./run.py resume 005 --answer ok           # answer a pending pause")
         print("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts")
+        print("  ./run.py redo   005 --from intake         # REQUIREMENTS: re-interview")
         print("  ./run.py status 005                       # current node / batch / pause")
         print("  ./run.py status 005 --json | jq           # machine-readable status")
         print("  ./run.py doctor 005                       # failures, degradations, liveness")
@@ -1899,6 +1900,7 @@ def _print_top_help(args=None) -> None:
     console.print(Text("  ./run.py resume 005                       # resume after crash/suspend"))
     console.print(Text("  ./run.py resume 005 --answer ok           # answer a pending pause"))
     console.print(Text("  ./run.py redo   005 --from debate         # redo a phase, reuse artifacts"))
+    console.print(Text("  ./run.py redo   005 --from intake         # REQUIREMENTS: re-interview"))
     console.print(Text("  ./run.py status 005                       # current node / batch / pause"))
     console.print(Text("  ./run.py status 005 --json | jq           # machine-readable status"))
     console.print(Text("  ./run.py doctor 005                       # failures, degradations, liveness"))
@@ -1954,8 +1956,10 @@ def main(argv=None) -> int:
                         "(e.g. redo the debate after fixing an agent)")
     rd.add_argument("task_id")
     rd.add_argument("--from", dest="from_phase",
-                    choices=["plan", "debate", "visual"], default="debate",
-                    help="debate: reuse brief+plan, redo the debate. "
+                    choices=["intake", "plan", "debate", "visual"], default="debate",
+                    help="intake: re-open the interview (REQUIREMENTS recovery), "
+                         "then plan+debate. "
+                         "debate: reuse brief+plan, redo the debate. "
                          "plan: reuse brief, redo plan then debate. "
                          "visual: reuse the built UI, redo the render+visual gate.")
     rd.add_argument("--effort", dest="effort", default=None,
@@ -2245,6 +2249,43 @@ def main(argv=None) -> int:
                          "render_facts": "{}", "visual_shipped_blocked": False}
                 as_node, nxt = "close_batch", "ux_render"
                 reuse = "the built UI"
+            elif args.from_phase == "intake":
+                # REQUIREMENTS recovery: re-open the interviewer with the
+                # concrete gaps from debate (not a blind re-interview). Persist
+                # claims from the debate file if the gap file is missing, THEN
+                # clear plan+debate so they regenerate from the new contract.
+                from pipeline_graph.requirements_gap import ensure_gap_from_debate_file
+
+                ensure_gap_from_debate_file(args.task_id)
+                reset = {
+                    "escalation": "", "finished": False,
+                    "intake_done": False, "intake_round": 0,
+                    "intake_unanswered": False, "interview": True,
+                    "debate_round": 0, "debate_round_bonus": 0,
+                    "debate_grace_until": 0,
+                    "reviewer_verdict": "", "open_blockers": 0,
+                    "ux_verdict": "", "ux_blockers": 0,
+                    "tech_limits": [], "debate_next": "",
+                    "ux_shipped_blocked": False,
+                    "batches": [], "batch_idx": 0, "code_verdict": "",
+                    "fix_cycle": 0, "test_fix_attempt": 0,
+                    "test_fix_failures": [], "test_fix_summary": "",
+                }
+                as_node, nxt, reuse = (
+                    "init",
+                    "intake_ask",
+                    "the seed + REQUIREMENTS gaps from debate",
+                )
+                if args.effort:
+                    reset["effort"] = args.effort
+                    reset["effort_forced"] = True
+                for path in (
+                    C.DEBATES / f"DEBATE-{args.task_id}.md",
+                    C.DEBATES / f"DEBATE-{args.task_id}-full.md",
+                    C.REVIEWS / f"UX-{args.task_id}.md",
+                    C.PLANS / f"PLAN-{args.task_id}.md",
+                ):
+                    path.unlink(missing_ok=True)
             else:
                 reset = {"escalation": "", "finished": False, "debate_round": 0,
                          "debate_round_bonus": 0, "reviewer_verdict": "", "open_blockers": 0,
