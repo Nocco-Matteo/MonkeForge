@@ -45,6 +45,22 @@ IF THIS IS A RETRY, the failing tests from your previous attempt are below — f
 FAILING TESTS: {failures}
 TEST SUMMARY: {summary}
 
+A <test_summary> block is provided below. Binding rules:
+- When authoritative="true", the block is the gate's MEASURED outcome from
+  the previous attempt (red = the listed failures are the NEW regressions
+  the gate measured). Trust the failure list as ground truth; do NOT re-run
+  the suite to "discover" a different set — fix the listed failures.
+- When authoritative="false", the block is context-only (status
+  unconfigured on a first attempt, or skipped on a retry whose prior
+  attempt was not measured — dry run, DB down, or tests waived). Do NOT
+  treat it as a pass or a fail; do NOT re-run the suite to "discover" one.
+- The suites in the block are the ones the gate already discovered and ran
+  (or attempted). Do not invent new suites; do not re-discover.
+
+<test_summary>
+{test_summary}
+</test_summary>
+
 DO NOT COMMIT. Leave every change UNCOMMITTED in the working tree (staged is
 fine). The pipeline commits the batch itself AFTER the review passes. If you run
 `git commit`, the reviewer's diff comes back empty and REJECTS your correct work

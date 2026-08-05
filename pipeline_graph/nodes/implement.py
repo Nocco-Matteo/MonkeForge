@@ -51,13 +51,24 @@ def _capture_test_baseline(state, b: dict, db_ok: bool) -> dict:
     return delta
 
 
-def _in_graph_test_gate(state, b: dict, db_ok: bool) -> tuple[bool, list[str], str]:
-    if state.get("tests_waived"):
-        return True, [], "tests waived"
-    if not db_ok or C.DRY_RUN:
-        return True, [], "test gate skipped (db down or dry run)"
+def _in_graph_test_gate(
+    state, b: dict, db_ok: bool,
+) -> tuple[bool, list[str], str, int]:
+    """Run the gate; return ``(ok, new_fails, summary, ran_count)``.
 
-    _, current, summary = tr.run_repo_tests(task_id=state["task_id"])
+    ``ran_count`` is the number of suites that actually executed a runner —
+    0 on the waived/dry-run/DB-down paths so the caller can distinguish
+    "gate measured green" from "gate measured nothing". The 4th element is
+    threaded up to ``implement`` so the green-path delta can set
+    ``last_gate_status`` correctly (``green`` when measured, ``skipped``
+    when not).
+    """
+    if state.get("tests_waived"):
+        return True, [], "tests waived", 0
+    if not db_ok or C.DRY_RUN:
+        return True, [], "test gate skipped (db down or dry run)", 0
+
+    _, current, summary, ran_count = tr.run_repo_tests_detailed(task_id=state["task_id"])
     baseline = set(state.get("batch_test_baseline") or [])
     allow = b.get("test_failure_allowlist") or []
     new = sorted(tr.new_failures_since_baseline(
@@ -65,7 +76,7 @@ def _in_graph_test_gate(state, b: dict, db_ok: bool) -> tuple[bool, list[str], s
         lint_debt_rules=C.LINT_DEBT_RULES,
         ambient_patterns=C.TEST_AMBIENT_PATTERNS,
     ))
-    return len(new) == 0, new, summary
+    return len(new) == 0, new, summary, ran_count
 
 
 def implement(state):
@@ -77,6 +88,10 @@ def implement(state):
             "fix_cycle": 0,
             "test_fix_failures": [],
             "test_fix_summary": "",
+            "last_gate_status": "skipped",
+            "last_gate_summary": "",
+            "last_gate_failures": [],
+            "test_fix_measured": False,
             "journal": [f"impl b{b['n']}: skipped (tests waived)"],
         }
 
@@ -108,6 +123,32 @@ def implement(state):
     # on the first attempt (state fields default to [] / "").
     failures = state.get("test_fix_failures", [])
     summary = state.get("test_fix_summary", "")
+    # Build the <test_summary> block for the prompt. Three regimes:
+    #   * attempt == 0: no prior gate result — non-authoritative "unconfigured"
+    #     sentinel so the implementer knows the gate has not measured yet.
+    #   * retry with test_fix_measured=True: the prior attempt's failures were
+    #     MEASURED by a real gate run — authoritative "red" block sourced from
+    #     test_fix_failures so the implementer fixes the right tests.
+    #   * retry with test_fix_measured=False: the prior attempt's failures were
+    #     NOT measured (dry-run/DB-down/waived) — non-authoritative "skipped"
+    #     sentinel so the implementer does not treat stale failures as ground
+    #     truth.
+    suite_labels = [s.label for s in C.TEST_SUITES]
+    if attempt == 0:
+        test_summary_block = tr.format_test_summary_block(
+            "unconfigured", suite_labels, [], "",
+            authoritative=False,
+        )
+    elif state.get("test_fix_measured"):
+        test_summary_block = tr.format_test_summary_block(
+            "red", suite_labels, failures, summary,
+            authoritative=True,
+        )
+    else:
+        test_summary_block = tr.format_test_summary_block(
+            "skipped", suite_labels, [], summary,
+            authoritative=False,
+        )
     code, out = _N.run_agent(
         "IMPLEMENTER",
         conv,
@@ -120,6 +161,7 @@ def implement(state):
         checklist_items=", ".join(map(str, b.get("checklist", []))),
         failures=failures,
         summary=summary,
+        test_summary=test_summary_block,
     )
 
     # F1: explicit PLAN_DISCREPANCY: marker contract — the implementer emits a
@@ -169,7 +211,7 @@ def implement(state):
             "journal": [f"impl b{b['n']}: agent exit {code}, retry {attempt + 1}"],
         }
 
-    ok, new_fails, summary = _in_graph_test_gate(merged, b, db_ok)
+    ok, new_fails, summary, ran_count = _in_graph_test_gate(merged, b, db_ok)
     if not ok:
         detail = f"{len(new_fails)} new failure(s): {new_fails[0][:120]}" if new_fails else summary
         if attempt + 1 > C.MAX_TEST_FIXES:
@@ -184,6 +226,7 @@ def implement(state):
             "test_fix_attempt": attempt + 1,
             "test_fix_failures": new_fails,
             "test_fix_summary": summary,
+            "test_fix_measured": ran_count > 0,
             "journal": [f"impl b{b['n']}: {detail}, retry {attempt + 1}"],
         }
 
@@ -191,12 +234,30 @@ def implement(state):
     _stage_all()
     suffix = "" if db_ok else " (DB-gated tests skipped)"
     test_note = f", {summary}, 0 new failures" if db_ok and not C.DRY_RUN else suffix
+    # Green-path gate-state threading: when the gate actually measured
+    # (ran_count > 0), record the green outcome + summary so code_fix can
+    # build an authoritative test_summary block. When the gate was
+    # waived/dry-run/DB-down (ran_count == 0), record a skipped sentinel
+    # with an empty summary so code_fix does not treat a non-measurement as
+    # a green signal.
+    if ran_count > 0:
+        last_gate_status = "green"
+        last_gate_summary = summary
+        last_gate_failures: list[str] = []
+    else:
+        last_gate_status = "skipped"
+        last_gate_summary = ""
+        last_gate_failures = []
     delta = {
         **baseline_delta,
         "test_fix_attempt": 0,
         "fix_cycle": 0,
         "test_fix_failures": [],
         "test_fix_summary": "",
+        "test_fix_measured": False,
+        "last_gate_status": last_gate_status,
+        "last_gate_summary": last_gate_summary,
+        "last_gate_failures": last_gate_failures,
         "db_degraded": not db_ok,
         "journal": [f"impl b{b['n']}: done{test_note}"],
     }
@@ -243,6 +304,10 @@ def close_batch(state):
         "tests_waived": False,
         "test_fix_failures": [],
         "test_fix_summary": "",
+        "test_fix_measured": False,
+        "last_gate_summary": "",
+        "last_gate_failures": [],
+        "last_gate_status": "",
         "baseline_batch_n": 0,
         "batch_test_baseline": [],
         "journal": [f"batch {b['n']}: committed"],

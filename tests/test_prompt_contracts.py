@@ -89,6 +89,7 @@ PROMPT_PLACEHOLDERS = {
         "checklist_items",
         "failures",
         "summary",
+        "test_summary",
     },
     "code_review": {
         "batch_n",
@@ -99,10 +100,10 @@ PROMPT_PLACEHOLDERS = {
         "final",
         "arch_docs",
     },
-    "code_fix": {"task_id", "batch_n", "review_history"},
+    "code_fix": {"task_id", "batch_n", "review_history", "test_summary"},
     "code_verify": {"task_id", "batch_n", "review_history"},
-    "final_check": {"db_note", "final"},
-    "preflight_fix": {"failures", "summary", "remaining_label"},
+    "final_check": {"db_note", "final", "test_summary"},
+    "preflight_fix": {"failures", "summary", "remaining_label", "test_summary"},
     "visual_review": {"screens_dir", "render_facts"},
     "visual_fix": {"screens_dir", "render_facts", "visual_review"},
     "render_fix": {"task_id", "render_delta"},
@@ -275,4 +276,58 @@ class TestPromptArchDocsWiring:
         assert "arch_docs=" in src, (
             "review.py::code_review must pass arch_docs= to run_agent so the "
             "{arch_docs} placeholder in code_review.md renders."
+        )
+
+
+# --- TASK-030: <test_summary> block injection contracts ----------------------
+
+
+class TestTestSummaryPromptContracts:
+    """D2/D9: the four prompts that receive a <test_summary> block must (a)
+    reference the {test_summary} placeholder, (b) carry the binding-rules
+    keywords ``authoritative``, ``unconfigured``, and ``discover`` so the
+    agent knows how to read the block, and (c) NOT carry the old unconditional
+    re-run instructions (final_check.md must not say "Run the full test
+    suite"; code_fix.md must not have an unconditional "Re-run the test
+    suite." line)."""
+
+    _SUMMARY_PROMPTS = ("final_check", "code_fix", "preflight_fix", "implement")
+
+    @pytest.mark.parametrize("prompt_name", _SUMMARY_PROMPTS)
+    def test_test_summary_placeholder_present(self, prompt_name):
+        path = PROMPTS_DIR / f"{prompt_name}.md"
+        assert path.exists(), f"{prompt_name}.md missing"
+        text = path.read_text()
+        assert "{test_summary}" in text, (
+            f"{prompt_name}.md must reference the {{test_summary}} placeholder."
+        )
+
+    @pytest.mark.parametrize("prompt_name", _SUMMARY_PROMPTS)
+    def test_binding_rules_keywords_present(self, prompt_name):
+        path = PROMPTS_DIR / f"{prompt_name}.md"
+        text = path.read_text().lower()
+        for kw in ("authoritative", "unconfigured", "discover"):
+            assert kw in text, (
+                f"{prompt_name}.md must contain the binding-rules keyword "
+                f"{kw!r} (case-insensitive) somewhere in its text."
+            )
+
+    def test_final_check_no_run_full_test_suite(self):
+        """final_check.md must NOT instruct the agent to run the suite — the
+        gate already measured; the agent reviews the diff against the
+        checklist using the <test_summary> block."""
+        text = (PROMPTS_DIR / "final_check.md").read_text()
+        assert "Run the full test suite" not in text, (
+            "final_check.md still contains 'Run the full test suite' — the "
+            "gate measures; the agent must not re-run."
+        )
+
+    def test_code_fix_no_unconditional_rerun(self):
+        """code_fix.md must NOT contain an unconditional 'Re-run the test
+        suite.' line — the binding rules condition any re-run on the
+        authoritative flag."""
+        text = (PROMPTS_DIR / "code_fix.md").read_text()
+        assert "Re-run the test suite." not in text, (
+            "code_fix.md still contains an unconditional 'Re-run the test "
+            "suite.' line — re-run is conditioned on the authoritative flag."
         )

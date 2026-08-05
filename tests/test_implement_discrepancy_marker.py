@@ -45,7 +45,7 @@ class TestPlanDiscrepancyMarker:
         state = _base_state()
         with patch.object(N, "run_agent", return_value=(0, out)), \
                 patch.object(_impl, "_in_graph_test_gate",
-                             return_value=(True, [], "all passed")), \
+                             return_value=(True, [], "all passed", 0)), \
                 patch.object(N.ev, "emit"):
             d = N.implement(state)
         assert "escalation" not in d or d.get("escalation") == "", \
@@ -58,7 +58,7 @@ class TestPlanDiscrepancyMarker:
         state = _base_state()
         with patch.object(N, "run_agent", return_value=(0, out)), \
                 patch.object(_impl, "_in_graph_test_gate",
-                             return_value=(True, [], "all passed")), \
+                             return_value=(True, [], "all passed", 0)), \
                 patch.object(N.ev, "emit"):
             d = N.implement(state)
         assert d.get("escalation"), "PLAN_DISCREPANCY: marker must escalate"

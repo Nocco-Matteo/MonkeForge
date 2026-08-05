@@ -502,6 +502,7 @@ class TestOnReadySingleton:
                 continue
             first_stmt = line
             break
+        # on_ready also owns _crash_restart (C21 catch-up after bot restart).
         assert first_stmt in (
             "global _poller_task",
             "global _poller_task, _crash_restart",

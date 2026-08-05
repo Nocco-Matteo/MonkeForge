@@ -27,6 +27,11 @@ class DocsAddressing(unittest.TestCase):
                 self.assertEqual(cfg.INIT_DIRTY_OK_PREFIXES, ())
                 self.assertFalse((repo / ".pipeline-docs").exists())
         finally:
+            # Clear leaked PIPELINE_DRY_RUN (e.g. from yaml-bridge tests that
+            # setdefault it) so this reload cannot pin C.DRY_RUN=True for the
+            # rest of the suite.
+            import os
+            os.environ.pop("PIPELINE_DRY_RUN", None)
             importlib.reload(C)  # restore module state for the rest of the suite
 
     def test_ux_reviewer_command_includes_docs_dir(self):

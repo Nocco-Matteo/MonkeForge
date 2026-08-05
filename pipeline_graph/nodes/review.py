@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from .. import config as C
+from .. import test_runner as tr
 from ..agents import (
     classify_output,
     count_blockers,
@@ -90,12 +91,35 @@ def code_fix(state):
     b = _current_batch(state)
     cycle = state.get("fix_cycle", 0) + 1
     conv = Conversation.from_state(state)
+    # Build a conditional <test_summary> block from the last in-graph gate
+    # outcome. Non-empty ONLY when the gate measured green (last_gate_status
+    # == "green") AND the summary is a real measurement (non-empty and not a
+    # skip-sentinel string like "tests waived" / "test gate skipped"). On a
+    # skipped/empty/skip-sentinel state, pass an empty string so the prompt
+    # does not treat a non-measurement as a green signal.
+    last_status = state.get("last_gate_status", "")
+    last_summary = state.get("last_gate_summary", "")
+    last_failures = state.get("last_gate_failures", []) or []
+    _SKIP_SENTINELS = ("tests waived", "test gate skipped", "skipped")
+    is_skip_sentinel = (
+        not last_summary
+        or any(last_summary.startswith(s) for s in _SKIP_SENTINELS)
+    )
+    if last_status == "green" and not is_skip_sentinel:
+        suite_labels = [s.label for s in C.TEST_SUITES]
+        test_summary_block = tr.format_test_summary_block(
+            "green", suite_labels, last_failures, last_summary,
+            authoritative=True,
+        )
+    else:
+        test_summary_block = ""
     _, out = run_agent(
         "IMPLEMENTER",
         conv,
         f"cr-b{b['n']}-fix{cycle}",
         template="code_fix",
         batch_n=b["n"],
+        test_summary=test_summary_block,
     )
     disputed = parse_disputed(out)
     if disputed:
