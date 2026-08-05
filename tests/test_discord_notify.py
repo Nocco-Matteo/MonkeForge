@@ -502,8 +502,12 @@ class TestOnReadySingleton:
                 continue
             first_stmt = line
             break
-        assert first_stmt == "global _poller_task"
+        assert first_stmt in (
+            "global _poller_task",
+            "global _poller_task, _crash_restart",
+        )
         assert hasattr(bot, "_poller_task")
+        assert hasattr(bot, "_crash_restart")
 
     def test_reconnect_does_not_clear_ready_or_spawn_second_poller(
             self, monkeypatch, tmp_path):
@@ -734,6 +738,9 @@ class TestPollerC21:
         monkeypatch.setattr(bot.C, "STATE_FILE", state_file)
         monkeypatch.setattr(bot.C, "CHANNEL_ID", 123)
         monkeypatch.setattr(bot.C, "POLL_SECONDS", 0)
+        # Module-global may be True after other on_ready tests; this case is
+        # a fresh start (no prior ready sentinel) so catch-up must not re-post.
+        monkeypatch.setattr(bot, "_crash_restart", False)
 
         posted_escalations = []
         posted_ends = []
@@ -762,7 +769,10 @@ class TestPollerC21:
         monkeypatch.setattr(bot.client, "is_closed", fake_is_closed)
         monkeypatch.setattr(bot.client, "wait_until_ready", AsyncMock())
         monkeypatch.setattr(bot.client, "get_channel", lambda _id: FakeChannel())
-        monkeypatch.setattr(bot.client, "guilds", [MagicMock()])
+        # discord.Client.guilds is a read-only property — patch on the class.
+        monkeypatch.setattr(
+            type(bot.client), "guilds", property(lambda self: [MagicMock()])
+        )
 
         import asyncio
         asyncio.run(bot._poller())
