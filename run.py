@@ -16,9 +16,10 @@ from pathlib import Path
 # Load monkeforge.yaml (or .env as fallback) into os.environ.
 # Priority: real env vars > yaml > .env > code defaults (where any remain).
 # agents.*: yaml-only; every role requires model: AND cmd: (no code defaults).
-# Exceptions (read directly by config.py from yaml — no env bridge):
+# Exceptions (read directly — no env bridge / special handling):
 #   agents: role model/cmd; condenser: keep_recent + per-role token budgets;
-#   test_suites: gate suite list.
+#   test_suites: gate suite list; repos: target list (see repo_select.py).
+#   pipeline.repo is still bridged to PIPELINE_REPO (single-repo shorthand).
 _MF_ROOT = Path(__file__).resolve().parent
 _yaml_file = _MF_ROOT / "monkeforge.yaml"
 _env_file = _MF_ROOT / ".env"
@@ -80,6 +81,36 @@ elif _env_file.exists():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
+
+# Target repo MUST be chosen before config import (no git-cwd default).
+# Precedence: --repo > PIPELINE_REPO env > yaml repos: (1=auto, N=CLI pick).
+# Skip for bare help/version so `./run.py -h` works without a target.
+from pipeline_graph.repo_select import (  # noqa: E402
+    RepoSelectError,
+    early_repo_flag,
+    ensure_pipeline_repo,
+)
+_argv_early = sys.argv[1:]
+_help_only = (
+    not _argv_early
+    or _argv_early in (["-h"], ["--help"], ["-v"], ["--version"])
+    or _argv_early[0] in ("-h", "--help", "-v", "--version")
+)
+if not _help_only:
+    try:
+        ensure_pipeline_repo(
+            yaml_path=_yaml_file,
+            mf_root=_MF_ROOT,
+            repo_flag=early_repo_flag(_argv_early),
+            interactive=True,
+        )
+    except RepoSelectError as _repo_exc:
+        print(_repo_exc.cli_message(), file=sys.stderr)
+        raise SystemExit(2) from None
+else:
+    # Config still needs PIPELINE_REPO at import; use MF_ROOT as a harmless
+    # placeholder for help/version only (never used as a real target).
+    os.environ.setdefault("PIPELINE_REPO", str(_MF_ROOT))
 
 from langgraph.types import Command
 from rich.console import Console
@@ -1692,6 +1723,12 @@ _SUPPORT_URL = "https://github.com/Nocco-Matteo/MonkeForge"
 # treats absence as "colour allowed"). Inherited by both the top-level parser
 # and every subparser so ``--no-color`` works before OR after the subcommand.
 _no_color_parent = argparse.ArgumentParser(add_help=False)
+_no_color_parent.add_argument(
+    "--repo", dest="repo", default=None, metavar="LABEL|PATH|INDEX",
+    help="target git repo (label/path/index from monkeforge.yaml repos:; "
+         "overrides PIPELINE_REPO). Required unless env or a single yaml "
+         "repos: entry is set; with multiple repos and no flag, the CLI asks.",
+)
 _no_color_parent.add_argument("--no-color", dest="no_color", action="store_true",
                               default=argparse.SUPPRESS,
                               help="disable ANSI colour output (also disabled when "

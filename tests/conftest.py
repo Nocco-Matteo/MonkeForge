@@ -6,6 +6,18 @@ configured, those emits fired live Discord messages on every `pytest` run
 (the `TASK-t · s` spam). This autouse fixture makes `_push` a no-op for the
 whole session; tests that assert on `_push` re-patch it locally and still work.
 """
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+# config.REPO requires PIPELINE_REPO (no git-cwd default). Point unit tests at
+# the MonkeForge tree itself before any pipeline_graph import.
+os.environ.setdefault(
+    "PIPELINE_REPO",
+    str(Path(__file__).resolve().parents[1]),
+)
+
 import pytest
 
 from pipeline_graph import events as ev

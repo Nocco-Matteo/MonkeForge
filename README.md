@@ -436,7 +436,7 @@ Il topic ntfy si prende da `NTFY_TOPIC` o dal file `.ntfy-topic` nella root.
 | `PIPELINE_AGENT_TRANSIENT_RETRIES` | `1` | retry automatici su fallimenti agente transitori |
 | `PIPELINE_LINT_DEBT_RULES` | vedi `config.py` | regole eslint `;`-separate il cui debito preesistente non è "nuovo" |
 | `PIPELINE_TEST_AMBIENT_PATTERNS` | vedi `config.py` | sottostringhe `;`-separate di test ambient-sensitive (DB-gated) |
-| `PIPELINE_REPO` | da `git rev-parse` | root del repo |
+| `PIPELINE_REPO` | *(obbligatorio se non usi `--repo` / `repos:`)* | root del repo target (niente default git-cwd) |
 
 `agents:` (ogni ruolo con **`model:` e `cmd:`**) è **obbligatorio** in
 `monkeforge.yaml` — zero default in codice (né modelli né template CLI).

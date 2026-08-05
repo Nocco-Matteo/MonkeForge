@@ -4,18 +4,12 @@ environment. Keeps the bot self-contained and standalone.
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 # MonkeForge root: bot/config.py -> bot/ -> MonkeForge/
 MF_ROOT = Path(__file__).resolve().parents[1]
-# Pipeline repo: where the target codebase lives (may differ from MonkeForge).
-REPO = Path(os.environ.get("PIPELINE_REPO") or MF_ROOT).resolve()
 RUN_PY = MF_ROOT / "run.py"
-# Per-repo docs: MonkeForge/docs/<repo-name>/metrics/...
-_repo_slug = REPO.name
-DOCS = Path(os.environ.get("PIPELINE_DOCS_DIR") or (MF_ROOT / "docs" / _repo_slug))
-EVENTS_LOG = DOCS / "metrics" / "events.jsonl"
-STATE_FILE = DOCS / "metrics" / ".discord-bot-offset"
 
 # Load .env from MonkeForge root, without overriding a real environment.
 _env = MF_ROOT / ".env"
@@ -25,6 +19,30 @@ if _env.exists():
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _, _v = _line.partition("=")
             os.environ.setdefault(_k.strip(), _v.strip())
+
+# Target repo: same rules as run.py, non-interactive (bot cannot prompt).
+# Precedence: PIPELINE_REPO env > single yaml repos: entry.
+# N>1 without env → error (set PIPELINE_REPO).
+if str(MF_ROOT) not in sys.path:
+    sys.path.insert(0, str(MF_ROOT))
+from pipeline_graph.repo_select import RepoSelectError, ensure_pipeline_repo  # noqa: E402
+
+try:
+    REPO = ensure_pipeline_repo(
+        yaml_path=MF_ROOT / "monkeforge.yaml",
+        mf_root=MF_ROOT,
+        repo_flag=None,
+        interactive=False,
+    )
+except RepoSelectError as exc:
+    print(exc.cli_message(), file=sys.stderr)
+    raise SystemExit(2) from None
+
+# Per-repo docs: MonkeForge/docs/<repo-name>/metrics/...
+_repo_slug = REPO.name
+DOCS = Path(os.environ.get("PIPELINE_DOCS_DIR") or (MF_ROOT / "docs" / _repo_slug))
+EVENTS_LOG = DOCS / "metrics" / "events.jsonl"
+STATE_FILE = DOCS / "metrics" / ".discord-bot-offset"
 
 
 def _int(name: str) -> int | None:

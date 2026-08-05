@@ -4,15 +4,24 @@ import json, math, os, shlex, shutil, subprocess, sys
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO = Path(
-    os.environ.get("PIPELINE_REPO")
-    or subprocess.run(["git", "rev-parse", "--show-toplevel"],
-                      capture_output=True, text=True).stdout.strip()
-    or "."
-).resolve()
-
 # MonkeForge root: pipeline_graph/config.py -> pipeline_graph/ -> MonkeForge/
 MF_ROOT = Path(__file__).resolve().parents[1]
+
+# Target git repo. MUST come from PIPELINE_REPO (set by run.py via --repo /
+# env / yaml repos: picker). No git-cwd / MF_ROOT fallback — that silently
+# pointed lab runs at the pipeline itself.
+_repo_env = os.environ.get("PIPELINE_REPO", "").strip()
+if not _repo_env:
+    from .repo_select import RepoSelectError
+    raise RepoSelectError(
+        "error: PIPELINE_REPO is not set\n"
+        "\n"
+        "  There is no default target repo (cwd / git root is NOT used).\n"
+        "  Use ./run.py (it resolves --repo / env / yaml repos:), or\n"
+        "  export PIPELINE_REPO=/abs/path/to/app before importing config."
+    )
+REPO = Path(_repo_env).expanduser().resolve()
+
 
 
 # Per-repo docs: MonkeForge/docs/<repo-name>/...  Override with PIPELINE_DOCS_DIR.

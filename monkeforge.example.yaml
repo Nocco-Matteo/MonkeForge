@@ -4,7 +4,24 @@
 # (where any remain). agents.*: both model: and cmd: required — no code defaults.
 # Keep secrets (tokens, credentials, private paths) out of this file.
 
+# Target git repo(s). There is NO default (cwd / git root is NOT used).
+# Precedence:
+#   1. CLI --repo <label|path|index>
+#   2. PIPELINE_REPO env (or pipeline.repo below, bridged into that env)
+#   3. this `repos:` list — 1 entry = auto; N>1 = CLI numbered picker
+# Paths may be absolute or relative to this MonkeForge root.
+# repos:
+#   - path: ../mf-lab/apps/app-npm-vitest
+#     label: app-npm-vitest
+#   - path: ../mf-lab/apps/app-pytest-hello
+#     label: app-pytest-hello
+#   # or a bare string (label = basename):
+#   # - /abs/path/to/my-app
+
 pipeline:
+  # Single-repo shorthand (bridged to PIPELINE_REPO). Prefer `repos:` when you
+  # want a choosable list.
+  # repo: /abs/path/to/my-app
   # Repository-relative architecture documents passed to the agents.
   arch_docs: []
   # Example (uncomment and list repo-relative paths to opt in):
