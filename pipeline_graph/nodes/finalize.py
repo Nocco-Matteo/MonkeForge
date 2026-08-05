@@ -290,7 +290,7 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
         return {"status": "skipped", "ran_count": 0, "summary": "",
                 "new_failures": []}
 
-    _, all_failures, summary, ran_count = tr.run_repo_tests_detailed()
+    _, all_failures, summary, ran_count = tr.run_repo_tests_detailed(task_id=tid)
     # Post-resolution empty TEST_SUITES → unconfigured (distinct from "suites
     # existed but measured nothing"). Checked AFTER the gate call so
     # resolve_test_suites has run.
@@ -348,7 +348,7 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
             remaining_label=remaining_label,
             test_summary=test_summary_block,
         )
-        _, all_failures, summary, ran_count = tr.run_repo_tests_detailed()
+        _, all_failures, summary, ran_count = tr.run_repo_tests_detailed(task_id=tid)
         # A post-fix non-measurement (every suite skipped/synthetic-failed)
         # must not be laundered as green/red — treat as skipped, matching
         # the pre-loop ran_count==0 guard above.

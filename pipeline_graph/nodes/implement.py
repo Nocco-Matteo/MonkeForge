@@ -17,7 +17,7 @@ def _capture_test_baseline(state, b: dict, db_ok: bool) -> dict:
     """Snapshot failing tests before the implementer edits (once per batch)."""
     if state.get("baseline_batch_n") == b["n"] or not db_ok or C.DRY_RUN:
         return {}
-    _, failures, summary = tr.run_repo_tests()
+    _, failures, summary = tr.run_repo_tests(task_id=state["task_id"])
     ev.emit(
         "step_start",
         state["task_id"],
@@ -68,7 +68,7 @@ def _in_graph_test_gate(
     if not db_ok or C.DRY_RUN:
         return True, [], "test gate skipped (db down or dry run)", 0
 
-    _, current, summary, ran_count = tr.run_repo_tests_detailed()
+    _, current, summary, ran_count = tr.run_repo_tests_detailed(task_id=state["task_id"])
     baseline = set(state.get("batch_test_baseline") or [])
     allow = b.get("test_failure_allowlist") or []
     new = sorted(tr.new_failures_since_baseline(
