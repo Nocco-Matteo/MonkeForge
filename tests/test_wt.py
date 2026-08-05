@@ -22,9 +22,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-# Load scripts/wt.py as an isolated module (no scripts/__init__.py, no
-# sys.path pollution, no name clash with a stdlib module).
-_WT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "wt.py"
+# Load pipeline_graph/worktree_runtime.py (scripts/wt.py is a thin re-export).
+_WT_PATH = Path(__file__).resolve().parents[1] / "pipeline_graph" / "worktree_runtime.py"
 _spec = importlib.util.spec_from_file_location("wt_cli", _WT_PATH)
 wt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wt)

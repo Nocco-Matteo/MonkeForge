@@ -510,6 +510,7 @@ def wrap_up(state):
         f"TASK-{tid} complete — {where}",
         f"batches: {len(state.get('batches', []))}",
         f"degradations: {len(degradations)}" if degradations else "degradations: none",
+        f"land when ready: ./run.py land {tid}",
         *warnings,
         *state.get("journal", [])[-12:],
     ]
@@ -526,7 +527,7 @@ def wrap_up(state):
         tid,
         "wrap_up",
         f"all {len(state.get('batches', []))} batches done — {where}"
-        f"{mismatch_note}{deg_note}",
+        f"{mismatch_note}{deg_note} — land: ./run.py land {tid}",
         degraded=bool(degradations) or bool(mismatch_note),
         degradations=degradations,
         repo=repo,

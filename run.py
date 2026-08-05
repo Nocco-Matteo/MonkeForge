@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """CLI for the LangGraph pipeline.
 
-  ./run.py start 004 "add CSV export to the orders dashboard" [--auto]
-  ./run.py start 004 --file task.txt [--auto]
+  ./run.py start 004 --file brief.md   # always isolates into wt-task-004
   ./run.py resume 004 [--answer "ok"]
-  ./run.py reset 004        # delete checkpoint state so the task can start fresh
+  ./run.py status                      # list live feature worktrees
   ./run.py status 004
-  ./run.py graph            # print the graph as mermaid
+  ./run.py land 004                    # ff-only merge task branch into product main
+  ./run.py reset 004
+  ./run.py graph
 """
 from __future__ import annotations
 import argparse, contextlib, io, json, os, re, shutil, subprocess, sys, threading, tomllib
@@ -90,19 +91,34 @@ from pipeline_graph.repo_select import (  # noqa: E402
     early_repo_flag,
     ensure_pipeline_repo,
 )
+from pipeline_graph import worktree_runtime as _WT  # noqa: E402
+
 _argv_early = sys.argv[1:]
 _help_only = (
     not _argv_early
     or _argv_early in (["-h"], ["--help"], ["-v"], ["--version"])
     or _argv_early[0] in ("-h", "--help", "-v", "--version")
 )
+_isolated = _WT.already_isolated()
+if not _help_only and not _isolated:
+    # Transparent isolation: start/resume with a known task id re-exec into a
+    # wt-task-* child env before config import (so C.REPO is the worktree).
+    try:
+        _WT.bootstrap_run_isolation(_argv_early, run_py=_MF_ROOT / "run.py")
+    except SystemExit as _iso_exc:
+        raise SystemExit(int(_iso_exc.code) if isinstance(_iso_exc.code, int) else 2)
+    # Refresh: bootstrap may no-op (wizard / --no-isolate).
+    _isolated = _WT.already_isolated()
+
 if not _help_only:
     try:
         ensure_pipeline_repo(
             yaml_path=_yaml_file,
             mf_root=_MF_ROOT,
-            repo_flag=early_repo_flag(_argv_early),
-            interactive=True,
+            # Isolated child already has PIPELINE_REPO=wt — do not let --repo
+            # (product path still on argv) overwrite it.
+            repo_flag=None if _isolated else early_repo_flag(_argv_early),
+            interactive=not _isolated,
         )
     except RepoSelectError as _repo_exc:
         print(_repo_exc.cli_message(), file=sys.stderr)
@@ -1943,6 +1959,8 @@ def main(argv=None) -> int:
                    help="force an effort level (skips the effort checkpoint)")
     s.add_argument("--no-input", action="store_true",
                    help="never prompt; resolve test suites non-interactively")
+    s.add_argument("--no-isolate", action="store_true",
+                   help="debug escape: run on PIPELINE_REPO without a task worktree")
     r = sub.add_parser("resume", parents=[_no_color_parent],
                        help="resume a paused or interrupted run, optionally "
                             "answering the pending pause")
@@ -1951,6 +1969,8 @@ def main(argv=None) -> int:
                    help="answer to the pending pause (required on non-TTY / --no-input)")
     r.add_argument("--no-input", action="store_true",
                    help="never prompt; --answer is required")
+    r.add_argument("--no-isolate", action="store_true",
+                   help="debug escape: resume without requiring/using a task worktree")
     rd = sub.add_parser("redo", parents=[_no_color_parent],
                         help="re-run a phase reusing existing artifacts "
                         "(e.g. redo the debate after fixing an agent)")
@@ -1971,11 +1991,20 @@ def main(argv=None) -> int:
                         help="delete the checkpoint state for a task "
                         "so it can be started fresh again")
     rs.add_argument("task_id")
-    st = sub.add_parser("status", parents=[_no_color_parent]); st.add_argument("task_id")
+    st = sub.add_parser("status", parents=[_no_color_parent],
+                        help="show one task, or list live feature worktrees when "
+                             "task id is omitted")
+    st.add_argument("task_id", nargs="?", default=None)
     st.add_argument("--json", dest="json", action="store_true",
                     help="emit a single JSON object on stdout "
                          "(next/batches/paused/options); errors surface as "
                          "a JSON {\"error\": ...} object with a non-zero exit")
+    ld = sub.add_parser("land", parents=[_no_color_parent],
+                        help="rebase task worktree onto main and ff-only merge "
+                             "into the target product main")
+    ld.add_argument("task_id")
+    ld.add_argument("-y", "--yes", action="store_true",
+                    help="skip the interactive confirm")
     dr = sub.add_parser("doctor", parents=[_no_color_parent],
                         help="what went wrong: failures, degradations, "
                         "unhealthy agents, notification & liveness")
@@ -2042,6 +2071,37 @@ def main(argv=None) -> int:
 
     if args.cmd == "metrics":
         return _metrics(args)
+
+    if args.cmd == "land":
+        land_args = argparse.Namespace(
+            id=args.task_id,
+            repo=getattr(args, "repo", None),
+            yes=bool(getattr(args, "yes", False)),
+        )
+        try:
+            _WT.cmd_land(land_args)
+        except SystemExit as exc:
+            code = exc.code
+            return int(code) if isinstance(code, int) else (0 if code is None else 1)
+        return 0
+
+    if args.cmd == "status" and not args.task_id:
+        # Live feature worktrees for the configured product target.
+        try:
+            target = _WT.resolve_target_repo(getattr(args, "repo", None))
+            live = _WT.live_feature_worktrees(target)
+        except SystemExit as exc:
+            code = exc.code
+            return int(code) if isinstance(code, int) else 2
+        if not live:
+            print("(no live feature worktrees)")
+            return 0
+        for w in live:
+            name = w["path"].name
+            tid = name[len("wt-task-"):] if name.startswith("wt-task-") else name
+            branch = w.get("branch") or "(detached)"
+            print(f"{tid}\t{w['path']}\t{branch}")
+        return 0
 
     # Early DB guard + answer validation for resume/redo (items 19-21).
     # The checkpointer must not be opened on a missing DB, and the resume
@@ -2158,6 +2218,45 @@ def main(argv=None) -> int:
             print("error: provide a request as argument or via --file <path>",
                   file=sys.stderr)
             return 2
+
+        # Wizard (or late task_id) path: isolate now if the early bootstrap
+        # could not (task id was unknown at process start).
+        if (not getattr(args, "no_isolate", False)
+                and not _WT.already_isolated()
+                and args.task_id):
+            brief = getattr(args, "file", None)
+            repo = getattr(args, "repo", None)
+            try:
+                info = _WT.prepare_task_isolation(
+                    args.task_id,
+                    repo_flag=repo,
+                    brief_src=brief,
+                    create=True,
+                )
+            except SystemExit as exc:
+                code = exc.code
+                return int(code) if isinstance(code, int) else 2
+            # Rebuild a minimal argv the child can parse (keep flags the human used).
+            child_argv = ["start", str(args.task_id)]
+            if brief:
+                child_argv += ["--file", str(brief)]
+            elif getattr(args, "request", None):
+                child_argv.append(str(args.request))
+            if getattr(args, "auto", False):
+                child_argv.append("--auto")
+            if getattr(args, "interview", False):
+                child_argv.append("--interview")
+            if getattr(args, "effort", None):
+                child_argv += ["--effort", args.effort]
+            if getattr(args, "no_input", False) or getattr(args, "no_input_top", False):
+                child_argv.append("--no-input")
+            for ref in getattr(args, "refs", []) or []:
+                child_argv += ["--ref", ref]
+            if repo:
+                child_argv += ["--repo", str(repo)]
+            if getattr(args, "no_color", False):
+                child_argv.append("--no-color")
+            _WT.reexec_isolated(info, child_argv, run_py=_MF_ROOT / "run.py")
 
     if args.cmd == "start":
         tr.resolve_test_suites(task_id=args.task_id)
