@@ -125,7 +125,7 @@ class TestImplementThreadsKwargs:
         with patch.object(C, "DRY_RUN", True), \
              patch.object(N, "run_agent", side_effect=_capture), \
              patch.object(_impl, "_in_graph_test_gate",
-                          return_value=(True, [], "all passed")), \
+                          return_value=(True, [], "all passed", 0)), \
              patch.object(N.ev, "emit"):
             N.implement(state)
         assert captured.get("failures") == ["tests/x.test.ts > x > y"]
@@ -142,7 +142,7 @@ class TestImplementThreadsKwargs:
         with patch.object(C, "DRY_RUN", True), \
              patch.object(N, "run_agent", side_effect=_capture), \
              patch.object(_impl, "_in_graph_test_gate",
-                          return_value=(True, [], "all passed")), \
+                          return_value=(True, [], "all passed", 0)), \
              patch.object(N.ev, "emit"):
             N.implement(state)
         assert captured.get("failures") == []
@@ -162,12 +162,13 @@ class TestRetryDeltaCarriesFailures:
              patch.object(N, "run_agent",
                           return_value=(0, "VERDICT: APPROVE\n" * 5)), \
              patch.object(_impl, "_in_graph_test_gate",
-                          return_value=(False, new_fails, summary)), \
+                          return_value=(False, new_fails, summary, 2)), \
              patch.object(N.ev, "emit"):
             out = N.implement(state)
         assert out["test_fix_failures"] == new_fails
         assert out["test_fix_summary"] == summary
         assert out["test_fix_attempt"] == 1
+        assert out["test_fix_measured"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -185,6 +186,10 @@ class TestClearingOnExitPaths:
             out = N.implement(state)
         assert out["test_fix_failures"] == []
         assert out["test_fix_summary"] == ""
+        assert out["last_gate_status"] == "skipped"
+        assert out["last_gate_summary"] == ""
+        assert out["last_gate_failures"] == []
+        assert out["test_fix_measured"] is False
 
     def test_item_20_success_clears_fields(self):
         state = _base_state(
@@ -196,11 +201,12 @@ class TestClearingOnExitPaths:
              patch.object(N, "run_agent",
                           return_value=(0, "VERDICT: APPROVE\n" * 5)), \
              patch.object(_impl, "_in_graph_test_gate",
-                          return_value=(True, [], "all passed")), \
+                          return_value=(True, [], "all passed", 0)), \
              patch.object(N.ev, "emit"):
             out = N.implement(state)
         assert out["test_fix_failures"] == []
         assert out["test_fix_summary"] == ""
+        assert out["test_fix_measured"] is False
 
     def test_item_21_close_batch_clears_fields(self):
         state = _base_state(
@@ -217,6 +223,10 @@ class TestClearingOnExitPaths:
             out = _impl.close_batch(state)
         assert out["test_fix_failures"] == []
         assert out["test_fix_summary"] == ""
+        assert out["last_gate_summary"] == ""
+        assert out["last_gate_failures"] == []
+        assert out["last_gate_status"] == ""
+        assert out["test_fix_measured"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +263,134 @@ class TestEscalateClearing:
         out = self._escalate("redo", "debate hit the round cap (round 5)")
         assert out["test_fix_failures"] == []
         assert out["test_fix_summary"] == ""
+
+
+# ---------------------------------------------------------------------------
+# TASK-030: <test_summary> block injection + gate-state threading.
+
+
+class TestImplementTestSummaryKwarg:
+    """Items 52-54: the implement run_agent call's test_summary kwarg regime."""
+
+    def _capture(self):
+        captured = {}
+
+        def _cap(*args, **kw):
+            captured.update(kw)
+            return 0, "VERDICT: APPROVE\n" * 5
+        return captured, _cap
+
+    def test_first_attempt_test_summary_is_non_authoritative(self):
+        captured, _cap = self._capture()
+        state = _base_state(test_fix_attempt=0)
+        with patch.object(C, "DRY_RUN", True), \
+             patch.object(N, "run_agent", side_effect=_cap), \
+             patch.object(_impl, "_in_graph_test_gate",
+                          return_value=(True, [], "ok", 0)), \
+             patch.object(N.ev, "emit"):
+            N.implement(state)
+        ts = captured.get("test_summary", "")
+        assert 'authoritative="false"' in ts
+        assert 'status="unconfigured"' in ts
+
+    def test_retry_measured_produces_authoritative_red_block(self):
+        captured, _cap = self._capture()
+        state = _base_state(
+            test_fix_attempt=1,
+            test_fix_measured=True,
+            test_fix_failures=["tests/a.test.ts > a", "tests/b.test.ts > b"],
+            test_fix_summary="2 failed, 1 passed",
+        )
+        with patch.object(C, "DRY_RUN", True), \
+             patch.object(N, "run_agent", side_effect=_cap), \
+             patch.object(_impl, "_in_graph_test_gate",
+                          return_value=(True, [], "ok", 1)), \
+             patch.object(N.ev, "emit"):
+            N.implement(state)
+        ts = captured.get("test_summary", "")
+        assert 'authoritative="true"' in ts
+        assert 'status="red"' in ts
+        # Sourced from test_fix_failures.
+        assert "tests/a.test.ts > a" in ts
+
+    def test_retry_not_measured_produces_non_authoritative_skipped(self):
+        captured, _cap = self._capture()
+        state = _base_state(
+            test_fix_attempt=1,
+            test_fix_measured=False,
+            test_fix_failures=["tests/a.test.ts > a"],
+            test_fix_summary="",
+        )
+        with patch.object(C, "DRY_RUN", True), \
+             patch.object(N, "run_agent", side_effect=_cap), \
+             patch.object(_impl, "_in_graph_test_gate",
+                          return_value=(True, [], "ok", 0)), \
+             patch.object(N.ev, "emit"):
+            N.implement(state)
+        ts = captured.get("test_summary", "")
+        assert 'authoritative="false"' in ts
+        assert 'status="skipped"' in ts
+
+
+class TestGreenPathGateStateThreading:
+    """Items 55-56: green-path last_gate_status + retry-fail test_fix_measured."""
+
+    def test_green_measured_sets_last_gate_green(self):
+        state = _base_state(test_fix_attempt=0)
+        with patch.object(C, "DRY_RUN", False), \
+             patch.object(N, "run_agent",
+                          return_value=(0, "VERDICT: APPROVE\n" * 5)), \
+             patch.object(_impl, "_in_graph_test_gate",
+                          return_value=(True, [], "5 passed, 0 failed", 2)), \
+             patch.object(_impl, "_capture_test_baseline", return_value={}), \
+             patch.object(_impl, "_stage_all"), \
+             patch.object(_impl, "_dirty_paths", return_value=False), \
+             patch.object(_impl, "_db_note", return_value=(True, "")), \
+             patch.object(N.ev, "emit"):
+            out = N.implement(state)
+        assert out["last_gate_status"] == "green"
+        assert out["last_gate_summary"] == "5 passed, 0 failed"
+        assert out["last_gate_failures"] == []
+
+    def test_green_not_measured_sets_last_gate_skipped_empty_summary(self):
+        state = _base_state(test_fix_attempt=0)
+        with patch.object(C, "DRY_RUN", True), \
+             patch.object(N, "run_agent",
+                          return_value=(0, "VERDICT: APPROVE\n" * 5)), \
+             patch.object(_impl, "_in_graph_test_gate",
+                          return_value=(True, [], "skipped", 0)), \
+             patch.object(N.ev, "emit"):
+            out = N.implement(state)
+        assert out["last_gate_status"] == "skipped"
+        assert out["last_gate_summary"] == ""
+        assert out["last_gate_failures"] == []
+
+    def test_retry_fail_delta_carries_test_fix_measured_true_when_ran(self):
+        new_fails = ["tests/a.test.ts > a"]
+        state = _base_state(test_fix_attempt=0)
+        with patch.object(C, "DRY_RUN", False), \
+             patch.object(N, "run_agent",
+                          return_value=(0, "VERDICT: APPROVE\n" * 5)), \
+             patch.object(_impl, "_in_graph_test_gate",
+                          return_value=(False, new_fails, "1 failed", 3)), \
+             patch.object(_impl, "_capture_test_baseline", return_value={}), \
+             patch.object(_impl, "_dirty_paths", return_value=False), \
+             patch.object(_impl, "_db_note", return_value=(True, "")), \
+             patch.object(N.ev, "emit"):
+            out = N.implement(state)
+        assert out["test_fix_measured"] is True
+
+    def test_retry_fail_delta_carries_test_fix_measured_false_when_not_ran(self):
+        new_fails = ["tests/a.test.ts > a"]
+        state = _base_state(test_fix_attempt=0)
+        with patch.object(C, "DRY_RUN", True), \
+             patch.object(N, "run_agent",
+                          return_value=(0, "VERDICT: APPROVE\n" * 5)), \
+             patch.object(_impl, "_in_graph_test_gate",
+                          return_value=(False, new_fails, "skipped", 0)), \
+             patch.object(N.ev, "emit"):
+            out = N.implement(state)
+        assert out["test_fix_measured"] is False
 
 
 if __name__ == "__main__":

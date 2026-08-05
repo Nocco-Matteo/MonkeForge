@@ -9,6 +9,7 @@ pre-resolves, redo --from visual skips resolve).
 """
 import io
 import os
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -150,6 +151,205 @@ class TestDiscovery(unittest.TestCase):
             with patch.object(C, "REPO", repo):
                 cands = tr.discover_test_suites()
             self.assertEqual(cands, [])
+
+
+class TestMakefileDiscovery(unittest.TestCase):
+    """Item 65: Makefile ``test:``/``check:`` target discovery."""
+
+    def test_root_makefile_test_target_yields_make_test(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "Makefile").write_text("test:\n\techo hi\n")
+            with patch.object(C, "REPO", repo):
+                cands = tr.discover_test_suites()
+            self.assertEqual(len(cands), 1)
+            self.assertEqual(cands[0].runner, "script")
+            self.assertEqual(cands[0].cmd, ["make", "test"])
+            self.assertEqual(cands[0].cwd, "")
+
+    def test_depth1_makefile_check_target_yields_make_check(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            sub = repo / "sub"
+            sub.mkdir()
+            (sub / "Makefile").write_text("check:\n\techo hi\n")
+            with patch.object(C, "REPO", repo):
+                cands = tr.discover_test_suites()
+            self.assertEqual(len(cands), 1)
+            self.assertEqual(cands[0].runner, "script")
+            self.assertEqual(cands[0].cmd, ["make", "check"])
+            self.assertEqual(cands[0].cwd, "sub")
+            self.assertEqual(cands[0].label, "sub")
+
+    def test_test_preferred_over_check_when_both_present(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "Makefile").write_text("test:\n\techo test\ncheck:\n\techo check\n")
+            with patch.object(C, "REPO", repo):
+                cands = tr.discover_test_suites()
+            self.assertEqual(len(cands), 1)
+            self.assertEqual(cands[0].cmd, ["make", "test"])
+
+    def test_makefile_with_no_test_or_check_yields_no_candidate(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "Makefile").write_text("build:\n\techo build\n")
+            with patch.object(C, "REPO", repo):
+                cands = tr.discover_test_suites()
+            self.assertEqual(cands, [])
+
+    def test_lowercase_makefile_is_scanned(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "makefile").write_text("test:\n\techo hi\n")
+            with patch.object(C, "REPO", repo):
+                cands = tr.discover_test_suites()
+            self.assertEqual(len(cands), 1)
+            self.assertEqual(cands[0].cmd, ["make", "test"])
+
+
+class TestUnsupportedManifestSurfacing(unittest.TestCase):
+    """Items 66-67: cargo/go surfaced as unsupported in the interactive ask."""
+
+    def test_cargo_at_root_surfaced_in_stderr_and_absent_from_candidates(self):
+        import tempfile, io
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            (repo / "Cargo.toml").write_text("[package]\nname = \"x\"\n")
+            with patch.object(C, "REPO", repo), \
+                 patch.object(tr, "_suites_resolved", False), \
+                 patch.object(C, "TEST_SUITES", []), \
+                 patch("sys.stderr", new_callable=io.StringIO) as err, \
+                 patch.object(sys, "stdin") as stdin:
+                stdin.isatty.return_value = True
+                stdin.readline.return_value = "0\n"
+                tr.resolve_test_suites(no_input=False, task_id="T")
+            err_text = err.getvalue()
+            self.assertIn("Detected, unsupported", err_text)
+            self.assertIn("cargo", err_text)
+            # Unsupported manifests must NOT appear as numbered candidates.
+            numbered = [ln for ln in err_text.splitlines()
+                        if ln.strip() and ln.strip()[0].isdigit()
+                        and "." in ln.split(")")[0]]
+            self.assertFalse(any("cargo" in ln for ln in numbered))
+
+    def test_go_at_depth1_surfaced_in_stderr(self):
+        import tempfile, io
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            go_dir = repo / "gosvc"
+            go_dir.mkdir()
+            (go_dir / "go.mod").write_text("module x\n\ngo 1.21\n")
+            with patch.object(C, "REPO", repo), \
+                 patch.object(tr, "_suites_resolved", False), \
+                 patch.object(C, "TEST_SUITES", []), \
+                 patch("sys.stderr", new_callable=io.StringIO) as err, \
+                 patch.object(sys, "stdin") as stdin:
+                stdin.isatty.return_value = True
+                stdin.readline.return_value = "0\n"
+                tr.resolve_test_suites(no_input=False, task_id="T")
+            err_text = err.getvalue()
+            self.assertIn("Detected, unsupported", err_text)
+            self.assertIn("go", err_text)
+            self.assertIn("gosvc", err_text)
+            # Unsupported manifests must NOT appear as numbered candidates.
+            numbered = [ln for ln in err_text.splitlines()
+                        if ln.strip() and ln.strip()[0].isdigit()
+                        and "." in ln.split(")")[0]]
+            self.assertFalse(any("go" in ln for ln in numbered))
+
+    def test_only_unsupported_manifests_still_surfaces_block(self):
+        # A repo with only unsupported manifests (no runnable candidates)
+        # still surfaces the unsupported block in the interactive branch.
+        import tempfile, io
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            rust = repo / "rust"
+            rust.mkdir()
+            (rust / "Cargo.toml").write_text("[package]\nname = \"x\"\n")
+            with patch.object(C, "REPO", repo), \
+                 patch.object(tr, "_suites_resolved", False), \
+                 patch.object(C, "TEST_SUITES", []), \
+                 patch("sys.stderr", new_callable=io.StringIO) as err, \
+                 patch.object(sys, "stdin") as stdin:
+                stdin.isatty.return_value = True
+                stdin.readline.return_value = "0\n"
+                tr.resolve_test_suites(no_input=False, task_id="T")
+            err_text = err.getvalue()
+            self.assertIn("Detected, unsupported", err_text)
+            self.assertIn("rust", err_text)
+
+    def test_ask_suites_writes_unsupported_block_before_candidates(self):
+        import io
+        cand = C.TestSuite(label="fe", cwd="frontend", runner="npm-vitest")
+        unsupported = [("rust-thing", "cargo")]
+        with patch("sys.stderr", new_callable=io.StringIO) as err, \
+             patch.object(sys, "stdin") as stdin:
+            stdin.readline.return_value = "0\n"
+            tr._ask_suites([cand], unsupported=unsupported)
+        err_text = err.getvalue()
+        # The unsupported block comes before the candidate list.
+        unsupp_idx = err_text.find("Detected, unsupported")
+        cand_idx = err_text.find("Discovered test-suite candidates")
+        self.assertLess(unsupp_idx, cand_idx)
+        self.assertIn("rust-thing (cargo)", err_text)
+
+
+class TestRunRepoTestsDetailedRanCount(unittest.TestCase):
+    """Item 68: ran_count excludes missing-cwd-skipped and cwd-escape/
+    unknown-runner synthetic-failure suites."""
+
+    def test_missing_cwd_skipped_does_not_count_as_ran(self):
+        suite = C.TestSuite(label="x", cwd="nope", runner="pytest")
+        with patch.object(C, "TEST_SUITES", [suite]), \
+             patch.object(tr, "_suites_resolved", True), \
+             patch.object(C, "REPO", Path("/tmp/repo")):
+            _, _, _, ran_count = tr.run_repo_tests_detailed()
+        self.assertEqual(ran_count, 0)
+
+    def test_cwd_escape_does_not_count_as_ran(self):
+        suite = C.TestSuite(label="x", cwd="/etc", runner="pytest")
+        with patch.object(C, "TEST_SUITES", [suite]), \
+             patch.object(tr, "_suites_resolved", True), \
+             patch.object(C, "REPO", Path("/tmp/repo")):
+            _, _, _, ran_count = tr.run_repo_tests_detailed()
+        self.assertEqual(ran_count, 0)
+
+    def test_unknown_runner_does_not_count_as_ran(self):
+        suite = C.TestSuite(label="x", cwd="", runner="cargo")
+        with patch.object(C, "TEST_SUITES", [suite]), \
+             patch.object(tr, "_suites_resolved", True), \
+             patch.object(C, "REPO", Path("/tmp/repo")):
+            _, _, _, ran_count = tr.run_repo_tests_detailed()
+        self.assertEqual(ran_count, 0)
+
+    def test_real_run_counts_as_ran(self):
+        import tempfile
+        suite = C.TestSuite(label="x", cwd="", runner="pytest")
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(C, "TEST_SUITES", [suite]), \
+                 patch.object(tr, "_suites_resolved", True), \
+                 patch.object(C, "REPO", Path(td)), \
+                 patch.object(tr, "_run_cmd", return_value=(0, "")):
+                _, _, _, ran_count = tr.run_repo_tests_detailed()
+        self.assertEqual(ran_count, 1)
+
+    def test_mixed_skip_and_run_counts_only_ran(self):
+        import tempfile
+        skip_suite = C.TestSuite(label="skip", cwd="nope", runner="pytest")
+        run_suite = C.TestSuite(label="run", cwd="", runner="pytest")
+        with tempfile.TemporaryDirectory() as td:
+            with patch.object(C, "TEST_SUITES", [skip_suite, run_suite]), \
+                 patch.object(tr, "_suites_resolved", True), \
+                 patch.object(C, "REPO", Path(td)), \
+                 patch.object(tr, "_run_cmd", return_value=(0, "")):
+                _, _, _, ran_count = tr.run_repo_tests_detailed()
+        self.assertEqual(ran_count, 1)
 
 
 class TestRunners(unittest.TestCase):
@@ -307,7 +507,7 @@ class TestResolveSuites(unittest.TestCase):
             discover_calls.append(1)
             return [cand]
 
-        def fake_ask(cands):
+        def fake_ask(cands, unsupported=None):
             ask_calls.append(1)
             return [], False
 

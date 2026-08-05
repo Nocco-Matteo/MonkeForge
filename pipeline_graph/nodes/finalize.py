@@ -258,7 +258,7 @@ FINAL_FIX_MAX_FAILURES_PER_ATTEMPT = 5
 FINAL_FIX_TIMEOUT = int(os.environ.get("PIPELINE_FINAL_FIX_TIMEOUT", "600")) or None
 
 
-def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) -> dict | None:
+def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) -> dict:
     """Run the full suite after all batches; auto-fix only NEW failures.
 
     Baseline-aware, like the per-batch gate: failures already present at task
@@ -268,22 +268,50 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
     actions to turn a pre-existing red test green. Only regressions this task
     introduced are auto-fixed.
 
-    Returns None if there are no new failures (green, or only baseline remains,
-    or DB down / dry run), or a dict with an escalation if new failures remain
-    after FINAL_FIX_ATTEMPTS.
+    Returns a dict on EVERY exit path with at least ``status`` and
+    ``ran_count`` keys:
+      * ``status="skipped"``, ``ran_count=0`` — pre-gate dry-run/DB-down.
+      * ``status="unconfigured"``, ``ran_count=0`` — post-resolution empty
+        ``C.TEST_SUITES`` (no suites configured).
+      * ``status="skipped"``, ``ran_count=0`` — non-empty suites but the gate
+        measured nothing (every suite skipped/synthetic-failed).
+      * ``status="green"``, ``ran_count=<measured>`` — no new failures.
+      * ``status="red"``, ``ran_count=<measured>``, ``escalation``,
+        ``journal`` — new failures remain after FINAL_FIX_ATTEMPTS.
+
+    The ordering is critical (C13/B3): the ``unconfigured`` vs ``skipped`` vs
+    ``green`` determination happens strictly AFTER
+    ``run_repo_tests_detailed()`` runs so ``resolve_test_suites()`` has
+    resolved ``C.TEST_SUITES`` — checking ``C.TEST_SUITES`` before the gate
+    call would conflate "not yet resolved" with "resolved empty".
     """
     tid = conv.task_id
     if C.DRY_RUN or not db_ok:
-        return None
+        return {"status": "skipped", "ran_count": 0, "summary": "",
+                "new_failures": []}
 
-    _, all_failures, summary = tr.run_repo_tests()
+    _, all_failures, summary, ran_count = tr.run_repo_tests_detailed()
+    # Post-resolution empty TEST_SUITES → unconfigured (distinct from "suites
+    # existed but measured nothing"). Checked AFTER the gate call so
+    # resolve_test_suites has run.
+    if not C.TEST_SUITES:
+        return {"status": "unconfigured", "ran_count": 0, "summary": summary,
+                "new_failures": []}
+    # Non-empty suites but the gate measured nothing (every suite was a
+    # missing-cwd skip or a cwd-escape/unknown-runner synthetic failure) →
+    # skipped, NOT green (a non-measurement must not be laundered as a pass).
+    if ran_count == 0:
+        return {"status": "skipped", "ran_count": 0, "summary": summary,
+                "new_failures": []}
+
     failures = tr.new_failures_since_baseline(
         all_failures, baseline, [],
         lint_debt_rules=C.LINT_DEBT_RULES,
         ambient_patterns=C.TEST_AMBIENT_PATTERNS,
     )
     if not failures:
-        return None
+        return {"status": "green", "ran_count": ran_count, "summary": summary,
+                "new_failures": []}
 
     n0 = len(failures)
     ev.emit(
@@ -295,6 +323,7 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
         f"Attempting auto-fix ({FINAL_FIX_ATTEMPTS} attempts).",
     )
 
+    suite_labels = [s.label for s in C.TEST_SUITES]
     for attempt in range(1, FINAL_FIX_ATTEMPTS + 1):
         batch = sorted(failures)[:FINAL_FIX_MAX_FAILURES_PER_ATTEMPT]
         fail_list = "\n".join(batch)
@@ -305,6 +334,9 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
             if remaining
             else ""
         )
+        test_summary_block = tr.format_test_summary_block(
+            "red", suite_labels, batch, summary, authoritative=True,
+        )
         _, out = _N.run_agent(
             "IMPLEMENTER",
             conv,
@@ -314,8 +346,15 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
             failures=fail_list,
             summary=summary,
             remaining_label=remaining_label,
+            test_summary=test_summary_block,
         )
-        _, all_failures, summary = tr.run_repo_tests()
+        _, all_failures, summary, ran_count = tr.run_repo_tests_detailed()
+        # A post-fix non-measurement (every suite skipped/synthetic-failed)
+        # must not be laundered as green/red — treat as skipped, matching
+        # the pre-loop ran_count==0 guard above.
+        if ran_count == 0:
+            return {"status": "skipped", "ran_count": 0, "summary": summary,
+                    "new_failures": []}
         failures = tr.new_failures_since_baseline(
             all_failures, baseline, [],
             lint_debt_rules=C.LINT_DEBT_RULES,
@@ -331,7 +370,8 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
             _N._stage_all()
             if not C.DRY_RUN and not C.NO_GIT:
                 _N._git("commit", "-m", f"final gate: fix {n0} new test failure(s)")
-            return None
+            return {"status": "green", "ran_count": ran_count, "summary": summary,
+                    "new_failures": []}
         ev.emit(
             "step_end",
             tid,
@@ -341,6 +381,10 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
 
     n = len(failures)
     return {
+        "status": "red",
+        "ran_count": ran_count,
+        "summary": summary,
+        "new_failures": sorted(failures),
         "escalation": f"final test gate: {n} NEW test(s) still failing after "
         f"{FINAL_FIX_ATTEMPTS} auto-fix attempt(s) "
         f"({summary}). Proceed and ship with known failures, "
@@ -359,12 +403,16 @@ def final_check(state):
     # LLM checklist review.  This catches both pre-existing baseline
     # failures that passed through the per-batch gate, and any regressions
     # that a degraded DB let through.
-    test_result = (
-        None
-        if state.get("final_tests_waived")
-        else _final_test_fix_loop(conv, db_ok, set(state.get("task_baseline") or []))
-    )
-    if test_result:
+    if state.get("final_tests_waived"):
+        test_result: dict | None = None
+    else:
+        test_result = _final_test_fix_loop(
+            conv, db_ok, set(state.get("task_baseline") or [])
+        )
+    # Escalation guard: only a dict carrying an explicit ``escalation`` key
+    # escalates. A green/skipped/unconfigured dict (no escalation key) falls
+    # through to the LLM checklist review with the test_summary as context.
+    if test_result and test_result.get("escalation"):
         suffix = "" if db_ok else " (DB-gated tests skipped: e2e Postgres unreachable)"
         delta = {
             "not_met": [],
@@ -378,12 +426,34 @@ def final_check(state):
             ]
         return delta
 
+    # Build the <test_summary> block for the final_check prompt. Empty string
+    # on the waived/None path (no measurement to report). Otherwise built via
+    # format_test_summary_block with ``authoritative`` conditioned on a real
+    # measurement: green/red with ran_count > 0 → authoritative; skipped/
+    # unconfigured (or ran_count == 0) → non-authoritative context-only.
+    if test_result is None:
+        test_summary_block = ""
+    else:
+        status = test_result.get("status", "skipped")
+        ran_count = int(test_result.get("ran_count", 0))
+        authoritative = status in {"green", "red"} and ran_count > 0
+        suite_labels = [s.label for s in C.TEST_SUITES]
+        new_failures = list(test_result.get("new_failures", []))
+        test_summary_block = tr.format_test_summary_block(
+            status,
+            suite_labels,
+            new_failures,
+            test_result.get("summary", ""),
+            authoritative=authoritative,
+        )
+
     code, out = _N.run_agent(
         "IMPLEMENTER",
         conv,
         "final-check",
         template="final_check",
         db_note=db_note,
+        test_summary=test_summary_block,
     )
     health, _signal = classify_output(code, out)
     if not _trust_output(code, out, health):

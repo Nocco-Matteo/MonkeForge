@@ -44,6 +44,100 @@ PYTEST_FAIL_RE = re.compile(r"^FAILED\s+(.+?)(?:\s+-\s+.+)?$", re.MULTILINE)
 # readable while still surfacing the relevant subprocess output tail).
 _TAIL_LIMIT = 500
 
+# --- <test_summary> block formatter + sanitizer ----------------------------
+# The block is injected into final_check/preflight_fix/implement/code_fix
+# prompts so the agent sees the in-graph gate's authoritative result instead
+# of re-running tests blind. Three sanitizer rules (applied to every
+# interpolated field — raw, each new_failure key, each suite label) close the
+# injection vector a partial sanitizer would re-open:
+#   1. escape `</` → `<\/` so a stray `</...` in raw output can't close the
+#      wrapping block early (an escaped `</test_summary>` survives as
+#      `<\/test_summary>` — visible but inert);
+#   2. strip un-escaped `<test_summary>`/`</test_summary>` tokens
+#      (case-insensitive) so a stale opening token in interpolated content
+#      cannot nest a second block (escaped closing tokens are left intact,
+#      already rendered inert by step 1);
+#   3. cap at 600 chars with an ellipsis marker so a runaway log line can't
+#      blow out the prompt.
+_SUMMARY_BLOCK_CHAR_CAP = 600
+_SUMMARY_OMIT = "…[truncated]"
+
+
+def _sanitize_summary_text(text: str) -> str:
+    """Apply the three sanitizer rules to one interpolated summary field."""
+    s = text or ""
+    # 1. escape `</` so interpolated content cannot close the block early.
+    s = s.replace("</", "<\\/")
+    # 2. strip un-escaped <test_summary>/</test_summary> tokens (the escaped
+    #    variants from step 1 no longer match the regex, so they survive inert).
+    s = re.sub(r"</?test_summary\s*>", "", s, flags=re.IGNORECASE)
+    # 3. 600-char cap with ellipsis marker.
+    if len(s) > _SUMMARY_BLOCK_CHAR_CAP:
+        s = s[:_SUMMARY_BLOCK_CHAR_CAP] + _SUMMARY_OMIT
+    return s
+
+
+def format_test_summary_block(
+    status: str,
+    suites: list[str],
+    new_failures: list[str],
+    raw: str,
+    authoritative: bool = True,
+) -> str:
+    """Render an XML-ish ``<test_summary ...>`` block for prompt injection.
+
+    ``status`` is the gate's verdict (``green``/``red``/``skipped``/
+    ``unconfigured``). ``suites`` are the resolved suite labels, ``new_failures``
+    the baseline-aware new failure keys, ``raw`` the one-line runner summary.
+    ``authoritative`` flags whether the block is ground truth (a measured run)
+    vs. a placeholder for an unconfigured/skipped gate.
+
+    Every interpolated field is run through ``_sanitize_summary_text`` so a
+    malicious or noisy test output line can never forge a closing tag, close
+    the block early, or blow out the prompt. The ``suites``/``new_failures``/
+    ``raw`` lines are always emitted (with ``(none)`` placeholders when empty)
+    so the block shape is stable for prompt-contract grep assertions.
+    """
+    auth = "true" if authoritative else "false"
+    safe_suites = [_sanitize_summary_text(s) for s in (suites or [])]
+    safe_failures = [_sanitize_summary_text(f) for f in (new_failures or [])]
+    safe_raw = _sanitize_summary_text(raw or "")
+    safe_status = _sanitize_summary_text(status)
+    lines = [
+        f'<test_summary status="{safe_status}" authoritative="{auth}">',
+        f"suites: {', '.join(safe_suites) if safe_suites else '(none)'}",
+    ]
+    if safe_failures:
+        lines.append("new_failures:")
+        for f in safe_failures:
+            lines.append(f"  - {f}")
+    else:
+        lines.append("new_failures: (none)")
+    lines.append(f"raw: {safe_raw}")
+    lines.append("</test_summary>")
+    return "\n".join(lines)
+
+
+# Makefile target discovery: matches `test:` or `check:` at the start of a
+# line (allowing optional whitespace before the colon). ``re.MULTILINE`` so
+# ``^`` anchors per-line against the whole Makefile body.
+_MAKE_TARGET_RE = re.compile(r"^(test|check)\s*:", re.MULTILINE)
+
+
+def _makefile_targets(path: Path) -> set[str]:
+    """Return the set of ``test``/``check`` targets defined in a Makefile.
+
+    Returns an empty set when the file is missing or unreadable. Used by
+    ``discover_test_suites`` to decide whether a Makefile yields a
+    ``script``-runner candidate (``make test`` preferred, ``make check``
+    fallback).
+    """
+    try:
+        body = path.read_text()
+    except OSError:
+        return set()
+    return set(_MAKE_TARGET_RE.findall(body))
+
 
 def parse_vitest_failures(output: str) -> set[str]:
     """Stable keys: everything after ``FAIL`` on each vitest result line."""
@@ -309,10 +403,12 @@ _suites_resolved: bool = False
 def discover_test_suites(repo: Path | None = None) -> list[C.TestSuite]:
     """Scan ``repo`` root (depth 0) and immediate subdirectories (depth 1).
 
-    Returns runnable candidates only (``npm-vitest``/``pytest``). A dir with a
-    ``Cargo.toml``/``go.mod`` is detected but omitted (no runner yet). ``repo``
-    is resolved inside the body (not as a default-arg value) so a test that
-    patches ``C.REPO`` after import picks up the new value.
+    Returns runnable candidates only (``npm-vitest``/``pytest``/``script``).
+    A dir with a ``Cargo.toml``/``go.mod`` is detected but omitted (no runner
+    yet) — ``_detect_unsupported_manifests`` surfaces those to the user as
+    "Detected, unsupported" in the interactive ask. ``repo`` is resolved
+    inside the body (not as a default-arg value) so a test that patches
+    ``C.REPO`` after import picks up the new value.
     """
     repo = C.REPO if repo is None else repo
     candidates: list[C.TestSuite] = []
@@ -325,6 +421,23 @@ def discover_test_suites(repo: Path | None = None) -> list[C.TestSuite]:
         scripts = data.get("scripts") or {}
         return bool(scripts.get("test"))
 
+    def _makefile_suite(label: str, cwd: str, mk: Path) -> C.TestSuite | None:
+        """Build a ``script``-runner TestSuite from a Makefile, or None.
+
+        Prefers a ``test:`` target (``cmd=["make", "test"]``); falls back to
+        ``check:`` (``cmd=["make", "check"]``) when only ``check`` is present;
+        returns None when neither target is defined. Delegates target parsing
+        to the module-level ``_makefile_targets`` helper.
+        """
+        targets = _makefile_targets(mk)
+        if "test" in targets:
+            cmd = ["make", "test"]
+        elif "check" in targets:
+            cmd = ["make", "check"]
+        else:
+            return None
+        return C.TestSuite(label=label, cwd=cwd, runner="script", cmd=cmd)
+
     # Depth 0: repo root.
     root_pkg = repo / "package.json"
     if root_pkg.is_file() and _has_test_script(root_pkg):
@@ -332,6 +445,13 @@ def discover_test_suites(repo: Path | None = None) -> list[C.TestSuite]:
     if (repo / "pytest.ini").is_file() or (repo / "pyproject.toml").is_file() \
             or (repo / "conftest.py").is_file():
         candidates.append(C.TestSuite(label=repo.name, cwd="", runner="pytest"))
+    for mk_name in ("Makefile", "makefile"):
+        mk = repo / mk_name
+        if mk.is_file():
+            suite = _makefile_suite(repo.name, "", mk)
+            if suite is not None:
+                candidates.append(suite)
+            break
 
     # Depth 1: immediate subdirectories.
     for child in sorted(repo.iterdir()):
@@ -345,6 +465,13 @@ def discover_test_suites(repo: Path | None = None) -> list[C.TestSuite]:
                 or (child / "conftest.py").is_file():
             candidates.append(C.TestSuite(label=child.name, cwd=child.name,
                                           runner="pytest"))
+        for mk_name in ("Makefile", "makefile"):
+            mk = child / mk_name
+            if mk.is_file():
+                suite = _makefile_suite(child.name, child.name, mk)
+                if suite is not None:
+                    candidates.append(suite)
+                break
         # Detected but omitted: no runner registered yet.
         if (child / "Cargo.toml").is_file() or (child / "go.mod").is_file():
             # Cargo/go projects are recognized but produce no candidate until a
@@ -352,6 +479,30 @@ def discover_test_suites(repo: Path | None = None) -> list[C.TestSuite]:
             pass
 
     return candidates
+
+
+def _detect_unsupported_manifests(repo: Path | None = None) -> list[tuple[str, str]]:
+    """Scan root + depth-1 for cargo/go manifests the gate cannot run yet.
+
+    Returns a list of ``(label, kind)`` pairs where ``kind`` is ``cargo`` or
+    ``go``. Used by the interactive ask to surface "Detected, unsupported"
+    suites so the user knows the gate saw them and deliberately omitted them
+    (not a silent miss).
+    """
+    repo = C.REPO if repo is None else repo
+    out: list[tuple[str, str]] = []
+    if (repo / "Cargo.toml").is_file():
+        out.append((repo.name, "cargo"))
+    if (repo / "go.mod").is_file():
+        out.append((repo.name, "go"))
+    for child in sorted(repo.iterdir()):
+        if not child.is_dir():
+            continue
+        if (child / "Cargo.toml").is_file():
+            out.append((child.name, "cargo"))
+        if (child / "go.mod").is_file():
+            out.append((child.name, "go"))
+    return out
 
 
 def _persist_suites_to_yaml(chosen: list[C.TestSuite]) -> None:
@@ -384,12 +535,26 @@ def _persist_suites_to_yaml(chosen: list[C.TestSuite]) -> None:
     path.write_text(_yaml.safe_dump(data, sort_keys=False, default_flow_style=False))
 
 
-def _ask_suites(candidates: list[C.TestSuite]) -> tuple[list[C.TestSuite], bool]:
+def _ask_suites(
+    candidates: list[C.TestSuite],
+    unsupported: list[tuple[str, str]] | None = None,
+) -> tuple[list[C.TestSuite], bool]:
     """Interactive multi-select on stderr/stdin. Returns (chosen, save_toggle).
 
     Offers a numbered multi-select (comma-separated indices), a skip option,
     and a save toggle (whether to persist the choice to monkeforge.yaml).
+    When ``unsupported`` is non-empty, a "Detected, unsupported" block is
+    written to stderr BEFORE the numbered candidate list so the user sees the
+    cargo/go manifests the gate recognized but cannot run yet.
     """
+    if unsupported:
+        sys.stderr.write("Detected, unsupported (no runner registered yet):\n")
+        for label, kind in unsupported:
+            sys.stderr.write(f"  - {label} ({kind})\n")
+        sys.stderr.write(
+            "These were omitted from the candidates below. Register a runner "
+            "in TEST_SUITE_RUNNERS to enable them.\n\n"
+        )
     sys.stderr.write("Discovered test-suite candidates:\n")
     for i, s in enumerate(candidates, 1):
         sys.stderr.write(f"  {i}. {s.label} ({s.runner}, cwd={s.cwd or '.'})\n")
@@ -470,14 +635,24 @@ def resolve_test_suites(no_input: bool | None = None, task_id: str = "?") -> lis
         return C.TEST_SUITES
 
     # Interactive branch.
+    unsupported = _detect_unsupported_manifests()
     if not candidates:
+        if unsupported:
+            sys.stderr.write("Detected, unsupported (no runner registered yet):\n")
+            for label, kind in unsupported:
+                sys.stderr.write(f"  - {label} ({kind})\n")
+            sys.stderr.write(
+                "No runnable test-suite candidates were discovered. Register a "
+                "runner in TEST_SUITE_RUNNERS to enable the unsupported suites, "
+                "or skip the test gate.\n"
+            )
         C.TEST_SUITES = []
         _suites_resolved = True
         ev.emit("note", task_id, "test-gate",
                 "unconfigured (no candidates)")
         return C.TEST_SUITES
 
-    chosen, save = _ask_suites(candidates)
+    chosen, save = _ask_suites(candidates, unsupported=unsupported)
     C.TEST_SUITES = chosen
     if save:
         _persist_suites_to_yaml(chosen)
@@ -488,8 +663,8 @@ def resolve_test_suites(no_input: bool | None = None, task_id: str = "?") -> lis
 
 
 # --- Main entry point ------------------------------------------------------
-def run_repo_tests() -> tuple[int, set[str], str]:
-    """Run all configured test suites via the runner registry.
+def run_repo_tests_detailed() -> tuple[int, set[str], str, int]:
+    """Run all configured test suites via the runner registry; return a 4-tuple.
 
     Resolves suites (discovery + ask) on the first call only (sentinel-guarded).
     Each suite dispatches to ``_RUNNERS[suite.runner]``. A ``cwd`` that resolves
@@ -497,6 +672,12 @@ def run_repo_tests() -> tuple[int, set[str], str]:
     to the returned set — it cannot silently pass the gate. A ``cwd`` that is a
     valid in-repo path but simply not a directory is skipped cleanly (summary
     line only, no failure key).
+
+    Returns ``(max_exit, all_failures, summary, ran_count)`` where ``ran_count``
+    is the number of suites that ACTUALLY executed a runner — it excludes
+    missing-``cwd``-skipped suites and cwd-escape/unknown-runner synthetic-failure
+    suites. Callers that distinguish "gate measured nothing" from "gate measured
+    green" read ``ran_count``; the legacy 3-tuple callers use ``run_repo_tests``.
     """
     if not _suites_resolved:
         resolve_test_suites()
@@ -505,19 +686,21 @@ def run_repo_tests() -> tuple[int, set[str], str]:
     all_failures: set[str] = set()
     summaries: list[str] = []
     max_exit = 0
+    ran_count = 0
 
     for suite in C.TEST_SUITES:
         cwd = (C.REPO / suite.cwd if suite.cwd else C.REPO).resolve()
         # cwd-escape guard: a resolved cwd outside the repo is a
         # misconfiguration that must surface through the (int, set[str], str)
-        # contract the gate reads — not a silent pass.
+        # contract the gate reads — not a silent pass. Counts as a synthetic
+        # failure, NOT a ran suite.
         if not cwd.is_relative_to(C.REPO):
             all_failures.add(f"{suite.label}|cwd escapes repo: {cwd}")
             summaries.append(f"{suite.label}: cwd escapes repo ({cwd})")
             continue
         if not cwd.is_dir():
             # Valid in-repo path that simply isn't a directory — skip cleanly,
-            # distinct from the escape case above.
+            # distinct from the escape case above. Does NOT count as ran.
             summaries.append(f"{suite.label}: skipped (dir not found: {cwd})")
             continue
         runner = _RUNNERS.get(suite.runner)
@@ -529,8 +712,19 @@ def run_repo_tests() -> tuple[int, set[str], str]:
         all_failures |= fails
         summaries.append(f"{suite.label}: {summary}")
         max_exit = max(max_exit, code)
+        ran_count += 1
 
-    return max_exit, all_failures, "; ".join(summaries)
+    return max_exit, all_failures, "; ".join(summaries), ran_count
+
+
+def run_repo_tests() -> tuple[int, set[str], str]:
+    """Back-compat 3-tuple wrapper around ``run_repo_tests_detailed``.
+
+    Existing 3-tuple callers (``_capture_test_baseline`` etc.) are unchanged;
+    new gate-state callers use the detailed 4-tuple to read ``ran_count``.
+    """
+    max_exit, all_failures, summary, _ran_count = run_repo_tests_detailed()
+    return max_exit, all_failures, summary
 
 
 # Back-compat alias

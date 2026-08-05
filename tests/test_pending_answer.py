@@ -56,6 +56,17 @@ class TestPendingAnswerFile:
         }))
         assert PA.live_session_pid("042") is None
 
+    def test_begin_pause_wait_drops_stale_keeps_fresh(self, metrics):
+        import time
+        PA.write_pending_answer("042", "stale")
+        time.sleep(0.01)
+        PA.begin_pause_wait("042")
+        assert PA.take_pending_answer("042") is None  # stale dropped
+        PA.write_pending_answer("042", "fresh")
+        assert PA.take_pending_answer("042") == "fresh"
+        PA.end_pause_wait("042")
+        assert not PA.pause_wait_path("042").exists()
+
 
 class TestTtyPickPending:
     def test_tty_pick_takes_pending_before_stdin(self, metrics, monkeypatch):
@@ -121,3 +132,61 @@ class TestBotDeliverAnswer:
         out = asyncio.run(bot._deliver_answer("042", "ok"))
         assert out == "resumed-ok"
         assert not PA.pending_answer_path("042").exists()
+
+    def test_deliver_live_timeout_never_spawns_resume(self, metrics, monkeypatch):
+        """Regression: TASK-030 dual-driver. Live PID + unread file → refuse."""
+        pytest.importorskip("discord")
+        import bot.bot as bot
+
+        (metrics / "current.json").write_text(json.dumps({
+            "task": "042", "pid": os.getpid(), "step": "escalate",
+        }))
+        called = []
+
+        async def fake_cli(*args):
+            called.append(args)
+            return "MUST-NOT-RUN"
+
+        monkeypatch.setattr(bot, "_cli", fake_cli)
+        # Shrink wait loop so the test finishes quickly.
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_):
+            await real_sleep(0)
+
+        monkeypatch.setattr(bot.asyncio, "sleep", fast_sleep)
+        out = asyncio.run(bot._deliver_answer("042", "approve"))
+        assert called == [], f"spawned resume despite live PID: {called}"
+        assert "REFUSED second driver" in out
+        assert not PA.pending_answer_path("042").exists()
+
+    def test_deliver_after_session_dies_may_resume(self, metrics, monkeypatch):
+        pytest.importorskip("discord")
+        import bot.bot as bot
+
+        # Start as live, then flip to idle mid-wait → safe to resume once.
+        (metrics / "current.json").write_text(json.dumps({
+            "task": "042", "pid": os.getpid(), "step": "escalate",
+        }))
+        called = []
+
+        async def fake_cli(*args):
+            called.append(args)
+            return "resume-after-death"
+
+        monkeypatch.setattr(bot, "_cli", fake_cli)
+        real_sleep = asyncio.sleep
+        n = {"i": 0}
+
+        async def die_then_sleep(_):
+            n["i"] += 1
+            if n["i"] == 2:
+                (metrics / "current.json").write_text(json.dumps({
+                    "idle": True, "task": "042", "why": "paused",
+                }))
+            await real_sleep(0)
+
+        monkeypatch.setattr(bot.asyncio, "sleep", die_then_sleep)
+        out = asyncio.run(bot._deliver_answer("042", "ok"))
+        assert called == [("resume", "042", "--answer", "ok")]
+        assert out == "resume-after-death"

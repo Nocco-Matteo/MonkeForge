@@ -101,6 +101,14 @@ class PipelineState(TypedDict, total=False):
     code_verdict: str
     not_met: list[str]
     disputed: list[str]
+    # --- gate-state threading (test_summary injection): the last in-graph gate
+    # outcome carried forward so code_fix can build a conditional test_summary
+    # block, and a flag for whether the retry's failures were MEASURED by the
+    # gate (vs. a dry-run/skipped path that produced no authoritative block).
+    last_gate_summary: str          # raw summary string from the last in-graph gate run
+    last_gate_failures: list[str]   # NEW failure keys from the last in-graph gate run
+    last_gate_status: str           # "green" | "skipped" | "" (cleared on close_batch)
+    test_fix_measured: bool         # whether the retry's test_fix_failures came from a real gate run
 
     # --- adaptive effort (TASK-011)
     effort: str                    # "scout-monke" | "troop-monke" | "barrel-monke"

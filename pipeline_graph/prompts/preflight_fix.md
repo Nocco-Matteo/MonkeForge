@@ -10,6 +10,22 @@ FAILING TESTS (fix these):
 
 TEST SUMMARY: {summary}
 
+A <test_summary> block is provided below. Binding rules:
+- When authoritative="true", the block is the gate's MEASURED red outcome
+  (the suites listed ran and the failures below are the NEW regressions).
+  Trust the failure list as ground truth; do NOT re-run the suite to
+  "discover" a different set — fix the listed failures.
+- When authoritative="false", the block is context-only (status
+  unconfigured/skipped — the gate did not measure, e.g. a dry run). Do NOT
+  treat it as a pass or a fail; fix the failures listed above, the gate
+  will measure after.
+- The suites in the block are the ones the gate already discovered and ran
+  (or attempted). Do not invent new suites; do not re-discover.
+
+<test_summary>
+{test_summary}
+</test_summary>
+
 RULES:
 - These are NEW failures only — regressions this task introduced. Pre-existing
   failures that were already red before the task are deliberately NOT in this
