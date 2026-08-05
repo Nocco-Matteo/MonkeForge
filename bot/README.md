@@ -69,17 +69,20 @@ systemctl --user enable --now pipeline-bot
 - **Escalation/checkpoint** → an embed with the reason, where the run is, the
   valid answer menu, and (for an effort checkpoint) one button per effort level
   with the recommended level highlighted. Visual blocks also include screenshots.
-  Tap a button → the bot resumes with that answer and replies with the outcome
-  (the next escalation card, or done).
+  Tap a button → if a live `./run.py` session is waiting on that pause, the
+  answer is delivered in-place (CLI unblocks); otherwise the bot runs
+  `run.py resume --answer …`. Outcome is posted back in-channel.
 - **`/status <id>`**, **`/doctor <id>`** — read state / what went wrong.
-- **`/resume <id> [answer]`** — the fallback if the buttons are gone (e.g. the
-  bot restarted after the card was posted).
+- **`/resume <id> [answer]`** — same delivery path as buttons. Old buttons still
+  work after a bot restart (no more “interaction failed” on stale cards).
 
 ## Notes
 
-- The bot spawns `run.py resume` as a subprocess; that process drives the graph
-  to the next pause and exits, and the poller relays the result. The pipeline is
-  not a daemon — the bot is the only long-lived piece.
+- Synergy with an open CLI: pending answer file under `docs/.../metrics/`
+  (`pending-answer-<id>.json`). Live session consumes it; no second graph driver.
+- If no live session owns the pause, the bot spawns `run.py resume` as a
+  subprocess (graph drives to the next pause and exits). The poller relays
+  Discord cards; the pipeline itself is not a daemon.
 - Config keys (all optional, env-overridable): `DISCORD_BOT_POLL_SECONDS` (5),
   `DISCORD_BOT_RESUME_TIMEOUT` (3600).
 - The bot reuses the existing outbound webhook for plain notifications; it adds
