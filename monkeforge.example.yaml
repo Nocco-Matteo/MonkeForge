@@ -73,6 +73,13 @@ effort:
 # entries fail at import (CLI prints `error:`, no traceback).
 #
 # Placeholders in cmd: {model} {prompt} {prompt_file} {docs_dir}.
+# Both {prompt} and {prompt_file} are always filled if present; pick ONE per
+# cmd based on what your CLI accepts (do not pass both "for safety"):
+#   {prompt_file}  — CLI has a file flag (e.g. devin --prompt-file …).
+#                    Prefer for long steps (propose / debate / impl).
+#   {prompt}       — CLI wants inline text (e.g. cursor-agent/claude/gemini
+#                    -p …). Prompts >~32k are moved to stdin automatically.
+# The prompt .md is always written under docs/.../prompts/ either way.
 # Values below are EXAMPLES only — pick the models/CLIs you actually run.
 agents:
   INTERVIEWER:
