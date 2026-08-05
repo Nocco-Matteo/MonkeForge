@@ -1,6 +1,7 @@
 # MonkeForge configuration example.
 # Copy this file to monkeforge.yaml for a local configuration.
-# Precedence: real environment variables > monkeforge.yaml > .env > code defaults.
+# Precedence: real environment variables > monkeforge.yaml > .env > code defaults
+# (where any remain). agents.*.model has NO code default — required in this file.
 # Keep secrets (tokens, credentials, private paths) out of this file.
 
 pipeline:
@@ -67,20 +68,34 @@ effort:
     gates: full
     fix_cycles: 3
 
-# Optional role overrides. Uncomment only the roles/models you want to change.
-# agents:
-#   PROPOSER:
-#     model: glm-5.2
-#     cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
-#   PLAN_REVIEWER:
-#     model: codex
-#     cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
-#   IMPLEMENTER:
-#     model: glm-5.2
-#     cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
-#   CODE_REVIEWER:
-#     model: codex
-#     cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
+# REQUIRED. Every role must declare `model:`. There are NO built-in model
+# defaults in code — missing entries fail at import. `cmd:` is optional
+# (falls back to the role's invocation template in config.py); override when
+# you want a different CLI. Values below are examples, not sacred defaults —
+# pick the models you actually want to run.
+agents:
+  INTERVIEWER:
+    model: gemini-3.1-pro-preview
+    # cmd: "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
+  PROPOSER:
+    model: glm-5.2
+    # cmd: "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false"
+  PLAN_REVIEWER:
+    model: codex
+  IMPLEMENTER:
+    model: glm-5.2
+  CODE_REVIEWER:
+    model: codex
+  UX_REVIEWER:
+    model: gemini-3.6-flash
+  VISUAL_REVIEWER:
+    model: sonnet
+  VISUAL_FIXER:
+    model: sonnet
+  SUMMARIZER:
+    model: glm-5.2
+  JUDGE:
+    model: sonnet
 
 # Optional condenser: keep_recent + per-role token budgets. Read directly by
 # config.py from this yaml key (no env bridge — yaml is the only source).

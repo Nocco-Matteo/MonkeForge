@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # Load monkeforge.yaml (or .env as fallback) into os.environ.
-# Priority: real env vars > yaml > .env > defaults in config.py.
+# Priority: real env vars > yaml > .env > code defaults (where any remain).
+# agents.*.model: yaml-only, required — no built-in model defaults.
 # Exceptions (read directly by config.py from yaml — no env bridge):
 #   agents: role model/cmd; condenser: keep_recent + per-role token budgets;
 #   test_suites: gate suite list.

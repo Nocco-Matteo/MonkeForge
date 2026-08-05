@@ -68,65 +68,108 @@ def arch_docs_block() -> str:
     present = [p for p in paths if (REPO / p).exists()]
     return "\n".join(f"- {p}" for p in present) or "- (none configured)"
 
-# --- Role -> {model, command} mapping. Single concept: each role knows which
-# model to use and how to invoke it. Override from monkeforge.yaml (agents:
-# section) — the yaml is the only override path, no env vars.
-# Placeholders in cmd: {model}, {prompt}, {prompt_file}. First token = binary.
-_DEFAULT_ROLE_CONFIG = {
-    "INTERVIEWER": {
-        "model": "gemini-3.1-pro-preview",
-        "cmd":   "gemini -m {model} --include-directories {docs_dir} -p {prompt}",
-    },
-    "PROPOSER": {
-        "model": "glm-5.2",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
-    },
-    "PLAN_REVIEWER": {
-        "model": "codex",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
-    },
-    "IMPLEMENTER": {
-        "model": "glm-5.2",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
-    },
-    "CODE_REVIEWER": {
-        "model": "codex",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
-    },
-    # gemini-3.6-flash, not 3.1-pro-preview: pro failed in-band on the file-read
-    # tool call (malformed tool call) on 008/009; flash passed two smoke tests
-    # including reading UX-MANIFESTO.md and extracting P1 correctly. Faster too.
-    # (composer was the plan but cursor-agent is out of usage.)
-    "UX_REVIEWER": {
-        "model": "gemini-3.6-flash",
-        "cmd":   "gemini -m {model} --include-directories {docs_dir} -p {prompt}",
-    },
-    # Reviews RENDERED screenshots, so it must reliably read image files — claude
-    # does (its Read tool renders PNGs); gemini botches the tool call. This is the
-    # pipeline's only gate that looks at pixels, not text.
-    "VISUAL_REVIEWER": {
-        "model": "sonnet",
-        "cmd":   "claude -p {prompt} --model {model} --add-dir {docs_dir}",
-    },
-    # FIXES visual blockers — and must SEE the screenshots to do it, or it plays
-    # whack-a-mole (fix combat, break explore, blind to its own result). claude
-    # both reads the PNGs and edits the frontend, so the fixer finally has eyes.
-    "VISUAL_FIXER": {
-        "model": "sonnet",
-        "cmd":   "claude -p {prompt} --model {model} --add-dir {docs_dir}",
-    },
-    "SUMMARIZER": {
-        "model": "glm-5.2",
-        "cmd":   "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p --permission-mode dangerous --respect-workspace-trust false",
-    },
-    "JUDGE": {
-        "model": "sonnet",
-        "cmd":   "claude -p {prompt} --model {model} --add-dir {docs_dir}",
-    },
+# --- Role -> {model, command} mapping ---------------------------------------
+# MODELS: there are NO built-in defaults. Every role must declare ``model:``
+# under ``agents:`` in monkeforge.yaml. Missing/empty → fail at import.
+# CMDS: optional per-role override; if omitted, the invocation template below
+# is used (binary + flags only — still no model choice).
+# Placeholders in cmd: {model}, {prompt}, {prompt_file}, {docs_dir}.
+REQUIRED_ROLES: tuple[str, ...] = (
+    "INTERVIEWER",
+    "PROPOSER",
+    "PLAN_REVIEWER",
+    "IMPLEMENTER",
+    "CODE_REVIEWER",
+    "UX_REVIEWER",
+    "VISUAL_REVIEWER",
+    "VISUAL_FIXER",
+    "SUMMARIZER",
+    "JUDGE",
+)
+
+_DEFAULT_ROLE_CMD: dict[str, str] = {
+    "INTERVIEWER": (
+        "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
+    ),
+    "PROPOSER": (
+        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
+        "--permission-mode dangerous --respect-workspace-trust false"
+    ),
+    "PLAN_REVIEWER": (
+        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
+        "--permission-mode dangerous --respect-workspace-trust false"
+    ),
+    "IMPLEMENTER": (
+        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
+        "--permission-mode dangerous --respect-workspace-trust false"
+    ),
+    "CODE_REVIEWER": (
+        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
+        "--permission-mode dangerous --respect-workspace-trust false"
+    ),
+    "UX_REVIEWER": (
+        "gemini -m {model} --include-directories {docs_dir} -p {prompt}"
+    ),
+    "VISUAL_REVIEWER": (
+        "claude -p {prompt} --model {model} --add-dir {docs_dir}"
+    ),
+    "VISUAL_FIXER": (
+        "claude -p {prompt} --model {model} --add-dir {docs_dir}"
+    ),
+    "SUMMARIZER": (
+        "stdbuf -oL devin --model {model} --prompt-file {prompt_file} -p "
+        "--permission-mode dangerous --respect-workspace-trust false"
+    ),
+    "JUDGE": (
+        "claude -p {prompt} --model {model} --add-dir {docs_dir}"
+    ),
 }
 
-# Override defaults from monkeforge.yaml. For agents: and condenser:, the yaml
-# is the only source (no env bridge).
+
+def build_role_config(
+    yaml_agents: dict | None,
+    *,
+    default_cmds: dict[str, str] | None = None,
+    required_roles: tuple[str, ...] | None = None,
+) -> dict[str, dict[str, str]]:
+    """Build ROLE_CONFIG from yaml ``agents:``. Raises if any model is missing.
+
+    Pure helper (also used by tests). No model string is invented here.
+    """
+    roles = required_roles if required_roles is not None else REQUIRED_ROLES
+    cmds = default_cmds if default_cmds is not None else _DEFAULT_ROLE_CMD
+    if not isinstance(yaml_agents, dict) or not yaml_agents:
+        raise RuntimeError(
+            "monkeforge.yaml must define a non-empty top-level `agents:` map "
+            "with a `model:` for every role "
+            f"({', '.join(roles)}). There are no built-in model defaults — "
+            "copy monkeforge.example.yaml and set the models you want."
+        )
+    missing: list[str] = []
+    out: dict[str, dict[str, str]] = {}
+    for role in roles:
+        over = yaml_agents.get(role, {})
+        if not isinstance(over, dict):
+            over = {}
+        model = str(over.get("model") or "").strip()
+        if not model:
+            missing.append(role)
+            continue
+        cmd = str(over.get("cmd") or "").strip() or cmds.get(role, "")
+        if not cmd:
+            missing.append(f"{role} (no cmd template)")
+            continue
+        out[role] = {"model": model, "cmd": cmd}
+    if missing:
+        raise RuntimeError(
+            "monkeforge.yaml `agents:` is missing `model:` for: "
+            + ", ".join(missing)
+            + ". Every required role must declare a model — no code defaults."
+        )
+    return out
+
+
+# For agents: and condenser:, the yaml is the only source (no env bridge).
 _yaml_file = MF_ROOT / "monkeforge.yaml"
 _yaml_root: dict = {}
 if _yaml_file.exists():
@@ -135,18 +178,9 @@ if _yaml_file.exists():
     if isinstance(_loaded, dict):
         _yaml_root = _loaded
 
-ROLE_CONFIG: dict[str, dict[str, str]] = {}
-_yaml_agents: dict[str, dict[str, str]] = _yaml_root.get("agents") or {}
-if not isinstance(_yaml_agents, dict):
-    _yaml_agents = {}
-for _role, _cfg in _DEFAULT_ROLE_CONFIG.items():
-    _over = _yaml_agents.get(_role, {})
-    if not isinstance(_over, dict):
-        _over = {}
-    ROLE_CONFIG[_role] = {
-        "model": _over.get("model", _cfg["model"]),
-        "cmd":   _over.get("cmd",   _cfg["cmd"]),
-    }
+ROLE_CONFIG: dict[str, dict[str, str]] = build_role_config(
+    _yaml_root.get("agents"),
+)
 
 # Line-buffering / process wrappers that precede the real agent CLI in a
 # command. `stdbuf -oL devin …` must resolve to `devin`, not `stdbuf`, or
@@ -199,7 +233,7 @@ def role_cmd(role: str, prompt_file: Path, prompt: str) -> list[str]:
     if cfg is None:
         raise ValueError(
             f"unknown role: {role} "
-            f"(add it to _DEFAULT_ROLE_CONFIG or set PIPELINE_CMD_{role})")
+            f"(declare it under agents: in monkeforge.yaml)")
     tokens = shlex.split(cfg["cmd"])
     subs = {"model": cfg["model"], "prompt": prompt, "prompt_file": str(prompt_file), "docs_dir": str(DOCS)}
     return [tok.format(**subs) if "{" in tok else tok for tok in tokens]
@@ -228,7 +262,7 @@ def role_cmd_with_stdin(role: str, prompt_file: Path, prompt: str) -> tuple[list
     if cfg is None:
         raise ValueError(
             f"unknown role: {role} "
-            f"(add it to _DEFAULT_ROLE_CONFIG or set PIPELINE_CMD_{role})")
+            f"(declare it under agents: in monkeforge.yaml)")
     template = cfg["cmd"]
     if "{prompt}" in template and len(prompt) > PROMPT_STDIN_THRESHOLD:
         tokens = shlex.split(template)
