@@ -168,8 +168,22 @@ def implement(state):
     # line whose trimmed text starts with `PLAN_DISCREPANCY:` only on a genuine
     # plan/code contradiction. The old `"discrepancy"+"plan"` substring pair
     # false-positived on prose mentioning both words.
+    # No-op bodies ("none", "n/a", empty, …) must NOT escalate — agents still
+    # emit `PLAN_DISCREPANCY: none` despite the prompt saying not to.
+    _noop_bodies = frozenset({
+        "", "none", "n/a", "na", "no", "false", "ok", "-", "—", ".",
+        "no discrepancy", "none.", "n/a.",
+    })
+
+    def _is_real_discrepancy(line: str) -> bool:
+        s = line.strip()
+        if not s.startswith("PLAN_DISCREPANCY:"):
+            return False
+        body = s[len("PLAN_DISCREPANCY:"):].strip().lower()
+        return body not in _noop_bodies
+
     matched_line = next(
-        (ln for ln in out.splitlines() if ln.strip().startswith("PLAN_DISCREPANCY:")),
+        (ln for ln in out.splitlines() if _is_real_discrepancy(ln)),
         None,
     )
     if matched_line is not None:

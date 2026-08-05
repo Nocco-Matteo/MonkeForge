@@ -31,9 +31,10 @@ PLAN_DISCREPANCY: <what and where> — emit a single line whose trimmed text
 starts with `PLAN_DISCREPANCY:` ONLY when you hit a genuine contradiction
 between the spec and the real code (a dependency the plan names does not
 exist, a signature the plan assumes is wrong, a file the plan says to modify
-is absent). Describe what contradicts and where. Do NOT emit this marker, and
-do NOT write any "no discrepancy" prose, when there is no contradiction —
-proceed with the work and report normally.
+is absent). Describe what contradicts and where. When there is no
+contradiction: do NOT emit the marker at all — not even
+`PLAN_DISCREPANCY: none` / `n/a` / `no`. Those still match the prefix and
+block the run. Proceed with the work and report normally.
 
 <progress>
 {progress}

@@ -163,7 +163,7 @@ agents:
 #     cwd: backend
 #     runner: npm-vitest
 #     env:
-#       DATABASE_URL: postgresql://postgres:postgrespassword@localhost:5433/yourdb?schema=public
+#       DATABASE_URL: "{e2e_db}"
 #   - label: frontend
 #     cwd: frontend
 #     runner: npm-vitest

@@ -413,9 +413,9 @@ def _current_batch(state) -> dict:
     return state["batches"][state["batch_idx"]]
 
 
-DB_OK_NOTE = "The e2e Postgres (:5433) is up; run the full suite, DB-backed tests included."
+DB_OK_NOTE = f"The e2e Postgres (:{C.E2E_DB_PORT}) is up; run the full suite, DB-backed tests included."
 DB_DOWN_NOTE = (
-    "INFRASTRUCTURE NOTE: the e2e Postgres (:5433) is NOT reachable and could not "
+    f"INFRASTRUCTURE NOTE: the e2e Postgres (:{C.E2E_DB_PORT}) is NOT reachable and could not "
     "be started. Run the suite anyway with the DB-backed tests skipped, and say so "
     "explicitly in your report (which tests were skipped and why). Do NOT try to "
     "start Docker yourself, do NOT treat the skipped tests as failures, and do NOT "

@@ -24,6 +24,7 @@ _SCRUB = [
     "PIPELINE_E2E_DB_CONTAINER",
     "PIPELINE_E2E_PROJECT",
     "PIPELINE_E2E_UP_SCRIPT",
+    "PIPELINE_E2E_DB_PORT",
     "PIPELINE_E2E_DATABASE_URL",
     "PIPELINE_LINT_DEBT_RULES",
     "PIPELINE_TEST_AMBIENT_PATTERNS",
@@ -94,6 +95,41 @@ class TestScrubbedDefaults(unittest.TestCase):
         def body(C):
             self.assertNotIn("nexus", C.E2E_DATABASE_URL.lower())
         _with_scrubbed_config(_scrub_env(), body)
+
+    def test_e2e_url_empty_when_both_unset(self):
+        # Both PORT and URL unset → URL stays "" (preserves the standalone
+        # default pinned by test_e2e_strings_default_empty).
+        env = _scrub_env()
+        env.pop("PIPELINE_E2E_DB_PORT", None)
+        env.pop("PIPELINE_E2E_DATABASE_URL", None)
+
+        def body(C):
+            self.assertEqual(C.E2E_DATABASE_URL, "")
+        _with_scrubbed_config(env, body)
+
+    def test_e2e_url_empty_when_port_unset_only(self):
+        # Restatement of the both-unset case for clarity: scrub URL, scrub PORT.
+        env = _scrub_env()
+        env.pop("PIPELINE_E2E_DB_PORT", None)
+        env.pop("PIPELINE_E2E_DATABASE_URL", None)
+
+        def body(C):
+            self.assertEqual(C.E2E_DATABASE_URL, "")
+        _with_scrubbed_config(env, body)
+
+
+class TestE2eUrlFromPort(unittest.TestCase):
+    def test_e2e_url_from_port_default(self):
+        # PIPELINE_E2E_DB_PORT set explicitly + URL unset → URL derived from
+        # the explicit port (the wt-run child-env partial-inheritance case).
+        env = _scrub_env()
+        env.pop("PIPELINE_E2E_DATABASE_URL", None)
+        env["PIPELINE_E2E_DB_PORT"] = "5435"
+
+        def body(C):
+            self.assertTrue(C.E2E_DATABASE_URL.endswith(":5435/yourdb?schema=public"))
+            self.assertEqual(C.E2E_DB_PORT, 5435)
+        _with_scrubbed_config(env, body)
 
 
 class TestOptInReenable(unittest.TestCase):

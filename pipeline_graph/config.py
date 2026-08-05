@@ -748,6 +748,17 @@ E2E_UP_TIMEOUT = int(os.environ.get("PIPELINE_E2E_UP_TIMEOUT", "660"))
 # Host-side URL for vitest when the e2e Postgres container maps 5433→5432.
 # Override with PIPELINE_E2E_DATABASE_URL; never read backend/.env implicitly.
 E2E_DATABASE_URL = os.environ.get("PIPELINE_E2E_DATABASE_URL", "")
+# When the URL is unset/empty BUT the port was set EXPLICITLY by the operator
+# (presence of PIPELINE_E2E_DB_PORT in os.environ — not the 5433 fallback),
+# derive the URL from that port so db_reachable() (probes E2E_DB_PORT) and the
+# suites (connect via E2E_DATABASE_URL) stay on the same host port. Both env
+# vars unset → stays "" (preserves the standalone default). Partial inheritance
+# (port set, URL unset) is the wt-run child-env case this fixes.
+if not E2E_DATABASE_URL and "PIPELINE_E2E_DB_PORT" in os.environ:
+    E2E_DATABASE_URL = (
+        f"postgresql://postgres:postgrespassword@localhost:{E2E_DB_PORT}"
+        f"/yourdb?schema=public"
+    )
 
 # Notify daemon (persistent rate-limited notification dispatcher).
 NOTIFY_RATE = int(os.environ.get("PIPELINE_NOTIFY_RATE", "30"))
@@ -844,7 +855,10 @@ def _validate_test_suite(label: str, entry: dict) -> TestSuite:
     env = entry.get("env") or {}
     if not isinstance(env, dict):
         raise ValueError(f"test_suites entry {label!r}: env must be a mapping")
-    env = {str(k): str(v) for k, v in env.items()}
+    env = {
+        str(k): (str(v).format(e2e_db=E2E_DATABASE_URL) if "{e2e_db}" in str(v) else str(v))
+        for k, v in env.items()
+    }
     # cwd must resolve inside the repo (guard against escape/misconfiguration).
     cwd_path = (REPO / cwd).resolve() if cwd else REPO
     if not cwd_path.is_relative_to(REPO):

@@ -410,7 +410,7 @@ class EscalateStopIsUniversal(unittest.TestCase):
         keys = {o["key"] for o in opts}
         self.assertIn("stop", keys)
         stop_label = next(o["label"] for o in opts if o["key"] == "stop")
-        self.assertIn("--from plan", stop_label)
+        self.assertIn("--from intake", stop_label)
 
     def test_intake_stop_ends_interview_not_the_run(self):
         """Exempt: for the intake interview "stop" is an INTAKE_END_ANSWERS

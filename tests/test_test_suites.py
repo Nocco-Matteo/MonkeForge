@@ -113,6 +113,25 @@ class TestConfigLoad(unittest.TestCase):
         self.assertEqual(C.TEST_SUITE_RUNNERS,
                          frozenset({"npm-vitest", "pytest", "script"}))
 
+    def test_validate_test_suite_e2e_db_marker_expands(self):
+        # The {e2e_db} marker interpolates E2E_DATABASE_URL into suite env.
+        url = "postgresql://postgres:postgrespassword@localhost:5435/yourdb?schema=public"
+        with patch.object(C, "E2E_DATABASE_URL", url):
+            s = C._validate_test_suite("db", {
+                "runner": "pytest", "cwd": "", "env": {"DATABASE_URL": "{e2e_db}"},
+            })
+        self.assertEqual(s.env["DATABASE_URL"], url)
+
+    def test_validate_test_suite_literal_brace_unchanged(self):
+        # A literal '{' without the {e2e_db} marker must NOT raise (no KeyError)
+        # and must pass through unchanged.
+        with patch.object(C, "E2E_DATABASE_URL", "postgresql://x:5435/db"):
+            s = C._validate_test_suite("lit", {
+                "runner": "pytest", "cwd": "",
+                "env": {"PWD": "a{b}c{literal}"},
+            })
+        self.assertEqual(s.env["PWD"], "a{b}c{literal}")
+
 
 class TestDiscovery(unittest.TestCase):
     def test_frontend_only_yields_one_candidate(self):

@@ -66,3 +66,21 @@ class TestPlanDiscrepancyMarker:
         assert marker in d["escalation"]
         assert any("PLAN_DISCREPANCY" in line for line in d.get("journal", [])), \
             "journal must record the PLAN_DISCREPANCY escalation"
+
+    def test_noop_discrepancy_marker_does_not_escalate(self, monkeypatch):
+        """Agents sometimes emit ``PLAN_DISCREPANCY: none``; that must not pause."""
+        monkeypatch.setattr(C, "DRY_RUN", True)
+        out = (
+            "Batch complete.\n"
+            "PLAN_DISCREPANCY: none\n"
+            "1: MET — scripts/wt.py\n"
+            "VERDICT: APPROVE\n" * 3
+        )
+        state = _base_state()
+        with patch.object(N, "run_agent", return_value=(0, out)), \
+                patch.object(_impl, "_in_graph_test_gate",
+                             return_value=(True, [], "all passed", 0)), \
+                patch.object(N.ev, "emit"):
+            d = N.implement(state)
+        assert "escalation" not in d or d.get("escalation") == "", \
+            "PLAN_DISCREPANCY: none must not escalate"
