@@ -74,29 +74,38 @@ async def _cli(*args: str) -> str:
 async def _deliver_answer(task_id: str, answer: str) -> str:
     """Hand an answer to a live CLI session, or spawn ``run.py resume``.
 
-    Live session (interactive pause still holding the checkpoint): write the
-    pending-answer file and wait for the CLI to consume it.
-    Otherwise: classic subprocess resume.
+    HARD RULE: if any live pipeline PID owns this task (``current.json``),
+    NEVER spawn a second ``run.py resume`` — that dual-drives the checkpoint
+    (severe race). Only the pending-answer file is allowed; on timeout tell
+    the operator to use the open CLI.
     """
     pid = PA.live_session_pid(task_id)
     if pid is not None:
+        step = PA.live_session_step(task_id) or "?"
         PA.write_pending_answer(task_id, answer, source="discord")
         path = PA.pending_answer_path(task_id)
-        for _ in range(80):  # ~20s
+        for _ in range(120):  # ~30s — CLI select-poll is 0.25s
             await asyncio.sleep(0.25)
+            # Re-check ownership: if the session died, stop waiting and
+            # resume below (single driver, safe).
+            if PA.live_session_pid(task_id) is None:
+                PA.clear_pending_answer(task_id)
+                break
             if not path.exists():
                 return (
-                    f"(delivered to live CLI session pid={pid} for task "
-                    f"{task_id} — watch that terminal)"
+                    f"(delivered to live CLI session pid={pid} step={step} "
+                    f"for task {task_id} — watch that terminal; "
+                    f"no second resume was started)"
                 )
-        # CLI did not take it — fall back to subprocess resume so the pause
-        # is not stranded. Clear the stale file first to avoid double-apply.
-        PA.clear_pending_answer(task_id)
-        out = await _cli("resume", task_id, "--answer", answer)
-        return (
-            f"(live CLI pid={pid} did not consume the answer in time; "
-            f"fell back to run.py resume)\n{out}"
-        )
+        else:
+            # Still live, still holding the file → do NOT fall back.
+            PA.clear_pending_answer(task_id)
+            return (
+                f"REFUSED second driver: live CLI pid={pid} still owns task "
+                f"{task_id} (step={step}) and did not consume the Discord "
+                f"answer. Likely already answered in the terminal — check "
+                f"that session. NOT running `run.py resume`."
+            )
     return await _cli("resume", task_id, "--answer", answer)
 
 

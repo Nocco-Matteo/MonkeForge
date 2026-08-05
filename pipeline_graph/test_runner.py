@@ -420,6 +420,24 @@ def _ask_suites(candidates: list[C.TestSuite]) -> tuple[list[C.TestSuite], bool]
     return chosen, save
 
 
+def _effective_task_id(task_id: str | None) -> str:
+    """Prefer the caller-supplied task id; fall back to live ``current.json``.
+
+    ``resume`` does not call ``resolve_test_suites`` pre-drive, so the first
+    resolve often happens inside ``run_repo_tests``. Without a fallback the
+    journal shows ``TASK-? · test-gate`` even though a live task owns the run.
+    """
+    tid = str(task_id or "").strip()
+    if tid and tid != "?":
+        return tid
+    try:
+        data = json.loads((C.METRICS / "current.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return tid or "?"
+    live = str(data.get("task") or "").strip()
+    return live or tid or "?"
+
+
 def resolve_test_suites(no_input: bool | None = None, task_id: str = "?") -> list[C.TestSuite]:
     """Resolve the test suites to run, discovering + asking if unconfigured.
 
@@ -436,6 +454,7 @@ def resolve_test_suites(no_input: bool | None = None, task_id: str = "?") -> lis
     even when ``[]`` for skip).
     """
     global _suites_resolved
+    task_id = _effective_task_id(task_id)
     if _suites_resolved:
         return C.TEST_SUITES
     if C.TEST_SUITES:
@@ -488,7 +507,7 @@ def resolve_test_suites(no_input: bool | None = None, task_id: str = "?") -> lis
 
 
 # --- Main entry point ------------------------------------------------------
-def run_repo_tests() -> tuple[int, set[str], str]:
+def run_repo_tests(task_id: str = "?") -> tuple[int, set[str], str]:
     """Run all configured test suites via the runner registry.
 
     Resolves suites (discovery + ask) on the first call only (sentinel-guarded).
@@ -497,9 +516,12 @@ def run_repo_tests() -> tuple[int, set[str], str]:
     to the returned set — it cannot silently pass the gate. A ``cwd`` that is a
     valid in-repo path but simply not a directory is skipped cleanly (summary
     line only, no failure key).
+
+    ``task_id`` is forwarded to ``resolve_test_suites`` so the journal note is
+    attributed to the live task (not ``?``) when resolve happens mid-resume.
     """
     if not _suites_resolved:
-        resolve_test_suites()
+        resolve_test_suites(task_id=task_id)
     timeout = int(os.environ.get("PIPELINE_TEST_TIMEOUT", "900"))
 
     all_failures: set[str] = set()

@@ -337,6 +337,33 @@ class TestResolveSuites(unittest.TestCase):
         self.assertTrue(any(a[1] == "T42" for a, _ in emitted),
                         f"no emit with task_id T42: {emitted}")
 
+    def test_run_repo_tests_forwards_task_id(self):
+        """resume path: first resolve is inside run_repo_tests — must not be ?."""
+        emitted = []
+        with patch.object(C, "TEST_SUITES", [
+                C.TestSuite(label="fe", cwd="frontend", runner="npm-vitest")]), \
+             patch.object(tr, "_suites_resolved", False), \
+             patch.object(tr.ev, "emit",
+                          side_effect=lambda *a, **k: emitted.append((a, k))), \
+             patch.object(tr, "_RUNNERS", {"npm-vitest": lambda *a, **k: (0, set(), "ok")}):
+            # cwd may not exist — that's fine; we only care about the note.
+            tr.run_repo_tests(task_id="030")
+        self.assertTrue(any(a[1] == "030" for a, _ in emitted),
+                        f"expected task 030 in emit, got {emitted}")
+        self.assertFalse(any(len(a) > 1 and a[1] == "?" for a, _ in emitted),
+                         f"TASK-? leaked: {emitted}")
+
+    def test_effective_task_id_falls_back_to_current_json(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            metrics = Path(td)
+            (metrics / "current.json").write_text(
+                '{"task": "030", "pid": 1, "step": "final_check"}')
+            with patch.object(C, "METRICS", metrics):
+                self.assertEqual(tr._effective_task_id("?"), "030")
+                self.assertEqual(tr._effective_task_id(""), "030")
+                self.assertEqual(tr._effective_task_id("099"), "099")
+
 
 class TestPersistYaml(unittest.TestCase):
     def test_persist_preserves_agents_key(self):

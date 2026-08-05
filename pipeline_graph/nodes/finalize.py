@@ -276,7 +276,7 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
     if C.DRY_RUN or not db_ok:
         return None
 
-    _, all_failures, summary = tr.run_repo_tests()
+    _, all_failures, summary = tr.run_repo_tests(task_id=tid)
     failures = tr.new_failures_since_baseline(
         all_failures, baseline, [],
         lint_debt_rules=C.LINT_DEBT_RULES,
@@ -315,7 +315,7 @@ def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) 
             summary=summary,
             remaining_label=remaining_label,
         )
-        _, all_failures, summary = tr.run_repo_tests()
+        _, all_failures, summary = tr.run_repo_tests(task_id=tid)
         failures = tr.new_failures_since_baseline(
             all_failures, baseline, [],
             lint_debt_rules=C.LINT_DEBT_RULES,

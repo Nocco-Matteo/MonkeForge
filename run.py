@@ -1145,9 +1145,11 @@ def _drive(graph, task_id, payload, args=None) -> int:
                     # render (S5/item 41).
                     _print_pause(data, task_id, color=color, in_session=True)
                     _opts = _options_from_data(data)
-                    # Clear any stale Discord answer from a previous pause.
+                    # Gate Discord answers to THIS pause (drops stale files
+                    # from a previous pause; keeps answers written after the
+                    # gate — never wipe a just-arrived Discord click).
                     from pipeline_graph import pending_answer as _PA
-                    _PA.clear_pending_answer(task_id)
+                    _PA.begin_pause_wait(task_id)
                     try:
                         answer = _tty_pick(_opts, data, color=color,
                                            render=False, eof_raises=True,
@@ -1158,11 +1160,14 @@ def _drive(graph, task_id, payload, args=None) -> int:
                         # it idle so status doesn't call it dead, and return
                         # 130 (interrupted, not a crash). The run_paused
                         # event was already emitted above (item 33).
+                        _PA.end_pause_wait(task_id)
+                        _PA.clear_pending_answer(task_id)
                         _mark_idle(task_id, "paused")
                         sys.stderr.write(
                             "\ninterrupted — the run is paused; resume with "
                             f"./run.py resume {task_id}\n")
                         return 130
+                    _PA.end_pause_wait(task_id)
                     # Item 36: on a valid in-session answer, create a new
                     # stop_event + new ui_thread, re-enable UI rendering, set
                     # payload = Command(resume=answer), and continue the loop.
