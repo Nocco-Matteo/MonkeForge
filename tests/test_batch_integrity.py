@@ -138,3 +138,63 @@ def test_close_batch_refuses_empty_diff(monkeypatch, tmp_path):
     assert delta.get("escalation")
     assert "empty diff" in delta["journal"][0]
     assert state["batches"][0]["status"] == "DOING"
+
+
+def test_escape_relevant_ignores_docs():
+    from pipeline_graph import agents as A
+    paths = {
+        "docs/wt-task-033/prompts/x.md",
+        "pipeline_graph/agents.py",
+        ".pytest_cache/v/cache",
+        "tests/test_task_033_reintake.py",
+    }
+    got = A._escape_relevant(paths)
+    assert got == {"pipeline_graph/agents.py", "tests/test_task_033_reintake.py"}
+
+
+def test_write_escape_escalates_without_retry(monkeypatch):
+    """WRITE_ESCAPE must escalate immediately (not burn test-fix retries)."""
+    monkeypatch.setattr(C, "DRY_RUN", False)
+    monkeypatch.setattr(C, "NO_GIT", True)
+    monkeypatch.setattr(C, "MAX_TEST_FIXES", 3)
+    monkeypatch.setattr(C, "TEST_SUITES", [])
+    monkeypatch.setattr(C, "arch_docs_block", lambda: "")
+
+    escape = (
+        "did stuff\n"
+        f"{I_mod._N.WRITE_ESCAPE_MARKER} agent wrote outside PIPELINE_REPO "
+        "onto MF_ROOT during implement: pipeline_graph/x.py\n"
+    )
+
+    monkeypatch.setattr(
+        I_mod._N, "run_agent",
+        lambda *a, **k: (I_mod._N.WRITE_ESCAPE_EXIT, escape),
+    )
+    monkeypatch.setattr(I_mod, "_db_note", lambda *a, **k: (True, "ok"))
+    monkeypatch.setattr(I_mod, "_capture_test_baseline", lambda *a, **k: {})
+    monkeypatch.setattr(I_mod, "branch_mismatch_reason", lambda *a, **k: None)
+    monkeypatch.setattr(I_mod, "_git", lambda *a, **k: "abc123")
+    monkeypatch.setattr(
+        I_mod.tr, "format_test_summary_block",
+        lambda *a, **k: "",
+    )
+    monkeypatch.setattr(
+        I_mod, "Conversation",
+        mock.Mock(from_state=lambda s: mock.Mock(task_id="033")),
+    )
+
+    state = {
+        "task_id": "033",
+        "batch_idx": 0,
+        "batches": [{"n": 1, "scope": "x", "checklist": [1]}],
+        "batch_base_ref": "abc123",
+        "branch": "feature/task-033",
+        "test_fix_attempt": 0,
+        "trusted_context": "",
+    }
+    delta = I_mod.implement(state)
+    assert delta.get("escalation")
+    assert "WRITE_ESCAPE" in delta["escalation"]
+    assert "WRITE_ESCAPE" in delta["journal"][0]
+    assert "test_fix_attempt" not in delta
+

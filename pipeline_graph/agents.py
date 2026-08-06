@@ -13,6 +13,81 @@ from .state import Conversation
 
 HEARTBEAT_EVERY_S = int(os.environ.get("PIPELINE_HEARTBEAT_INTERVAL_S", "10"))
 
+# Exit code when an isolated agent writes onto MF_ROOT (outside PIPELINE_REPO).
+WRITE_ESCAPE_EXIT = 78
+WRITE_ESCAPE_MARKER = "WRITE_ESCAPE:"
+
+# Porcelain paths under MF_ROOT expected during an isolated run — not escape.
+_ESCAPE_IGNORE_PREFIXES = (
+    "docs/",
+    ".git/",
+    "__pycache__/",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".tox/",
+    "node_modules/",
+    ".venv/",
+    "venv/",
+    ".cursor/",
+)
+
+
+def _porcelain_paths(repo: Path) -> set[str]:
+    """Paths from ``git status --porcelain`` (relative); empty if not a git repo."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "-uall"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return set()
+    if proc.returncode != 0:
+        return set()
+    paths: set[str] = set()
+    for line in proc.stdout.splitlines():
+        if len(line) < 4:
+            continue
+        rest = line[3:]
+        if " -> " in rest:
+            rest = rest.split(" -> ", 1)[1]
+        rest = rest.strip().strip('"')
+        if rest:
+            paths.add(rest)
+    return paths
+
+
+def _escape_relevant(paths: set[str]) -> set[str]:
+    out: set[str] = set()
+    for p in paths:
+        norm = p[2:] if p.startswith("./") else p
+        if any(
+            norm == pref.rstrip("/") or norm.startswith(pref)
+            for pref in _ESCAPE_IGNORE_PREFIXES
+        ):
+            continue
+        out.add(norm)
+    return out
+
+
+def _assert_agent_repo_cwd() -> None:
+    """Fail loud if isolated spawn would use a non-worktree PIPELINE_REPO."""
+    repo = Path(C.REPO).resolve()
+    if not repo.is_dir():
+        raise RuntimeError(f"agent spawn: PIPELINE_REPO does not exist: {repo}")
+    if os.environ.get("PIPELINE_ISOLATED") == "1" and not re.match(r"^wt-task-", repo.name):
+        raise RuntimeError(
+            f"agent spawn: PIPELINE_ISOLATED=1 but PIPELINE_REPO is not a "
+            f"wt-task-* worktree: {repo}"
+        )
+
+
+def _mf_root_escape_watch_enabled() -> bool:
+    if C.DRY_RUN or os.environ.get("PIPELINE_ISOLATED") != "1":
+        return False
+    return Path(C.MF_ROOT).resolve() != Path(C.REPO).resolve()
+
+
 # These agents fail IN-BAND: they exit 0 and put the error in stdout (gemini's
 # "empty response or malformed tool call" is the recurring one). Exit code is
 # useless as a health signal, so we read the output text instead.
@@ -318,6 +393,7 @@ def run_agent(role: str, conversation: "Conversation", step: str,
                 out_file.write_text(out)
                 time.sleep(0.05)
                 return 0, out
+            _assert_agent_repo_cwd()
             cmd, stdin_text = C.role_cmd_with_stdin(role, prompt_file, prompt)
             chunks: list[str] = []
             last_beat = time.time()
@@ -344,6 +420,11 @@ def run_agent(role: str, conversation: "Conversation", step: str,
                     agent=binary, role=role, output_file=str(out_file))
             raise
 
+    watch_escape = _mf_root_escape_watch_enabled()
+    before_dirty: set[str] = set()
+    if watch_escape:
+        before_dirty = _escape_relevant(_porcelain_paths(Path(C.MF_ROOT)))
+
     try:
         for attempt in range(MAX_TRANSIENT_RETRIES + 1):
             code, output = _run_once()
@@ -363,6 +444,26 @@ def run_agent(role: str, conversation: "Conversation", step: str,
         _write_current({"task": task_id, "step": step, "agent": binary, "role": role,
                         "started": started, "phase": "agent done",
                         "output_file": str(out_file)})
+
+    if watch_escape:
+        after_dirty = _escape_relevant(_porcelain_paths(Path(C.MF_ROOT)))
+        escaped = sorted(after_dirty - before_dirty)
+        if escaped:
+            preview = ", ".join(escaped[:12])
+            more = f" (+{len(escaped) - 12} more)" if len(escaped) > 12 else ""
+            msg = (
+                f"{WRITE_ESCAPE_MARKER} agent wrote outside PIPELINE_REPO onto "
+                f"MF_ROOT during {step}: {preview}{more}"
+            )
+            ev.emit(
+                "agent_unhealthy", task_id, step, msg,
+                agent=binary, role=role, health="hard", signal="write_escape",
+                paths=escaped[:50],
+            )
+            output = (output or "") + ("\n" if output else "") + msg + "\n"
+            code = WRITE_ESCAPE_EXIT
+            health = "hard"
+            signal = "write_escape"
 
     duration_ms = int((time.time() - t0) * 1000)
     _log({"ts": datetime.now(timezone.utc).isoformat(), "event": "end",

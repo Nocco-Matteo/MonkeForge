@@ -210,6 +210,21 @@ def implement(state):
             "journal": [f"impl b{b['n']}: PLAN_DISCREPANCY"],
         }
 
+    # Isolated write onto MF_ROOT (outside PIPELINE_REPO) — do not burn fix retries.
+    escape_line = next(
+        (ln for ln in out.splitlines() if ln.startswith(_N.WRITE_ESCAPE_MARKER)),
+        None,
+    )
+    if escape_line is not None or code == _N.WRITE_ESCAPE_EXIT:
+        detail = escape_line or "WRITE_ESCAPE detected"
+        return {
+            **baseline_delta,
+            "escalation": (
+                f"implement batch {b['n']}: {detail} — refusing test-fix/review"
+            ),
+            "journal": [f"impl b{b['n']}: WRITE_ESCAPE"],
+        }
+
     if code < 0:
         # Killed by a signal: run_agent already retried this transient death with
         # backoff (classify_output maps code<0 to transient), so a persistent

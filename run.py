@@ -2414,7 +2414,13 @@ def main(argv=None) -> int:
                              "into the target product main")
     ld.add_argument("task_id")
     ld.add_argument("-y", "--yes", action="store_true",
-                    help="skip the interactive confirm")
+                    help="skip the interactive land confirm")
+    ld.add_argument("--cleanup", action="store_true",
+                    help="after land, remove worktree + delete feature branch "
+                         "(docs/wt-task-* kept)")
+    ld.add_argument("--keep-worktree", action="store_true",
+                    help="after land, keep worktree + feature branch "
+                         "(skip the cleanup prompt)")
     dr = sub.add_parser("doctor", parents=[_no_color_parent],
                         help="what went wrong: failures, degradations, "
                         "unhealthy agents, notification & liveness")
@@ -2487,6 +2493,8 @@ def main(argv=None) -> int:
             id=args.task_id,
             repo=getattr(args, "repo", None),
             yes=bool(getattr(args, "yes", False)),
+            cleanup=bool(getattr(args, "cleanup", False)),
+            keep_worktree=bool(getattr(args, "keep_worktree", False)),
         )
         try:
             _WT.cmd_land(land_args)

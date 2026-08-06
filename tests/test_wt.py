@@ -446,7 +446,10 @@ class TestLand(unittest.TestCase):
             target = _make_repo(Path(td), "target")
             # dirty the working tree
             (target / "f.txt").write_text("dirty\n")
-            args = type("A", (), {"repo": str(target), "id": "031", "yes": True})()
+            args = type("A", (), {
+                "repo": str(target), "id": "031", "yes": True,
+                "cleanup": False, "keep_worktree": True,
+            })()
             with self.assertRaises(SystemExit):
                 wt.cmd_land(args)
 
@@ -478,10 +481,90 @@ class TestLand(unittest.TestCase):
 
             with patch.object(wt, "_git", side_effect=fake_git):
                 with self.assertRaises(SystemExit) as cm:
-                    args = type("A", (), {"repo": str(target), "id": "031",
-                                          "yes": True})()
+                    args = type("A", (), {
+                        "repo": str(target), "id": "031", "yes": True,
+                        "cleanup": False, "keep_worktree": True,
+                    })()
                     wt.cmd_land(args)
             self.assertNotEqual(cm.exception.code, 0)
+
+    def test_land_rebase_fail_loud(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = _make_repo(Path(td), "target")
+            wt_path = target.parent / "wt-task-031"
+            wt_path.mkdir()
+
+            def fake_git(args, cwd=None, check=True, capture=True):
+                class R:
+                    returncode = 0
+                    stdout = ""
+                    stderr = ""
+                r = R()
+                if args[:2] == ["status", "--porcelain"]:
+                    r.stdout = ""
+                elif args[:1] == ["rebase"]:
+                    r.returncode = 1
+                    r.stderr = "CONFLICT (content): Merge conflict in f.txt\n"
+                return r
+
+            with patch.object(wt, "_git", side_effect=fake_git):
+                with self.assertRaises(SystemExit) as cm:
+                    args = type("A", (), {
+                        "repo": str(target), "id": "031", "yes": True,
+                        "cleanup": False, "keep_worktree": True,
+                    })()
+                    wt.cmd_land(args)
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_land_cleanup_flag_removes(self):
+        with tempfile.TemporaryDirectory() as td:
+            target = _make_repo(Path(td), "target")
+            wt_path = target.parent / "wt-task-031"
+            wt_path.mkdir()
+            removed = {"wt": False, "branch": False}
+
+            def fake_git(args, cwd=None, check=True, capture=True):
+                class R:
+                    returncode = 0
+                    stdout = ""
+                    stderr = ""
+                r = R()
+                if args[:2] == ["status", "--porcelain"]:
+                    r.stdout = ""
+                elif args[:2] == ["worktree", "remove"]:
+                    removed["wt"] = True
+                elif args[:2] == ["branch", "-D"]:
+                    removed["branch"] = True
+                return r
+
+            with patch.object(wt, "_git", side_effect=fake_git):
+                with patch.object(sys, "stdin", io.StringIO("")):
+                    # stdin not a TTY; --cleanup forces remove
+                    args = type("A", (), {
+                        "repo": str(target), "id": "031", "yes": True,
+                        "cleanup": True, "keep_worktree": False,
+                    })()
+                    wt.cmd_land(args)
+            self.assertTrue(removed["wt"])
+            self.assertTrue(removed["branch"])
+
+
+class TestUsageStatsPromptFilter(unittest.TestCase):
+    def test_usage_stats_filters_by_task_id(self):
+        with tempfile.TemporaryDirectory() as td:
+            docs = Path(td)
+            prompts = docs / "prompts"
+            prompts.mkdir()
+            (prompts / "033-impl.md").write_text("a" * 40)
+            (prompts / "smoke-x.md").write_text("b" * 400)
+            (metrics := docs / "metrics").mkdir()
+            (metrics / "runs.jsonl").write_text("")
+            usage = wt._usage_stats(docs, [], task_id="033")
+            # ~10 tokens from 40 bytes; smoke must not dominate
+            self.assertLess(usage["tokens_in"], 50)
+            usage_all = wt._usage_stats(docs, [], task_id=None)
+            self.assertGreater(usage_all["tokens_in"], usage["tokens_in"])
+
 
 
 class TestRunCwd(unittest.TestCase):

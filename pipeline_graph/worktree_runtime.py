@@ -277,8 +277,12 @@ def _parse_iso_ts(ts: str) -> float:
         return 0.0
 
 
-def _usage_stats(docs: Path, events: list[dict]) -> dict:
-    """Wall/active time + estimated prompt/completion tokens from on-disk logs."""
+def _usage_stats(docs: Path, events: list[dict], *, task_id: str | None = None) -> dict:
+    """Wall/active time + estimated prompt/completion tokens from on-disk logs.
+
+    When ``task_id`` is set, prompt byte volume counts only files named
+    ``{task_id}-*`` (avoids foreign ``smoke-*`` / other-task pollution).
+    """
     metrics = docs / "metrics"
     starts = [e for e in events if e.get("kind") == "run_start"]
     ends = [e for e in events if e.get("kind") == "run_end"]
@@ -319,13 +323,17 @@ def _usage_stats(docs: Path, events: list[dict]) -> dict:
 
     in_bytes = 0
     prompts = docs / "prompts"
+    prefix = f"{task_id}-" if task_id else None
     if prompts.is_dir():
         for f in prompts.iterdir():
-            if f.is_file():
-                try:
-                    in_bytes += f.stat().st_size
-                except OSError:
-                    pass
+            if not f.is_file():
+                continue
+            if prefix is not None and not f.name.startswith(prefix):
+                continue
+            try:
+                in_bytes += f.stat().st_size
+            except OSError:
+                pass
 
     tin = _est_tokens_from_bytes(in_bytes)
     tout = _est_tokens_from_bytes(out_bytes)
@@ -481,7 +489,7 @@ def worktree_run_summary(id_: str, *, wt: Path | None = None,
     activity_ts = max(activity_candidates, key=_parse_iso_ts) if any(
         activity_candidates) else ""
 
-    usage = _usage_stats(docs, events)
+    usage = _usage_stats(docs, events, task_id=id_)
 
     return {
         "id": id_,
@@ -862,7 +870,15 @@ def cmd_land(args) -> None:
     status = _git(["status", "--porcelain"], cwd=target, check=False)
     if status.stdout.strip():
         _fail(f"target main is dirty — commit/stash on {target} before land")
-    _git(["rebase", "main"], cwd=wt, check=True)
+    rb = _git(["rebase", "main"], cwd=wt, check=False)
+    if rb.returncode != 0:
+        detail = (rb.stderr or rb.stdout or "").strip() or f"exit {rb.returncode}"
+        _fail(
+            f"rebase onto main failed for {branch} in {wt}.\n"
+            f"Resolve conflicts (or abort with `git -C {wt} rebase --abort`), "
+            f"then re-run land.\n"
+            f"git output:\n{detail}"
+        )
     if not getattr(args, "yes", False):
         try:
             ans = input(f"Land {branch} into main on {target}? [y/N] ").strip().lower()
@@ -880,6 +896,55 @@ def cmd_land(args) -> None:
             f"{merge.stderr.strip()}"
         )
     sys.stdout.write(f"landed {branch} → main on {target} (fast-forward)\n")
+    _land_cleanup(args, target=target, id_=id_, wt=wt, branch=branch)
+
+
+def _land_cleanup(args, *, target: Path, id_: str, wt: Path, branch: str) -> None:
+    """Optionally remove worktree + feature branch after a successful land.
+
+    Keeps ``docs/wt-task-*`` always. Default on a TTY: ask, Y to remove.
+    ``--cleanup`` removes without asking; ``--keep-worktree`` never removes.
+    Non-TTY without flags: keep and print a hint.
+    """
+    if getattr(args, "keep_worktree", False):
+        sys.stdout.write(
+            f"kept worktree {wt} and branch {branch} (--keep-worktree); "
+            f"docs stay at docs/wt-task-{id_}\n"
+        )
+        return
+    do_cleanup = bool(getattr(args, "cleanup", False))
+    if not do_cleanup:
+        if sys.stdin.isatty():
+            try:
+                ans = input(
+                    f"Remove worktree + delete {branch}? "
+                    f"(docs/wt-task-{id_} kept) [Y/n] "
+                ).strip().lower()
+            except EOFError:
+                ans = "n"
+            do_cleanup = ans in ("", "y", "yes")
+        else:
+            sys.stdout.write(
+                f"kept worktree {wt} + {branch} (non-TTY; "
+                f"pass --cleanup to remove, or --keep-worktree to silence)\n"
+            )
+            return
+    if not do_cleanup:
+        sys.stdout.write(f"kept worktree {wt} and branch {branch}\n")
+        return
+    if wt.exists():
+        _git(["worktree", "remove", "--force", str(wt)], cwd=target, check=False)
+    _git(["worktree", "prune"], cwd=target, check=False)
+    rm = _git(["branch", "-D", branch], cwd=target, check=False)
+    if rm.returncode != 0:
+        _fail(
+            f"landed, but could not delete branch {branch}: "
+            f"{rm.stderr.strip() or rm.stdout.strip()}\n"
+            f"  Worktree may already be gone; delete the branch manually if needed."
+        )
+    sys.stdout.write(
+        f"removed worktree + branch {branch} (docs/wt-task-{id_} kept)\n"
+    )
 
 
 def cmd_sync(args) -> None:
@@ -967,6 +1032,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("land", help="rebase wt onto main + ff-only merge into target main")
     add_repo(sp)
     sp.add_argument("-y", "--yes", action="store_true", help="skip the TTY confirm")
+    sp.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="after land, remove worktree + delete feature branch (keep docs)",
+    )
+    sp.add_argument(
+        "--keep-worktree",
+        action="store_true",
+        help="after land, do not ask / remove worktree or feature branch",
+    )
     sp.add_argument("id")
     sp.set_defaults(func=cmd_land)
 

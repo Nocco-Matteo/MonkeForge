@@ -9,6 +9,8 @@ was public in the original monolithic nodes.py.
 from .. import events as ev
 from .. import test_runner as tr
 from ..agents import (
+    WRITE_ESCAPE_EXIT,
+    WRITE_ESCAPE_MARKER,
     count_blockers,
     parse_disputed,
     parse_not_met,
