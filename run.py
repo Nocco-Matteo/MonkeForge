@@ -1988,6 +1988,113 @@ def _print_task_status(args, *, task_id: str, snap, values: dict) -> None:
     )
 
 
+def _land(args) -> int:
+    """``./run.py land <id>``: merge feature branch into main, then optional cleanup.
+
+    Invoking land is the confirm — no pre-merge ``[y/N]``. After a successful
+    ff merge, ask (Rich ``Confirm``, default yes) whether to remove the
+    worktree + feature branch; docs stay. ``-y``/``--cleanup`` skip the ask
+    and remove; ``--keep-worktree`` keeps both.
+    """
+    console = _rich_console(args, stream=sys.stdout)
+    color = _use_color(args, stream=sys.stdout)
+    try:
+        info = _WT.land_to_main(
+            id=args.task_id,
+            repo=getattr(args, "repo", None),
+        )
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else (0 if code is None else 1)
+
+    id_ = info["id"]
+    target = info["target"]
+    wt = info["wt"]
+    branch = info["branch"]
+    if color:
+        console.print(
+            Text.assemble(
+                ("landed ", "bold green"),
+                (f"{branch}", "cyan"),
+                (" → ", "dim"),
+                ("main", "cyan"),
+            )
+        )
+        console.print(Text(f"  {target}", style="dim"))
+    else:
+        print(f"landed {branch} → main on {target}")
+
+    keep = bool(getattr(args, "keep_worktree", False))
+    force_cleanup = bool(
+        getattr(args, "cleanup", False) or getattr(args, "yes", False)
+    )
+    if keep:
+        if color:
+            console.print(Text(
+                f"kept worktree + {branch} (--keep-worktree); "
+                f"docs/wt-task-{id_} unchanged",
+                style="dim",
+            ))
+        else:
+            print(
+                f"kept worktree {wt} and branch {branch} (--keep-worktree); "
+                f"docs stay at docs/wt-task-{id_}"
+            )
+        return 0
+
+    do_cleanup = force_cleanup
+    if not do_cleanup:
+        if sys.stdin.isatty():
+            try:
+                do_cleanup = Confirm.ask(
+                    f"Remove worktree + delete [cyan]{branch}[/cyan]? "
+                    f"[dim](docs/wt-task-{id_} kept)[/dim]",
+                    console=console,
+                    default=True,
+                )
+            except (EOFError, KeyboardInterrupt):
+                do_cleanup = False
+                console.print()
+        else:
+            msg = (
+                f"kept worktree + {branch} (non-TTY; "
+                f"pass --cleanup / -y to remove)"
+            )
+            if color:
+                console.print(Text(msg, style="dim"))
+            else:
+                print(msg)
+            return 0
+
+    if not do_cleanup:
+        if color:
+            console.print(Text(f"kept worktree + {branch}", style="dim"))
+        else:
+            print(f"kept worktree {wt} and branch {branch}")
+        return 0
+
+    try:
+        _WT.cleanup_landed_worktree(
+            target=target, id_=id_, wt=wt, branch=branch,
+        )
+    except SystemExit as exc:
+        code = exc.code
+        return int(code) if isinstance(code, int) else 1
+
+    if color:
+        console.print(
+            Text.assemble(
+                ("removed ", "bold green"),
+                ("worktree + ", ""),
+                (branch, "cyan"),
+                (f"  (docs/wt-task-{id_} kept)", "dim"),
+            )
+        )
+    else:
+        print(f"removed worktree + branch {branch} (docs/wt-task-{id_} kept)")
+    return 0
+
+
 def _metrics(args) -> int:
     """`./run.py metrics <ID> | --all`: aggregate events.jsonl into a report.
 
@@ -2414,7 +2521,8 @@ def main(argv=None) -> int:
                              "into the target product main")
     ld.add_argument("task_id")
     ld.add_argument("-y", "--yes", action="store_true",
-                    help="skip the interactive land confirm")
+                    help="after land, remove worktree + feature branch "
+                         "without asking")
     ld.add_argument("--cleanup", action="store_true",
                     help="after land, remove worktree + delete feature branch "
                          "(docs/wt-task-* kept)")
@@ -2489,19 +2597,7 @@ def main(argv=None) -> int:
         return _metrics(args)
 
     if args.cmd == "land":
-        land_args = argparse.Namespace(
-            id=args.task_id,
-            repo=getattr(args, "repo", None),
-            yes=bool(getattr(args, "yes", False)),
-            cleanup=bool(getattr(args, "cleanup", False)),
-            keep_worktree=bool(getattr(args, "keep_worktree", False)),
-        )
-        try:
-            _WT.cmd_land(land_args)
-        except SystemExit as exc:
-            code = exc.code
-            return int(code) if isinstance(code, int) else (0 if code is None else 1)
-        return 0
+        return _land(args)
 
     if args.cmd == "status" and not args.task_id:
         # Live feature worktrees for the configured product target — overview

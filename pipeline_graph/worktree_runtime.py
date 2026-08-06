@@ -859,9 +859,14 @@ def cmd_overlap(args) -> None:
         sys.stdout.write("no overlapping file changes across live feature worktrees\n")
 
 
-def cmd_land(args) -> None:
-    id_ = validate_id(args.id)
-    target = resolve_target_repo(args.repo)
+def land_to_main(*, id: str, repo: str | None = None) -> dict:
+    """Rebase feature wt onto main and ff-only merge into target main.
+
+    No interactive confirm — invoking land *is* the operator intent.
+    Returns ``{id, target, wt, branch}``. Does not remove the worktree.
+    """
+    id_ = validate_id(id)
+    target = resolve_target_repo(repo)
     prefix = resolve_branch_prefix()
     wt = wt_path_for(target, id_)
     branch = f"{prefix}{id_}"
@@ -879,14 +884,6 @@ def cmd_land(args) -> None:
             f"then re-run land.\n"
             f"git output:\n{detail}"
         )
-    if not getattr(args, "yes", False):
-        try:
-            ans = input(f"Land {branch} into main on {target}? [y/N] ").strip().lower()
-        except EOFError:
-            _fail("non-TTY confirm without -y — pass `-y/--yes` or run in a TTY")
-        if ans not in ("y", "yes"):
-            sys.stdout.write("aborted (no changes to main)\n")
-            return
     _git(["checkout", "main"], cwd=target, check=True)
     merge = _git(["merge", "--ff-only", branch], cwd=target, check=False)
     if merge.returncode != 0:
@@ -895,7 +892,38 @@ def cmd_land(args) -> None:
             f"or rebase {branch} onto main and retry. git output:\n"
             f"{merge.stderr.strip()}"
         )
-    sys.stdout.write(f"landed {branch} → main on {target} (fast-forward)\n")
+    return {"id": id_, "target": target, "wt": wt, "branch": branch}
+
+
+def cleanup_landed_worktree(*, target: Path, id_: str, wt: Path, branch: str) -> None:
+    """Remove worktree + delete feature branch after land. Docs stay."""
+    if wt.exists():
+        _git(["worktree", "remove", "--force", str(wt)], cwd=target, check=False)
+    _git(["worktree", "prune"], cwd=target, check=False)
+    rm = _git(["branch", "-D", branch], cwd=target, check=False)
+    if rm.returncode != 0:
+        _fail(
+            f"landed, but could not delete branch {branch}: "
+            f"{rm.stderr.strip() or rm.stdout.strip()}\n"
+            f"  Worktree may already be gone; delete the branch manually if needed."
+        )
+
+
+def cmd_land(args) -> None:
+    """CLI entry for ``wt land`` / thin wrapper used by tests.
+
+    Lands immediately (no pre-merge confirm). Cleanup ask stays here for the
+    plain ``wt`` CLI; ``./run.py land`` handles Rich UX in ``run.py``.
+    """
+    info = land_to_main(id=args.id, repo=getattr(args, "repo", None))
+    id_ = info["id"]
+    target = info["target"]
+    wt = info["wt"]
+    branch = info["branch"]
+    sys.stdout.write(f"landed {branch} → main on {target}\n")
+    if getattr(args, "run_py_ux", False):
+        # Caller (run.py) owns cleanup prompt + messages.
+        return
     _land_cleanup(args, target=target, id_=id_, wt=wt, branch=branch)
 
 
@@ -903,7 +931,7 @@ def _land_cleanup(args, *, target: Path, id_: str, wt: Path, branch: str) -> Non
     """Optionally remove worktree + feature branch after a successful land.
 
     Keeps ``docs/wt-task-*`` always. Default on a TTY: ask, Y to remove.
-    ``--cleanup`` removes without asking; ``--keep-worktree`` never removes.
+    ``--cleanup`` / ``--yes`` removes without asking; ``--keep-worktree`` never.
     Non-TTY without flags: keep and print a hint.
     """
     if getattr(args, "keep_worktree", False):
@@ -912,7 +940,7 @@ def _land_cleanup(args, *, target: Path, id_: str, wt: Path, branch: str) -> Non
             f"docs stay at docs/wt-task-{id_}\n"
         )
         return
-    do_cleanup = bool(getattr(args, "cleanup", False))
+    do_cleanup = bool(getattr(args, "cleanup", False) or getattr(args, "yes", False))
     if not do_cleanup:
         if sys.stdin.isatty():
             try:
@@ -932,16 +960,7 @@ def _land_cleanup(args, *, target: Path, id_: str, wt: Path, branch: str) -> Non
     if not do_cleanup:
         sys.stdout.write(f"kept worktree {wt} and branch {branch}\n")
         return
-    if wt.exists():
-        _git(["worktree", "remove", "--force", str(wt)], cwd=target, check=False)
-    _git(["worktree", "prune"], cwd=target, check=False)
-    rm = _git(["branch", "-D", branch], cwd=target, check=False)
-    if rm.returncode != 0:
-        _fail(
-            f"landed, but could not delete branch {branch}: "
-            f"{rm.stderr.strip() or rm.stdout.strip()}\n"
-            f"  Worktree may already be gone; delete the branch manually if needed."
-        )
+    cleanup_landed_worktree(target=target, id_=id_, wt=wt, branch=branch)
     sys.stdout.write(
         f"removed worktree + branch {branch} (docs/wt-task-{id_} kept)\n"
     )
@@ -1031,7 +1050,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("land", help="rebase wt onto main + ff-only merge into target main")
     add_repo(sp)
-    sp.add_argument("-y", "--yes", action="store_true", help="skip the TTY confirm")
+    sp.add_argument(
+        "-y", "--yes", action="store_true",
+        help="after land, remove worktree + feature branch without asking",
+    )
     sp.add_argument(
         "--cleanup",
         action="store_true",

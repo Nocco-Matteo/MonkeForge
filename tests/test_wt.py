@@ -4,11 +4,11 @@ Covers: child-env setdefault strong + negative control, fail-fast pre-exec
 assert, {e2e_db} gating (wt-level), E2E PORT+URL coupling, two-slug docs
 isolation, slug/branch collision, pruned-not-alive, DOCS_DIR ban (resolved +
 yaml pipeline.docs_dir), overlap merge-base range, land (dirty refuse +
-ff-only abort via -y), brief file-copy, id validation, remove-branch cleanup
-(survives manual dir delete + non-default prefix), branch_prefix yaml/env
-resolution (incl. empty-env-wins), --help import-safety (no PIPELINE_REPO /
-no yaml), list/empty PIPELINE_REPO target resolution, run --cwd override, and
-the common.py DB_OK/DB_DOWN note tracking C.E2E_DB_PORT.
+ff-only abort + rebase fail-loud + cleanup), brief file-copy, id validation,
+remove-branch cleanup (survives manual dir delete + non-default prefix),
+branch_prefix yaml/env resolution (incl. empty-env-wins), --help import-safety
+(no PIPELINE_REPO / no yaml), list/empty PIPELINE_REPO target resolution,
+run --cwd override, and the common.py DB_OK/DB_DOWN note tracking C.E2E_DB_PORT.
 """
 from __future__ import annotations
 
@@ -547,6 +547,35 @@ class TestLand(unittest.TestCase):
                     wt.cmd_land(args)
             self.assertTrue(removed["wt"])
             self.assertTrue(removed["branch"])
+
+    def test_land_no_pre_merge_confirm(self):
+        """``land`` merges without asking — the command is the intent."""
+        with tempfile.TemporaryDirectory() as td:
+            target = _make_repo(Path(td), "target")
+            wt_path = target.parent / "wt-task-031"
+            wt_path.mkdir()
+            merged = {"n": 0}
+
+            def fake_git(args, cwd=None, check=True, capture=True):
+                class R:
+                    returncode = 0
+                    stdout = ""
+                    stderr = ""
+                r = R()
+                if args[:2] == ["status", "--porcelain"]:
+                    r.stdout = ""
+                elif args[:2] == ["merge", "--ff-only"]:
+                    merged["n"] += 1
+                return r
+
+            with patch.object(wt, "_git", side_effect=fake_git):
+                # no yes=True; keep_worktree so no cleanup prompt
+                args = type("A", (), {
+                    "repo": str(target), "id": "031", "yes": False,
+                    "cleanup": False, "keep_worktree": True,
+                })()
+                wt.cmd_land(args)
+            self.assertEqual(merged["n"], 1)
 
 
 class TestUsageStatsPromptFilter(unittest.TestCase):
