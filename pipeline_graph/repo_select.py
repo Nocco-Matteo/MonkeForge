@@ -149,6 +149,27 @@ def pick_repo_interactive(repos: list[RepoEntry]) -> Path:
     return validate_repo(repos[idx - 1].path)
 
 
+def _yaml_pipeline_repo(yaml_path: Path) -> str | None:
+    """The ``pipeline.repo`` scalar from monkeforge.yaml, or ``None``."""
+    if not yaml_path.is_file():
+        return None
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(yaml_path.read_text()) or {}
+    except (OSError, Exception):
+        return None
+    if not isinstance(data, dict):
+        return None
+    pl = data.get("pipeline")
+    if not isinstance(pl, dict):
+        return None
+    raw = pl.get("repo")
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s or None
+
+
 def ensure_pipeline_repo(
     *,
     yaml_path: Path,
@@ -158,6 +179,8 @@ def ensure_pipeline_repo(
 ) -> Path:
     """Ensure ``PIPELINE_REPO`` is set; return the resolved path.
 
+    Precedence: ``--repo`` flag > ``PIPELINE_REPO`` env > yaml ``repos:``
+    (1 entry = auto, N = CLI picker) > yaml ``pipeline.repo`` scalar.
     Side effect: writes ``os.environ["PIPELINE_REPO"]``.
     """
     repos = load_repos(yaml_path, mf_root=mf_root)
@@ -174,6 +197,20 @@ def ensure_pipeline_repo(
         return path
 
     if not repos:
+        # yaml pipeline.repo scalar fallback (single-repo shortcut: no repos:
+        # list needed). Resolved relative to mf_root when not absolute.
+        repo_scalar = _yaml_pipeline_repo(yaml_path)
+        if repo_scalar:
+            p = Path(repo_scalar).expanduser()
+            if not p.is_absolute():
+                p = (mf_root / p).resolve()
+            else:
+                p = p.resolve()
+            path = validate_repo(p)
+            os.environ["PIPELINE_REPO"] = str(path)
+            sys.stderr.write(f"using repo: {path.name}  ({path})\n")
+            sys.stderr.flush()
+            return path
         raise _cli_error([
             "error: no target repo configured",
             "",
@@ -181,7 +218,8 @@ def ensure_pipeline_repo(
             "  Do one of:",
             "    • export PIPELINE_REPO=/abs/path/to/app",
             "    • ./run.py --repo <label|path|index> …",
-            "    • add a top-level `repos:` list to monkeforge.yaml",
+            "    • add a top-level `repos:` list or a `pipeline.repo` scalar",
+            "      to monkeforge.yaml",
             "",
             f"  yaml: {yaml_path}",
         ])

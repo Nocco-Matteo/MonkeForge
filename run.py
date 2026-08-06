@@ -14,24 +14,17 @@ import argparse, contextlib, io, json, os, re, shutil, subprocess, sys, threadin
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Load monkeforge.yaml (or .env as fallback) into os.environ.
-# Priority: real env vars > yaml > .env > code defaults (where any remain).
-# agents.*: yaml-only; every role requires model: AND cmd: (no code defaults).
-# Exceptions (read directly — no env bridge / special handling):
-#   agents: role model/cmd; condenser: keep_recent + per-role token budgets;
-#   test_suites: gate suite list; repos: target list (see repo_select.py).
-#   pipeline.repo is still bridged to PIPELINE_REPO (single-repo shorthand).
+# --- YAML / env bridge (TASK-032) -------------------------------------------
+# Product knobs are now read DIRECTLY from monkeforge.yaml by config.py (§3e).
+# The old ``_load_yaml_to_env`` bridge and ``.env`` loading are kept as dead
+# code for backward-compat with tests that call the function directly, but are
+# NOT called at module level — a stale shell env no longer leaks product knobs
+# into the pipeline. Only the ``tools:`` mapping (non-PIPELINE env vars like
+# GEMINI_CLI_TRUST_WORKSPACE) is still bridged at module level.
 _MF_ROOT = Path(__file__).resolve().parent
 # PIPELINE_WT_YAML: orchestrator yaml override (worktree boot). The config
 # module reads this same env to find its yaml, so run.py must agree.
-_yaml_override = (os.environ.get("PIPELINE_WT_YAML") or "").strip()
-_yaml_file = (
-    Path(_yaml_override).expanduser() if _yaml_override
-    else (_MF_ROOT / "monkeforge.yaml")
-)
-if not _yaml_file.is_absolute():
-    _yaml_file = (_MF_ROOT / _yaml_file).resolve()
-_env_file = _MF_ROOT / ".env"
+_yaml_file = Path(os.environ.get("PIPELINE_WT_YAML") or (_MF_ROOT / "monkeforge.yaml"))
 
 def _envstr(val) -> str:
     """Render a YAML value for an env var. Booleans go to lowercase "true"/"false":
@@ -44,6 +37,12 @@ def _envstr(val) -> str:
 
 
 def _load_yaml_to_env(path: Path) -> None:
+    """Legacy bridge: flatten monkeforge.yaml into PIPELINE_* / DISCORD_* env vars.
+
+    Kept for backward-compat with tests that call it directly. NOT called at
+    module level anymore (§3e) — config.py reads yaml directly, and a stale
+    shell env no longer leaks product knobs into the pipeline.
+    """
     import yaml as _yaml
     data = _yaml.safe_load(path.read_text()) or {}
 
@@ -82,14 +81,30 @@ def _load_yaml_to_env(path: Path) -> None:
         env_key = _discord_keys.get(key, f"DISCORD_{key.upper()}")
         os.environ.setdefault(env_key, _envstr(val))
 
-if _yaml_file.exists():
-    _load_yaml_to_env(_yaml_file)
-elif _env_file.exists():
-    for _line in _env_file.read_text().splitlines():
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _, _v = _line.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip())
+
+def _bridge_tools_from_yaml(path: Path) -> None:
+    """Bridge only the ``tools:`` section (non-PIPELINE env vars) from yaml.
+
+    Product knobs are read directly by config.py; the ``tools:`` mapping sets
+    non-PIPELINE env vars (e.g. GEMINI_CLI_TRUST_WORKSPACE) that agent CLIs
+    read from the process env, so it still needs bridging at module level.
+    """
+    if not path.is_file():
+        return
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(path.read_text()) or {}
+    except (OSError, Exception):
+        return
+    if not isinstance(data, dict):
+        return
+    _tool_keys = {"gemini_trust_workspace": "GEMINI_CLI_TRUST_WORKSPACE"}
+    for key, val in (data.get("tools") or {}).items():
+        env_key = _tool_keys.get(key, key.upper())
+        os.environ.setdefault(env_key, _envstr(val))
+
+
+_bridge_tools_from_yaml(_yaml_file)
 
 # Target repo MUST be chosen before config import (no git-cwd default).
 # Precedence: --repo > PIPELINE_REPO env > yaml repos: (1=auto, N=CLI pick).
@@ -151,6 +166,7 @@ try:
     from pipeline_graph import config as C, events as ev
     from pipeline_graph.graph import build_graph, open_checkpointer
     from pipeline_graph import test_runner as tr
+    from pipeline_graph.discord_config import resolve_discord_webhook, discord_secrets
 except Exception as _cfg_exc:
     _cli = getattr(_cfg_exc, "cli_message", None)
     if callable(_cli):
@@ -1220,7 +1236,7 @@ def _extract_debate_blockers(task_id: str) -> str:
 
 def _thread(task_id: str) -> dict:
     return {"configurable": {"thread_id": f"task-{task_id}"},
-            "recursion_limit": int(os.environ.get("PIPELINE_RECURSION_LIMIT", "200"))}
+            "recursion_limit": C.RECURSION_LIMIT}
 
 
 def _mark_idle(task_id: str, why: str) -> None:
@@ -1954,8 +1970,8 @@ def _doctor(graph, task_id: str) -> None:
                     print(f"\n  ⚠ LIVENESS: {dead}")
         except (OSError, ValueError):
             pass
-    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
-    has_webhook = bool(os.environ.get("DISCORD_WEBHOOK")) or (C.REPO / ".discord-webhook").exists()
+    level = C.NOTIFY_LEVEL
+    has_webhook = bool(resolve_discord_webhook())
     if level != "silent" and not has_webhook:
         print("\n  ⚠ NOTIFICATIONS OFF: no webhook — this run pushed nothing.")
 
@@ -1997,9 +2013,10 @@ def _ensure_bot() -> None:
     ``DOCS`` to a different repo's docs and never see the events the
     pipeline writes.
     """
-    if os.environ.get("PIPELINE_BOT_AUTOSTART", "").strip().lower() not in ("1", "true", "yes"):
+    if not C.BOT_AUTOSTART:
         return
-    if not os.environ.get("DISCORD_BOT_TOKEN"):
+    _secrets = discord_secrets()
+    if not _secrets["bot_token"]:
         return                                  # bot not configured
     bot_py = _MF_ROOT / "bot" / "bot.py"
     if not bot_py.exists():
@@ -2034,11 +2051,10 @@ def _ensure_notify_daemon() -> None:
     Idempotent via the heartbeat file's pid — repeated calls don't spawn
     duplicates. No-op if no webhook is configured.
     """
-    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
+    level = C.NOTIFY_LEVEL
     if level == "silent":
         return
-    has_webhook = bool(os.environ.get("DISCORD_WEBHOOK")) \
-        or (C.REPO / ".discord-webhook").exists()
+    has_webhook = bool(resolve_discord_webhook())
     if not has_webhook:
         return
 
@@ -2069,11 +2085,10 @@ def _warn_if_notifications_off() -> None:
 
     .env is already loaded into os.environ by the time this runs.
     """
-    level = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
+    level = C.NOTIFY_LEVEL
     if level == "silent":
         return
-    has_webhook = bool(os.environ.get("DISCORD_WEBHOOK")) \
-        or (C.REPO / ".discord-webhook").exists()
+    has_webhook = bool(resolve_discord_webhook())
     if not has_webhook:
         print("  ⚠ notifications OFF: no DISCORD_WEBHOOK (.env missing?) and no "
               ".discord-webhook file. This run will push nothing; logs still written.")

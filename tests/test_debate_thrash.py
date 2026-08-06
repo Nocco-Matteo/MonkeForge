@@ -995,58 +995,64 @@ class TestEscalationOptionsRefineLabels(unittest.TestCase):
         self.assertNotIn("recommended", continue_label.lower())
 
 
-class TestDebateThrashThemeJaccardEnv(unittest.TestCase):
-    """Item 38: DEBATE_THRASH_THEME_JACCARD env parse — 0.35 for unset,
+class TestDebateThrashThemeJaccardYaml(unittest.TestCase):
+    """Item 38: DEBATE_THRASH_THEME_JACCARD yaml parse — 0.35 for unset,
     'abc', 'nan', 'inf', '0', '1.5'; 0.5 for '0.5'."""
 
     @staticmethod
-    def _with_env(env: dict[str, str | None]):
+    def _with_yaml(pipeline: dict | None = None):
         @contextmanager
         def _cm():
-            saved = {k: os.environ.get(k) for k in env}
+            import tempfile, yaml as _yaml
+            from pathlib import Path
+            from tests._yaml_fixture import _baseline_yaml
+            saved_wt = os.environ.get("PIPELINE_WT_YAML")
+            td = tempfile.TemporaryDirectory()
             try:
-                for k, v in env.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
+                ypath = Path(td.name) / "monkeforge.yaml"
+                data = _baseline_yaml()
+                if pipeline is not None:
+                    dumped = _yaml.dump(pipeline, default_flow_style=False, indent=2)
+                    data += "\npipeline:\n" + "\n".join("  " + l for l in dumped.splitlines()) + "\n"
+                ypath.write_text(data)
+                os.environ["PIPELINE_WT_YAML"] = str(ypath)
                 importlib.reload(C)
                 yield
             finally:
-                for k, v in saved.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
+                if saved_wt is not None:
+                    os.environ["PIPELINE_WT_YAML"] = saved_wt
+                else:
+                    os.environ.pop("PIPELINE_WT_YAML", None)
+                td.cleanup()
                 importlib.reload(C)
         return _cm()
 
     def test_unset_defaults_to_0_35(self):
-        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": None}):
+        with self._with_yaml():
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
 
     def test_non_float_falls_back_to_0_35(self):
-        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "abc"}):
+        with self._with_yaml({"debate_thrash_theme_jaccard": "abc"}):
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
 
     def test_nan_falls_back_to_0_35(self):
-        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "nan"}):
+        with self._with_yaml({"debate_thrash_theme_jaccard": "nan"}):
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
 
     def test_inf_falls_back_to_0_35(self):
-        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "inf"}):
+        with self._with_yaml({"debate_thrash_theme_jaccard": "inf"}):
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
 
     def test_zero_falls_back_to_0_35(self):
-        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "0"}):
+        with self._with_yaml({"debate_thrash_theme_jaccard": 0}):
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
 
     def test_above_one_falls_back_to_0_35(self):
-        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "1.5"}):
+        with self._with_yaml({"debate_thrash_theme_jaccard": 1.5}):
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.35)
 
     def test_valid_value_is_used(self):
-        with self._with_env({"PIPELINE_DEBATE_THRASH_THEME_JACCARD": "0.5"}):
+        with self._with_yaml({"debate_thrash_theme_jaccard": 0.5}):
             self.assertEqual(C.DEBATE_THRASH_THEME_JACCARD, 0.5)
 
 

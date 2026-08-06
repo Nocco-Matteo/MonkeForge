@@ -64,16 +64,20 @@ INIT_DIRTY_OK_PREFIXES = tuple(
 
 TEMPLATES = Path(__file__).parent / "prompts"
 
-# Architecture docs the agents must read (repo-relative, ";"-separated).
-# Configured per-repo in monkeforge.yaml (pipeline.arch_docs) or PIPELINE_ARCH_DOCS.
-# No hardcoded defaults — MonkeForge is standalone and doesn't assume any repo.
+# Architecture docs the agents must read (repo-relative). Configured per-repo
+# in monkeforge.yaml (pipeline.arch_docs — a list or ";"/newline-separated
+# string). No hardcoded defaults — MonkeForge is standalone and doesn't assume
+# any repo. Non-allowlisted PIPELINE_ARCH_DOCS env is IGNORED (§3e product knob).
 def arch_docs_block() -> str:
     """The architecture docs that actually exist, as a bullet list for prompts.
 
     Filters to existing files so a doc listed-but-not-yet-created is skipped and
     appears automatically once you add it."""
-    raw = os.environ.get("PIPELINE_ARCH_DOCS", "")
-    paths = [p.strip() for p in raw.replace("\n", ";").split(";") if p.strip()]
+    raw = _pipeline.get("arch_docs", "")
+    if isinstance(raw, list):
+        paths = [str(p).strip() for p in raw if str(p).strip()]
+    else:
+        paths = [p.strip() for p in str(raw).replace("\n", ";").split(";") if p.strip()]
     present = [p for p in paths if (REPO / p).exists()]
     return "\n".join(f"- {p}" for p in present) or "- (none configured)"
 
@@ -233,6 +237,69 @@ ROLE_CONFIG: dict[str, dict[str, str]] = build_role_config(
     example_path=_example_yaml,
 )
 
+# --- Yaml-direct product config (TASK-032) ----------------------------------
+# Precedence (§3a): allowlisted runtime/secret env > monkeforge.yaml > code
+# defaults. Non-allowlisted ``PIPELINE_*`` in the process env are IGNORED for
+# product knobs (the stale-shell bug class). The allowlist is the EXACT §3b
+# set — no ``PIPELINE_E2E_*`` wildcard (E2E_DB_CONTAINER/PROJECT/UP_SCRIPT/
+# UP_TIMEOUT are §3e product knobs, popped from the agent subprocess env).
+_ALLOWLIST_ENV: frozenset[str] = frozenset({
+    "PIPELINE_REPO",
+    "PIPELINE_DOCS_DIR",
+    "PIPELINE_BOT_AUTOSTART",
+    "PIPELINE_E2E_DB_PORT",
+    "PIPELINE_E2E_DATABASE_URL",
+    "PIPELINE_NO_INPUT",
+    "PIPELINE_DRY_RUN",
+    "PIPELINE_NOTIFY_LEVEL",
+    "PIPELINE_WT_YAML",
+    "PIPELINE_ISOLATED",
+})
+
+
+def _env_or_yaml(env_key: str, yaml_keys: tuple[str, ...], default, cast):
+    """allowlisted env > yaml > default (§3a precedence for §3b keys).
+
+    ``env_key`` MUST be in ``_ALLOWLIST_ENV``. An empty/whitespace env value is
+    treated as unset (so ``PIPELINE_BOT_AUTOSTART=`` does not clobber yaml). A
+    cast failure on either source falls through to the next source, ending at
+    ``default``. When ``yaml_keys`` is empty, only env is checked (no yaml
+    home for this key).
+    """
+    raw = os.environ.get(env_key)
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return cast(raw)
+        except (ValueError, TypeError):
+            pass
+    if not yaml_keys:
+        return default
+    node = _yaml_root
+    for k in yaml_keys:
+        if not isinstance(node, dict):
+            return default
+        node = node.get(k)
+    if node is None:
+        return default
+    try:
+        return cast(node)
+    except (ValueError, TypeError):
+        return default
+
+
+def _pipeline_dict_local() -> dict:
+    pl = _yaml_root.get("pipeline")
+    return pl if isinstance(pl, dict) else {}
+
+
+_pipeline: dict = _pipeline_dict_local()
+_notifications: dict = _yaml_root.get("notifications") or {}
+if not isinstance(_notifications, dict):
+    _notifications = {}
+_discord: dict = _yaml_root.get("discord") or {}
+if not isinstance(_discord, dict):
+    _discord = {}
+
 # Line-buffering / process wrappers that precede the real agent CLI in a
 # command. `stdbuf -oL devin …` must resolve to `devin`, not `stdbuf`, or
 # preflight checks the wrong binary and logs name the wrong tool.
@@ -376,12 +443,12 @@ def token_budget(role: str) -> int | None:
 
 
 # No timeout by default: this is the whole point of leaving the Bash-tool ceiling behind.
-AGENT_TIMEOUT = int(os.environ.get("PIPELINE_AGENT_TIMEOUT", "0")) or None
+AGENT_TIMEOUT = int(_pipeline.get("agent_timeout", 0)) or None
 
-MAX_DEBATE_ROUNDS = int(os.environ.get("PIPELINE_MAX_DEBATE_ROUNDS", "2"))
-MAX_FIX_CYCLES    = int(os.environ.get("PIPELINE_MAX_FIX_CYCLES", "2"))
-MAX_TEST_FIXES    = int(os.environ.get("PIPELINE_MAX_TEST_FIXES", "2"))
-MAX_INTAKE_ROUNDS = int(os.environ.get("PIPELINE_MAX_INTAKE_ROUNDS", "4"))
+MAX_DEBATE_ROUNDS = int(_pipeline.get("max_debate_rounds", 2))
+MAX_FIX_CYCLES    = int(_pipeline.get("max_fix_cycles", 2))
+MAX_TEST_FIXES    = int(_pipeline.get("max_test_fixes", 2))
+MAX_INTAKE_ROUNDS = int(_pipeline.get("max_intake_rounds", 4))
 
 # TASK-033: cap on REQUIREMENTS re-intake cycles. Below MAX the
 # "debate requirements:" menu offers re-intake/continue/redo/stop (re-intake
@@ -393,7 +460,7 @@ def _parse_max_requirements_reintakes(raw, *, default: int = 2) -> int:
     if raw is None:
         return default
     if isinstance(raw, bool):
-        print(f"PIPELINE_MAX_REQUIREMENTS_REINTAKES={raw!r} not an int; "
+        print(f"pipeline.max_requirements_reintakes={raw!r} not an int; "
               f"using default {default}", file=sys.stderr)
         return default
     if isinstance(raw, int):
@@ -402,18 +469,18 @@ def _parse_max_requirements_reintakes(raw, *, default: int = 2) -> int:
         try:
             val = int(str(raw).strip())
         except ValueError:
-            print(f"PIPELINE_MAX_REQUIREMENTS_REINTAKES={raw!r} not an int; "
+            print(f"pipeline.max_requirements_reintakes={raw!r} not an int; "
                   f"using default {default}", file=sys.stderr)
             return default
     if val < 0:
-        print(f"PIPELINE_MAX_REQUIREMENTS_REINTAKES={val} negative; "
+        print(f"pipeline.max_requirements_reintakes={val} negative; "
               f"clamping to 0", file=sys.stderr)
         return 0
     return val
 
 
 MAX_REQUIREMENTS_REINTAKES = _parse_max_requirements_reintakes(
-    os.environ.get("PIPELINE_MAX_REQUIREMENTS_REINTAKES")
+    _pipeline.get("max_requirements_reintakes")
 )
 
 # --- Adaptive effort presets (TASK-011) -----------------------------------
@@ -431,10 +498,10 @@ _EFFORT_LEVELS_HARDCODED: dict[str, dict] = {
                      "fix_cycles": max(MAX_FIX_CYCLES, 3)},
 }
 
-# PIPELINE_EFFORT_JSON (set by the YAML `effort:` key, or by hand) overrides the
-# hardcoded presets. A parse failure or a structurally invalid shape degrades
-# silently to the hardcoded default so a malformed env var never breaks an
-# existing run that never opted in.
+# The top-level yaml ``effort:`` key overrides the hardcoded presets. A
+# structurally invalid shape degrades silently to the hardcoded default so a
+# malformed yaml never breaks an existing run that never opted in. The old
+# ``PIPELINE_EFFORT_JSON`` env bridge is gone (§3e) — yaml is the only source.
 _EFFORT_REQUIRED_KEYS = ("debate_rounds", "gates", "fix_cycles")
 
 
@@ -476,29 +543,23 @@ def _is_valid_effort_levels(obj) -> bool:
     return _normalize_effort_levels(obj) is not None
 
 
-_effort_json_raw = os.environ.get("PIPELINE_EFFORT_JSON")
-if _effort_json_raw:
-    try:
-        _parsed = json.loads(_effort_json_raw)
-    except (json.JSONDecodeError, ValueError):
-        _parsed = None
-    EFFORT_LEVELS = _normalize_effort_levels(_parsed) or _EFFORT_LEVELS_HARDCODED
-else:
-    EFFORT_LEVELS = _EFFORT_LEVELS_HARDCODED
+EFFORT_LEVELS = _normalize_effort_levels(_yaml_root.get("effort")) or _EFFORT_LEVELS_HARDCODED
 
-# Validate the env-chosen default; an unknown value would otherwise crash every
+# Validate the chosen default; an unknown value would otherwise crash every
 # resolver that indexes EFFORT_LEVELS via _effort_for. Fall back to the
-# hardcoded default so a bad env var can't break routing/resume.
-_effort_default_raw = os.environ.get("PIPELINE_EFFORT_DEFAULT", "troop-monke")
+# hardcoded default so a bad yaml value can't break routing/resume.
+_effort_default_raw = _pipeline.get("effort_default", "troop-monke")
 EFFORT_DEFAULT = _effort_default_raw if _effort_default_raw in EFFORT_LEVELS else "troop-monke"
 
 # Paths whose modification marks a change as critical (→ barrel-monke hint).
 _DEFAULT_CRITICAL_PATHS = "config.py;graph.py;state.py;run.py"
-EFFORT_CRITICAL_PATHS = tuple(
-    p.strip() for p in
-    os.environ.get("PIPELINE_EFFORT_CRITICAL_PATHS", _DEFAULT_CRITICAL_PATHS).split(";")
-    if p.strip()
-)
+_effort_critical_raw = _pipeline.get("effort_critical_paths", _DEFAULT_CRITICAL_PATHS)
+if isinstance(_effort_critical_raw, list):
+    EFFORT_CRITICAL_PATHS = tuple(str(p).strip() for p in _effort_critical_raw if str(p).strip())
+else:
+    EFFORT_CRITICAL_PATHS = tuple(
+        p.strip() for p in str(_effort_critical_raw).split(";") if p.strip()
+    )
 
 
 def _effort_for(state) -> str:
@@ -561,8 +622,8 @@ def effort_choices() -> dict[str, str]:
 
 # 3, not 2: a complex board needs more than two auto-fix passes (task-009 went
 # 4→4→2 blockers and escalated with real issues still open). Override per-run
-# with PIPELINE_MAX_UX_RENDER_CYCLES for simpler UI (down) or stuck ones (up).
-MAX_UX_RENDER_CYCLES = int(os.environ.get("PIPELINE_MAX_UX_RENDER_CYCLES", "3"))
+# with pipeline.max_ux_render_cycles for simpler UI (down) or stuck ones (up).
+MAX_UX_RENDER_CYCLES = int(_pipeline.get("max_ux_render_cycles", 3))
 
 # Condenser: how many trailing debate rounds to keep verbatim when a role's
 # token budget is exceeded. Older rounds collapse to one-line markers.
@@ -616,15 +677,27 @@ def _clamp_stuck_to_keep_recent(stuck: int, keep_recent: int) -> int:
     return stuck
 
 
-_raw_stuck = os.environ.get("PIPELINE_DEBATE_STUCK_ROUNDS", "2")
-try:
-    DEBATE_STUCK_ROUNDS = int(_raw_stuck)
-except ValueError:
-    print(f"PIPELINE_DEBATE_STUCK_ROUNDS={_raw_stuck!r} not an int; using default 2",
-          file=sys.stderr)
-    DEBATE_STUCK_ROUNDS = 2
+def _yaml_int(raw, default: int) -> int:
+    """Coerce a yaml value to int with a stderr fallback (mirrors the old env
+    parse). ``bool`` is rejected (yaml ``true``/``false`` are not counts)."""
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        print(f"yaml int={raw!r} not an int; using default {default}", file=sys.stderr)
+        return default
+    if isinstance(raw, int):
+        return raw
+    try:
+        return int(str(raw).strip())
+    except ValueError:
+        print(f"yaml int={raw!r} not an int; using default {default}", file=sys.stderr)
+        return default
+
+
+_raw_stuck = _pipeline.get("debate_stuck_rounds", 2)
+DEBATE_STUCK_ROUNDS = _yaml_int(_raw_stuck, 2)
 if DEBATE_STUCK_ROUNDS < 1:
-    print(f"PIPELINE_DEBATE_STUCK_ROUNDS={DEBATE_STUCK_ROUNDS} below 1; clamping to 1",
+    print(f"pipeline.debate_stuck_rounds={DEBATE_STUCK_ROUNDS} below 1; clamping to 1",
           file=sys.stderr)
     DEBATE_STUCK_ROUNDS = 1
 _stuck_before_clamp = DEBATE_STUCK_ROUNDS
@@ -633,7 +706,7 @@ DEBATE_STUCK_ROUNDS = _clamp_stuck_to_keep_recent(
 )
 if DEBATE_STUCK_ROUNDS != _stuck_before_clamp:
     print(
-        f"PIPELINE_DEBATE_STUCK_ROUNDS={_stuck_before_clamp} exceeds "
+        f"pipeline.debate_stuck_rounds={_stuck_before_clamp} exceeds "
         f"CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT}; clamping to "
         f"{DEBATE_STUCK_ROUNDS}",
         file=sys.stderr,
@@ -649,18 +722,12 @@ if DEBATE_STUCK_ROUNDS != _stuck_before_clamp:
 # thrashing trend needs at least 2 active rounds to be meaningful (the
 # thrashing_report itself returns mode="unknown" when fewer than 2 active
 # rounds are in the window, but the clamp keeps the scan window sane).
-_raw_thrash = os.environ.get("PIPELINE_DEBATE_THRASH_ROUNDS")
-if _raw_thrash is None or not _raw_thrash.strip():
+if _pipeline.get("debate_thrash_rounds") is None:
     DEBATE_THRASH_ROUNDS = DEBATE_STUCK_ROUNDS
 else:
-    try:
-        DEBATE_THRASH_ROUNDS = int(_raw_thrash)
-    except ValueError:
-        print(f"PIPELINE_DEBATE_THRASH_ROUNDS={_raw_thrash!r} not an int; "
-              f"using default {DEBATE_STUCK_ROUNDS}", file=sys.stderr)
-        DEBATE_THRASH_ROUNDS = DEBATE_STUCK_ROUNDS
+    DEBATE_THRASH_ROUNDS = _yaml_int(_pipeline.get("debate_thrash_rounds"), DEBATE_STUCK_ROUNDS)
 if DEBATE_THRASH_ROUNDS < 1:
-    print(f"PIPELINE_DEBATE_THRASH_ROUNDS={DEBATE_THRASH_ROUNDS} below 1; "
+    print(f"pipeline.debate_thrash_rounds={DEBATE_THRASH_ROUNDS} below 1; "
           f"clamping to 1", file=sys.stderr)
     DEBATE_THRASH_ROUNDS = 1
 if CONDENSER_KEEP_RECENT < DEBATE_THRASH_ROUNDS:
@@ -669,7 +736,7 @@ if CONDENSER_KEEP_RECENT < DEBATE_THRASH_ROUNDS:
     # thrashing detection (k=0), violating the required minimum.
     _thrash_ceiling = max(CONDENSER_KEEP_RECENT, 1)
     print(
-        f"PIPELINE_DEBATE_THRASH_ROUNDS={DEBATE_THRASH_ROUNDS} exceeds "
+        f"pipeline.debate_thrash_rounds={DEBATE_THRASH_ROUNDS} exceeds "
         f"CONDENSER_KEEP_RECENT={CONDENSER_KEEP_RECENT}; clamping to "
         f"{_thrash_ceiling}",
         file=sys.stderr,
@@ -685,29 +752,31 @@ if CONDENSER_KEEP_RECENT < DEBATE_THRASH_ROUNDS:
 # verdict — the new claims are genuinely fresh and more rounds will not help).
 # Validated parse mirrors _raw_thrash: a non-float, NaN/Inf, or out-of-(0, 1]
 # value falls back to the default (0.35) with a stderr warning.
-_raw_theme_jaccard = os.environ.get("PIPELINE_DEBATE_THRASH_THEME_JACCARD")
-if _raw_theme_jaccard is None or not _raw_theme_jaccard.strip():
+_raw_theme_jaccard = _pipeline.get("debate_thrash_theme_jaccard")
+if _raw_theme_jaccard is None:
     DEBATE_THRASH_THEME_JACCARD = 0.35
 else:
     try:
+        if isinstance(_raw_theme_jaccard, bool):
+            raise ValueError
         _val_theme_jaccard = float(_raw_theme_jaccard)
-    except ValueError:
+    except (ValueError, TypeError):
         print(
-            f"PIPELINE_DEBATE_THRASH_THEME_JACCARD={_raw_theme_jaccard!r} not a float; "
+            f"pipeline.debate_thrash_theme_jaccard={_raw_theme_jaccard!r} not a float; "
             f"using default 0.35",
             file=sys.stderr,
         )
         _val_theme_jaccard = 0.35
     if math.isnan(_val_theme_jaccard) or math.isinf(_val_theme_jaccard):
         print(
-            f"PIPELINE_DEBATE_THRASH_THEME_JACCARD={_raw_theme_jaccard!r} is NaN/Inf; "
+            f"pipeline.debate_thrash_theme_jaccard={_raw_theme_jaccard!r} is NaN/Inf; "
             f"using default 0.35",
             file=sys.stderr,
         )
         _val_theme_jaccard = 0.35
     if _val_theme_jaccard <= 0 or _val_theme_jaccard > 1:
         print(
-            f"PIPELINE_DEBATE_THRASH_THEME_JACCARD={_raw_theme_jaccard!r} out of range "
+            f"pipeline.debate_thrash_theme_jaccard={_raw_theme_jaccard!r} out of range "
             f"(0, 1]; using default 0.35",
             file=sys.stderr,
         )
@@ -716,7 +785,7 @@ else:
 
 # Consecutive non-improving cycles before the visual/render gates escalate early
 # (plateau detection — the fix loop is oscillating, not converging).
-PLATEAU_THRESHOLD = int(os.environ.get("PIPELINE_PLATEAU_THRESHOLD", "2"))
+PLATEAU_THRESHOLD = _yaml_int(_pipeline.get("plateau_threshold", 2), 2)
 
 # TASK-023: lean plan-view threshold for the critic rounds. When the current
 # plan is at least this many bytes AND the round is >= 2 AND a non-empty
@@ -725,16 +794,7 @@ PLATEAU_THRESHOLD = int(os.environ.get("PIPELINE_PLATEAU_THRESHOLD", "2"))
 # the full plan. Below the threshold, or with no usable diff, the full plan is
 # sent. Validated parse mirrors CONDENSER_KEEP_RECENT: a non-integer falls back
 # to the default (8192) with a stderr warning.
-_raw_lean = os.environ.get("PIPELINE_LEAN_PLAN_FULL_THRESHOLD", "8192")
-try:
-    LEAN_PLAN_FULL_THRESHOLD = int(_raw_lean)
-except ValueError:
-    print(
-        f"PIPELINE_LEAN_PLAN_FULL_THRESHOLD={_raw_lean!r} not an int; "
-        f"using default 8192",
-        file=sys.stderr,
-    )
-    LEAN_PLAN_FULL_THRESHOLD = 8192
+LEAN_PLAN_FULL_THRESHOLD = _yaml_int(_pipeline.get("lean_plan_full_threshold", 8192), 8192)
 
 # The "eyes": a Playwright spec renders the built UI to screenshots + a facts
 # JSON. The render node runs this command in the frontend; it must honour
@@ -743,14 +803,14 @@ SCREENS = DOCS / "reviews" / "screens"
 # Idempotent upsert of the fixed-id render fixtures; ux_render runs it before
 # rendering so the visual gate survives an e2e DB re-seed. None when unset —
 # MonkeForge is standalone and ships no seed script by default; opt in via
-# PIPELINE_UX_SEED_SCRIPT (repo-relative or absolute path).
-_ux_seed_raw = os.environ.get("PIPELINE_UX_SEED_SCRIPT", "").strip()
+# pipeline.ux_seed_script (repo-relative or absolute path).
+_ux_seed_raw = str(_pipeline.get("ux_seed_script", "") or "").strip()
 UX_SEED_SCRIPT: Path | None = (Path(_ux_seed_raw) if _ux_seed_raw else None)
-UX_RENDER_CMD = os.environ.get("PIPELINE_UX_RENDER_CMD", "")
-UX_RENDER_CWD = os.environ.get("PIPELINE_UX_RENDER_CWD", "")
+UX_RENDER_CMD = str(_pipeline.get("ux_render_cmd", "") or "")
+UX_RENDER_CWD = str(_pipeline.get("ux_render_cwd", "") or "")
 # Subprocess kill for the render command. Must exceed the spec's own
 # test.setTimeout (600s cold-path for fixture creation) with margin.
-UX_RENDER_TIMEOUT = int(os.environ.get("PIPELINE_UX_RENDER_TIMEOUT", "720"))
+UX_RENDER_TIMEOUT = _yaml_int(_pipeline.get("ux_render_timeout", 720), 720)
 
 # --- Eyes runner (TASK-012) -------------------------------------------------
 # The generalized "eyes" runner: declarative ``ui:`` yaml → checkpointed
@@ -1028,13 +1088,15 @@ def validate_ui_config(cfg: dict) -> dict:
 # compares to a baseline to catch re-render REGRESSIONS. Deterministic — the
 # review is numeric, no LLM critic. Reuses the ux-render seed fixtures.
 RENDERS = DOCS / "reviews" / "renders"
-RENDER_CMD = os.environ.get("PIPELINE_RENDER_CMD", "")
-RENDER_CWD = os.environ.get("PIPELINE_RENDER_CWD", "")
-RENDER_TIMEOUT = int(os.environ.get("PIPELINE_RENDER_TIMEOUT", "300"))
-MAX_RENDER_CYCLES = int(os.environ.get("PIPELINE_MAX_RENDER_CYCLES", "3"))
+RENDER_CMD = str(_pipeline.get("render_cmd", "") or "")
+RENDER_CWD = str(_pipeline.get("render_cwd", "") or "")
+RENDER_TIMEOUT = _yaml_int(_pipeline.get("render_timeout", 300), 300)
+MAX_RENDER_CYCLES = _yaml_int(_pipeline.get("max_render_cycles", 3), 3)
 
-BRANCH_PREFIX = os.environ.get("PIPELINE_BRANCH_PREFIX", "feature/task-")
+# yaml-only (§3c correction): stale PIPELINE_BRANCH_PREFIX env is ignored.
+BRANCH_PREFIX = str(_pipeline.get("branch_prefix", "feature/task-") or "feature/task-")
 
+# Allowlisted §3b env (env-only, no yaml home): PIPELINE_DRY_RUN.
 DRY_RUN = os.environ.get("PIPELINE_DRY_RUN") == "1"
 
 # Observe-only git: run the REAL agents but make every history-mutating step a
@@ -1044,27 +1106,29 @@ DRY_RUN = os.environ.get("PIPELINE_DRY_RUN") == "1"
 # still stages it so it can see the diff), so nothing is committed but the tree
 # is left dirty/staged: discard with `git reset --hard && git clean -fd`, or run
 # in a sacrificial `git worktree` you delete afterwards.
-NO_GIT = os.environ.get("PIPELINE_NO_GIT") == "1"
+NO_GIT = bool(_pipeline.get("no_git", False))
 
 # --- E2E / test infrastructure
-E2E_DB_PORT = int(os.environ.get("PIPELINE_E2E_DB_PORT", "5433"))
-E2E_DB_CONTAINER = os.environ.get("PIPELINE_E2E_DB_CONTAINER", "")
-E2E_PROJECT = os.environ.get("PIPELINE_E2E_PROJECT", "")
+# E2E_DB_PORT / E2E_DATABASE_URL are allowlisted §3b (env wins over yaml); the
+# container/project/up-script/up-timeout knobs are §3e product knobs (yaml-only).
+E2E_DB_PORT = _env_or_yaml("PIPELINE_E2E_DB_PORT", ("pipeline", "e2e_db_port"), 5433, int)
+E2E_DB_CONTAINER = str(_pipeline.get("e2e_db_container", "") or "")
+E2E_PROJECT = str(_pipeline.get("e2e_project", "") or "")
 # None when unset — MonkeForge is standalone and ships no e2e-up script by
-# default; opt in via PIPELINE_E2E_UP_SCRIPT (repo-relative or absolute path).
-_e2e_up_raw = os.environ.get("PIPELINE_E2E_UP_SCRIPT", "").strip()
+# default; opt in via pipeline.e2e_up_script (repo-relative or absolute path).
+_e2e_up_raw = str(_pipeline.get("e2e_up_script", "") or "").strip()
 E2E_UP_SCRIPT: Path | None = (Path(_e2e_up_raw) if _e2e_up_raw else None)
-E2E_UP_TIMEOUT = int(os.environ.get("PIPELINE_E2E_UP_TIMEOUT", "660"))
+E2E_UP_TIMEOUT = _yaml_int(_pipeline.get("e2e_up_timeout", 660), 660)
 
 # Host-side URL for vitest when the e2e Postgres container maps 5433→5432.
-# Override with PIPELINE_E2E_DATABASE_URL; never read backend/.env implicitly.
-E2E_DATABASE_URL = os.environ.get("PIPELINE_E2E_DATABASE_URL", "")
+# Allowlisted PIPELINE_E2E_DATABASE_URL wins; never read backend/.env implicitly.
+E2E_DATABASE_URL = _env_or_yaml("PIPELINE_E2E_DATABASE_URL", (), "", str)
 # When the URL is unset/empty BUT the port was set EXPLICITLY by the operator
-# (presence of PIPELINE_E2E_DB_PORT in os.environ — not the 5433 fallback),
-# derive the URL from that port so db_reachable() (probes E2E_DB_PORT) and the
-# suites (connect via E2E_DATABASE_URL) stay on the same host port. Both env
-# vars unset → stays "" (preserves the standalone default). Partial inheritance
-# (port set, URL unset) is the wt-run child-env case this fixes.
+# (allowlisted PIPELINE_E2E_DB_PORT present in the process env — not the 5433
+# fallback), derive the URL from that port so db_reachable() (probes
+# E2E_DB_PORT) and the suites (connect via E2E_DATABASE_URL) stay on the same
+# host port. Both unset → stays "" (preserves the standalone default). Partial
+# inheritance (port set, URL unset) is the wt-run child-env case this fixes.
 if not E2E_DATABASE_URL and "PIPELINE_E2E_DB_PORT" in os.environ:
     E2E_DATABASE_URL = (
         f"postgresql://postgres:postgrespassword@localhost:{E2E_DB_PORT}"
@@ -1072,14 +1136,40 @@ if not E2E_DATABASE_URL and "PIPELINE_E2E_DB_PORT" in os.environ:
     )
 
 # Notify daemon (persistent rate-limited notification dispatcher).
-NOTIFY_RATE = int(os.environ.get("PIPELINE_NOTIFY_RATE", "30"))
-NOTIFY_WINDOW = int(os.environ.get("PIPELINE_NOTIFY_WINDOW", "60"))
-NOTIFY_SOCKET = Path(os.environ.get("PIPELINE_NOTIFY_SOCKET")
-                     or (METRICS / "notify.sock"))
+# notifications.* are §3e product knobs (yaml-only); NOTIFY_LEVEL is allowlisted
+# §3b (env wins over yaml notifications.level, default "milestones").
+NOTIFY_RATE = _yaml_int(_notifications.get("rate", 30), 30)
+NOTIFY_WINDOW = _yaml_int(_notifications.get("window", 60), 60)
+NOTIFY_SOCKET = Path(_notifications.get("socket") or (METRICS / "notify.sock"))
+NOTIFY_LEVEL = _env_or_yaml("PIPELINE_NOTIFY_LEVEL", ("notifications", "level"),
+                            "milestones", lambda v: str(v).lower())
+
+# --- Discord product knobs (§3d — non-secret only) -------------------------
+# bot_autostart is allowlisted §3b (PIPELINE_BOT_AUTOSTART env wins over yaml
+# discord.bot_autostart). The rest are yaml-only; stale DISCORD_* env ignored.
+BOT_AUTOSTART = _env_or_yaml(
+    "PIPELINE_BOT_AUTOSTART", ("discord", "bot_autostart"), False,
+    lambda v: str(v).strip().lower() in ("1", "true", "yes"),
+)
+BOT_NAME = str(_discord.get("bot_name", "MonkeForge Pipeline") or "MonkeForge Pipeline")
+BOT_AVATAR = str(_discord.get("bot_avatar", "") or "")
+BOT_POLL_SECONDS = _yaml_int(_discord.get("bot_poll_seconds", 5), 5)
+BOT_RESUME_TIMEOUT = _yaml_int(_discord.get("resume_timeout", 3600), 3600)
+
+# --- Agent / runner tuning (§3e product knobs, yaml-only) ------------------
+HEARTBEAT_INTERVAL_S = _yaml_int(_pipeline.get("heartbeat_interval_s", 10), 10)
+MIN_OUTPUT_BYTES = _yaml_int(_pipeline.get("min_output_bytes", 40), 40)
+AGENT_TRANSIENT_RETRIES = _yaml_int(_pipeline.get("agent_transient_retries", 1), 1)
+AGENT_BACKOFF_S = _yaml_int(_pipeline.get("agent_backoff_s", 8), 8)
+TEST_TIMEOUT = _yaml_int(_pipeline.get("test_timeout", 900), 900)
+RECURSION_LIMIT = _yaml_int(_pipeline.get("recursion_limit", 200), 200)
+UX_REVIEW_RETRIES = _yaml_int(_pipeline.get("ux_review_retries", 3), 3)
+UX_REVIEW_BACKOFF_S = _yaml_int(_pipeline.get("ux_review_backoff_s", 10), 10)
+FINAL_FIX_TIMEOUT = _yaml_int(_pipeline.get("final_fix_timeout", 600), 600) or None
 
 # --- Test-gate tuning (false-positive suppression) -------------------------
 # Two mechanisms that stop pre-existing debt from looking like a batch
-# regression. Both are ;-separated lists, overridable via env or YAML.
+# regression. Both are ;-separated lists (yaml list or string), yaml-only.
 #
 # LINT_DEBT_RULES: eslint rule IDs whose violations are "known debt". If the
 #   SAME rule was present in the baseline (in any file), new occurrences of
@@ -1096,19 +1186,19 @@ NOTIFY_SOCKET = Path(os.environ.get("PIPELINE_NOTIFY_SOCKET")
 #   whose key contains any of these patterns is NOT counted as new — it is
 #   treated as ambient noise (e.g. a describe.skipIf(!hasDb) test that was
 #   skipped in baseline but runs and fails when the DB comes up mid-batch).
+def _yaml_list(raw, default_str: str = "") -> tuple[str, ...]:
+    if raw is None:
+        raw = default_str
+    if isinstance(raw, list):
+        return tuple(str(p).strip() for p in raw if str(p).strip())
+    return tuple(p.strip() for p in str(raw).split(";") if p.strip())
+
+
 _DEFAULT_LINT_DEBT_RULES = ""
-LINT_DEBT_RULES = tuple(
-    r.strip() for r in
-    os.environ.get("PIPELINE_LINT_DEBT_RULES", _DEFAULT_LINT_DEBT_RULES).split(";")
-    if r.strip()
-)
+LINT_DEBT_RULES = _yaml_list(_pipeline.get("lint_debt_rules"), _DEFAULT_LINT_DEBT_RULES)
 
 _DEFAULT_TEST_AMBIENT_PATTERNS = ""
-TEST_AMBIENT_PATTERNS = tuple(
-    p.strip() for p in
-    os.environ.get("PIPELINE_TEST_AMBIENT_PATTERNS", _DEFAULT_TEST_AMBIENT_PATTERNS).split(";")
-    if p.strip()
-)
+TEST_AMBIENT_PATTERNS = _yaml_list(_pipeline.get("test_ambient_patterns"), _DEFAULT_TEST_AMBIENT_PATTERNS)
 
 # --- Test suites (repo-agnostic test gate) ---------------------------------
 # Read directly from the top-level `test_suites:` key in monkeforge.yaml

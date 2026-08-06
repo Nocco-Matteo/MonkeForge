@@ -44,7 +44,7 @@ PIPELINE_LOG = C.METRICS / "pipeline.log"
 # milestones— only what a human must act on (DEFAULT: the safe direction is
 #             not to flood a phone with step_start/step_end noise)
 # all       — every step boundary too (debug opt-in: you asked to see each one)
-NOTIFY_LEVEL = os.environ.get("PIPELINE_NOTIFY_LEVEL", "milestones").lower()
+NOTIFY_LEVEL = C.NOTIFY_LEVEL
 
 # Events that always push, whatever the level (except `silent`): either the run
 # needs a human, or it has stopped being a run. ``agent_start`` / ``agent_end``

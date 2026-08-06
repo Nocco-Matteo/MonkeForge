@@ -27,23 +27,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import config as C
-
-# Load .env from MonkeForge root so the daemon works standalone.
-_MF_ROOT = Path(__file__).resolve().parents[1]
-_env = _MF_ROOT / ".env"
-if _env.exists():
-    for _line in _env.read_text().splitlines():
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _, _v = _line.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip())
+from .discord_config import resolve_discord_webhook
 
 # --- Config ---------------------------------------------------------------
+# Product knobs read directly from config.py (§3e) — no .env loading, no
+# PIPELINE_* env reads. The daemon works standalone because config.py loads
+# monkeforge.yaml at import time.
 
-RATE = int(os.environ.get("PIPELINE_NOTIFY_RATE", "30"))
-WINDOW = int(os.environ.get("PIPELINE_NOTIFY_WINDOW", "60"))
-SOCKET_PATH = Path(os.environ.get(
-    "PIPELINE_NOTIFY_SOCKET") or (C.METRICS / "notify.sock"))
+RATE = C.NOTIFY_RATE
+WINDOW = C.NOTIFY_WINDOW
+SOCKET_PATH = Path(C.NOTIFY_SOCKET)
 QUEUE_FILE = C.METRICS / "notify.queue.json"
 SPOOL_DIR = C.METRICS / "notify.spool"
 HEARTBEAT_FILE = C.METRICS / "notify.heartbeat"
@@ -53,14 +46,10 @@ PRIO_ORDER = {"urgent": 0, "high": 1, "default": 2, "low": 3}
 PRIO_COLOR = {"urgent": 0xE74C3C, "high": 0xFF8C00,
               "low": 0x008000, "default": 0x7289DA}
 
-WEBHOOK = os.environ.get("DISCORD_WEBHOOK", "")
-if not WEBHOOK:
-    _wh_file = C.REPO / ".discord-webhook"
-    if _wh_file.exists():
-        WEBHOOK = _wh_file.read_text().strip()
+WEBHOOK = resolve_discord_webhook()
 
-BOT_NAME = os.environ.get("DISCORD_BOT_NAME", "MonkeForge Pipeline")
-BOT_AVATAR = os.environ.get("DISCORD_BOT_AVATAR", "")
+BOT_NAME = C.BOT_NAME
+BOT_AVATAR = C.BOT_AVATAR
 
 # --- Per-agent Discord identity -------------------------------------------
 # Each agent role gets its own bot name and avatar when posting to Discord.

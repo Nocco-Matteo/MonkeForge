@@ -741,7 +741,7 @@ def run_repo_tests_detailed(task_id: str = "?") -> tuple[int, set[str], str, int
     """
     if not _suites_resolved:
         resolve_test_suites(task_id=task_id)
-    timeout = int(os.environ.get("PIPELINE_TEST_TIMEOUT", "900"))
+    timeout = C.TEST_TIMEOUT
 
     all_failures: set[str] = set()
     summaries: list[str] = []

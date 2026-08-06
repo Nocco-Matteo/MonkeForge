@@ -824,8 +824,8 @@ def debate_ux(state):
     # call" state before a retry can succeed — an immediate re-call hits the
     # same error (observed on task-008: two identical 137-byte failures 7s
     # apart, while a 74s gap on the earlier run produced a 1319-byte review).
-    UX_REVIEW_RETRIES = int(os.environ.get("PIPELINE_UX_REVIEW_RETRIES", "3"))
-    UX_RETRY_BACKOFF_S = int(os.environ.get("PIPELINE_UX_REVIEW_BACKOFF_S", "10"))
+    UX_REVIEW_RETRIES = C.UX_REVIEW_RETRIES
+    UX_RETRY_BACKOFF_S = C.UX_REVIEW_BACKOFF_S
     review, verdict = "", "UNKNOWN"
     for attempt in range(UX_REVIEW_RETRIES):
         step = f"debate-r{rnd}-ux" + (f"-retry{attempt}" if attempt else "")

@@ -258,7 +258,7 @@ def queue_scope(state):
 
 FINAL_FIX_ATTEMPTS = 2
 FINAL_FIX_MAX_FAILURES_PER_ATTEMPT = 5
-FINAL_FIX_TIMEOUT = int(os.environ.get("PIPELINE_FINAL_FIX_TIMEOUT", "600")) or None
+FINAL_FIX_TIMEOUT = C.FINAL_FIX_TIMEOUT
 
 
 def _final_test_fix_loop(conv: "Conversation", db_ok: bool, baseline: set[str]) -> dict:

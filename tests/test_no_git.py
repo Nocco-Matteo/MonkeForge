@@ -23,15 +23,15 @@ def _commits(repo: Path) -> list[str]:
 
 
 class NoGitFlag(unittest.TestCase):
-    def test_flag_reads_env(self):
+    def test_flag_is_bool(self):
+        # NO_GIT is set at import time from yaml pipeline.no_git.
+        self.assertIsInstance(C.NO_GIT, bool)
+
+    def test_stale_env_ignored(self):
+        # A stale PIPELINE_NO_GIT in the shell must NOT enable no-git (§3c).
+        # NO_GIT is read from yaml at import time; env has no effect.
         with patch.dict("os.environ", {"PIPELINE_NO_GIT": "1"}):
-            import importlib
-            m = importlib.reload(C)
-            try:
-                self.assertTrue(m.NO_GIT)
-            finally:
-                import importlib as il
-                il.reload(C)
+            self.assertFalse(C.NO_GIT)
 
     def test_no_git_and_dry_run_are_independent(self):
         # DRY_RUN stubs agents; NO_GIT does not. They must be separate switches.

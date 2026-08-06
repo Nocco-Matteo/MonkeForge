@@ -208,26 +208,27 @@ class TestBranchPrefix(unittest.TestCase):
             os.environ["PIPELINE_WT_YAML"] = str(Path(td) / "none.yaml")
             self.assertEqual(wt.resolve_branch_prefix(), "feature/task-")
 
-    def test_yaml_win_when_env_unset(self):
-        with tempfile.TemporaryDirectory() as td:
-            os.environ["PIPELINE_WT_YAML"] = str(_write_yaml(
-                Path(td) / "y.yaml", "pipeline:\n  branch_prefix: 'task/'\n"))
-            self.assertEqual(wt.resolve_branch_prefix(), "task/")
-
-    def test_env_wins_over_yaml(self):
+    def test_yaml_wins_regardless_of_env(self):
+        # §3c correction: stale PIPELINE_BRANCH_PREFIX env is IGNORED — yaml wins.
         with tempfile.TemporaryDirectory() as td:
             os.environ["PIPELINE_WT_YAML"] = str(_write_yaml(
                 Path(td) / "y.yaml", "pipeline:\n  branch_prefix: 'task/'\n"))
             os.environ["PIPELINE_BRANCH_PREFIX"] = "feat/"
-            self.assertEqual(wt.resolve_branch_prefix(), "feat/")
+            self.assertEqual(wt.resolve_branch_prefix(), "task/")
 
-    def test_empty_env_wins_over_yaml(self):
-        # Explicitly-empty env value preserved as "" (setdefault-faithful).
+    def test_yaml_wins_when_env_empty(self):
+        # Empty env is also ignored — yaml wins.
         with tempfile.TemporaryDirectory() as td:
             os.environ["PIPELINE_WT_YAML"] = str(_write_yaml(
                 Path(td) / "y.yaml", "pipeline:\n  branch_prefix: 'task/'\n"))
             os.environ["PIPELINE_BRANCH_PREFIX"] = ""
-            self.assertEqual(wt.resolve_branch_prefix(), "")
+            self.assertEqual(wt.resolve_branch_prefix(), "task/")
+
+    def test_yaml_wins_when_env_unset(self):
+        with tempfile.TemporaryDirectory() as td:
+            os.environ["PIPELINE_WT_YAML"] = str(_write_yaml(
+                Path(td) / "y.yaml", "pipeline:\n  branch_prefix: 'task/'\n"))
+            self.assertEqual(wt.resolve_branch_prefix(), "task/")
 
 
 class TestHelpAndTargetResolution(unittest.TestCase):
@@ -682,6 +683,8 @@ class TestDbNote(unittest.TestCase):
     def test_db_note_tracks_e2e_port(self):
         # Construct config + common with a NON-default port so the note is
         # observably derived from C.E2E_DB_PORT (not a hardcoded :5433).
+        # PIPELINE_E2E_DB_PORT is allowlisted §3b (env wins over yaml).
+        from tests._yaml_fixture import _write_baseline_yaml
         saved_env = os.environ.copy()
         saved_modules = sys.modules.copy()
         for _m in [m for m in sys.modules if m.startswith("pipeline_graph")]:
@@ -689,7 +692,10 @@ class TestDbNote(unittest.TestCase):
         os.environ.clear()
         os.environ["PIPELINE_REPO"] = str(Path(__file__).resolve().parents[1])
         os.environ["PIPELINE_E2E_DB_PORT"] = "5435"
+        _td = tempfile.TemporaryDirectory()
         try:
+            _write_baseline_yaml(Path(_td.name) / "monkeforge.yaml")
+            os.environ["PIPELINE_WT_YAML"] = str(Path(_td.name) / "monkeforge.yaml")
             from pipeline_graph import config as C2
             from pipeline_graph.nodes import common as common2
             self.assertEqual(C2.E2E_DB_PORT, 5435)
@@ -698,6 +704,7 @@ class TestDbNote(unittest.TestCase):
             self.assertIn(":5435", common2.DB_DOWN_NOTE)
             self.assertNotIn(":5433", common2.DB_DOWN_NOTE)
         finally:
+            _td.cleanup()
             os.environ.clear()
             os.environ.update(saved_env)
             for _m in [m for m in sys.modules if m.startswith("pipeline_graph")]:

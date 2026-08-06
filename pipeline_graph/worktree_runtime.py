@@ -103,8 +103,7 @@ def pool_port(id_: str) -> int:
 
 
 def resolve_branch_prefix(yaml_data: dict | None = None) -> str:
-    if "PIPELINE_BRANCH_PREFIX" in os.environ:
-        return os.environ["PIPELINE_BRANCH_PREFIX"]
+    # yaml-only (§3c correction): stale PIPELINE_BRANCH_PREFIX env is ignored.
     pl = _pipeline_dict(yaml_data)
     if "branch_prefix" in pl:
         return _envstr(pl["branch_prefix"])
@@ -547,8 +546,10 @@ def _check_yaml_docs_dir_absent() -> None:
     if "docs_dir" in pl:
         _fail(
             "monkeforge.yaml has pipeline.docs_dir — isolation requires it "
-            "absent (popping PIPELINE_DOCS_DIR from child_env loses to the "
-            "child run.py's _load_yaml_to_env os.environ.setdefault)"
+            "absent (the isolated child pops PIPELINE_DOCS_DIR from its env so "
+            "config.py falls back to the per-worktree docs/<wt-slug>/ dir; a "
+            "yaml docs_dir would override that fallback and point every "
+            "isolated run at the same shared docs tree)"
         )
 
 

@@ -11,7 +11,25 @@ from pathlib import Path
 from . import config as C, events as ev
 from .state import Conversation
 
-HEARTBEAT_EVERY_S = int(os.environ.get("PIPELINE_HEARTBEAT_INTERVAL_S", "10"))
+HEARTBEAT_EVERY_S = C.HEARTBEAT_INTERVAL_S
+
+
+def tool_env_from_yaml() -> dict[str, str]:
+    """The env passed to agent subprocesses (§3e per-spawn env hygiene).
+
+    Starts from ``os.environ.copy()`` and POPS every ``PIPELINE_*`` key that is
+    NOT in ``C._ALLOWLIST_ENV``. Product knobs now live in yaml and are read at
+    config import time; a stale ``PIPELINE_MAX_DEBATE_ROUNDS`` etc. in the
+    parent shell must not leak into the agent subprocess and silently override
+    the yaml value the operator intended. Allowlisted runtime/secret env
+    (``PIPELINE_REPO``, ``PIPELINE_DOCS_DIR``, ``PIPELINE_DRY_RUN``, …) is kept
+    so the child still knows which repo/docs to target and whether to dry-run.
+    """
+    env = os.environ.copy()
+    for k in list(env):
+        if k.startswith("PIPELINE_") and k not in C._ALLOWLIST_ENV:
+            env.pop(k, None)
+    return env
 
 # Exit code when an isolated agent writes onto MF_ROOT (outside PIPELINE_REPO).
 WRITE_ESCAPE_EXIT = 78
@@ -93,15 +111,17 @@ def _sanitize_prompt_paths(text: str) -> str:
 
 
 def _agent_env() -> dict[str, str]:
-    """Env for an agent spawn, with ``PWD`` agreeing with ``cwd=C.REPO``.
+    """Env for an agent spawn: §3e env hygiene, plus ``PWD`` agreeing with cwd.
 
+    Builds on ``tool_env_from_yaml`` (which drops non-allowlisted ``PIPELINE_*``
+    so a stale shell value cannot override the yaml) and then fixes ``PWD``.
     ``Popen(cwd=…)`` sets the real working directory but leaves ``PWD``
     inherited from the orchestrator, which runs in MF_ROOT. An agent CLI that
     roots its workspace on ``$PWD`` instead of ``getcwd()`` then edits the
     orchestrator checkout while cwd is correctly the worktree — how TASK-032's
     batch 1 landed on MF_ROOT with ``PIPELINE_REPO`` set right the whole time.
     """
-    env = os.environ.copy()
+    env = tool_env_from_yaml()
     env["PWD"] = str(Path(C.REPO).resolve())
     env.pop("OLDPWD", None)
     return env
@@ -128,9 +148,9 @@ def _mf_root_escape_watch_enabled() -> bool:
 # These agents fail IN-BAND: they exit 0 and put the error in stdout (gemini's
 # "empty response or malformed tool call" is the recurring one). Exit code is
 # useless as a health signal, so we read the output text instead.
-MIN_OUTPUT_BYTES = int(os.environ.get("PIPELINE_MIN_OUTPUT_BYTES", "40"))
-MAX_TRANSIENT_RETRIES = int(os.environ.get("PIPELINE_AGENT_TRANSIENT_RETRIES", "1"))
-TRANSIENT_BACKOFF_S = int(os.environ.get("PIPELINE_AGENT_BACKOFF_S", "8"))
+MIN_OUTPUT_BYTES = C.MIN_OUTPUT_BYTES
+MAX_TRANSIENT_RETRIES = C.AGENT_TRANSIENT_RETRIES
+TRANSIENT_BACKOFF_S = C.AGENT_BACKOFF_S
 
 # Infrastructure hiccups worth an automatic retry with backoff.
 TRANSIENT_SIGNATURES = (

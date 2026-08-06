@@ -1,5 +1,6 @@
-"""Bot configuration, from .env (same file the pipeline uses) or the
-environment. Keeps the bot self-contained and standalone.
+"""Bot configuration. Reads Discord secrets via the shared resolver
+(``pipeline_graph.discord_config``) and product knobs from ``pipeline_graph.config``.
+Keeps the bot self-contained and standalone.
 """
 from __future__ import annotations
 
@@ -10,15 +11,6 @@ from pathlib import Path
 # MonkeForge root: bot/config.py -> bot/ -> MonkeForge/
 MF_ROOT = Path(__file__).resolve().parents[1]
 RUN_PY = MF_ROOT / "run.py"
-
-# Load .env from MonkeForge root, without overriding a real environment.
-_env = MF_ROOT / ".env"
-if _env.exists():
-    for _line in _env.read_text().splitlines():
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _, _v = _line.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip())
 
 # Target repo: same rules as run.py, non-interactive (bot cannot prompt).
 # Precedence: PIPELINE_REPO env > single yaml repos: entry.
@@ -38,6 +30,9 @@ except RepoSelectError as exc:
     print(exc.cli_message(), file=sys.stderr)
     raise SystemExit(2) from None
 
+from pipeline_graph import config as C  # noqa: E402
+from pipeline_graph.discord_config import discord_secrets  # noqa: E402
+
 # Per-repo docs: MonkeForge/docs/<repo-name>/metrics/...
 _repo_slug = REPO.name
 DOCS = Path(os.environ.get("PIPELINE_DOCS_DIR") or (MF_ROOT / "docs" / _repo_slug))
@@ -45,25 +40,26 @@ EVENTS_LOG = DOCS / "metrics" / "events.jsonl"
 STATE_FILE = DOCS / "metrics" / ".discord-bot-offset"
 
 
-def _int(name: str) -> int | None:
-    v = os.environ.get(name, "").strip()
-    return int(v) if v.isdigit() else None
+def _int(s: str) -> int | None:
+    s = s.strip()
+    return int(s) if s.isdigit() else None
 
 
 # A GATEWAY bot token — NOT the webhook URL. Create a bot application at
 # https://discord.com/developers, invite it to your server, put the token here.
-BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+_secrets = discord_secrets()
+BOT_TOKEN = _secrets["bot_token"]
 # Channel the bot posts escalations into (right-click channel → Copy ID).
-CHANNEL_ID = _int("DISCORD_CHANNEL_ID")
+CHANNEL_ID = _int(_secrets["channel_id"])
 # Only these Discord user IDs may press buttons / run commands. Comma-separated.
 ALLOWED_USER_IDS = {
-    int(x) for x in os.environ.get("DISCORD_ALLOWED_USER_IDS", "").split(",")
+    int(x) for x in _secrets["allowed_user_ids"].split(",")
     if x.strip().isdigit()
 }
 
-POLL_SECONDS = int(os.environ.get("DISCORD_BOT_POLL_SECONDS", "5"))
+POLL_SECONDS = C.BOT_POLL_SECONDS
 # run.py resume can take minutes (it drives the graph to the next pause); cap it.
-RESUME_TIMEOUT = int(os.environ.get("DISCORD_BOT_RESUME_TIMEOUT", "3600"))
+RESUME_TIMEOUT = C.BOT_RESUME_TIMEOUT
 
 
 def problems() -> list[str]:

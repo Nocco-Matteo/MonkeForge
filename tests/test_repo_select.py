@@ -162,6 +162,49 @@ repos:
             )
         assert "not a git repo" in ei.value.cli_message()
 
+    def test_pipeline_repo_scalar_fallback(self, mf_root, monkeypatch):
+        # pipeline.repo scalar is the last-resort fallback when no --repo,
+        # no PIPELINE_REPO env, and no repos: list.
+        monkeypatch.delenv("PIPELINE_REPO", raising=False)
+        target = _git_repo(mf_root / "myapp")
+        y = _write_yaml(mf_root, f"""
+pipeline:
+  repo: {target}
+""")
+        got = RS.ensure_pipeline_repo(
+            yaml_path=y, mf_root=mf_root, interactive=False,
+        )
+        assert got == target.resolve()
+
+    def test_pipeline_repo_relative_to_mf_root(self, mf_root, monkeypatch):
+        monkeypatch.delenv("PIPELINE_REPO", raising=False)
+        target = _git_repo(mf_root / "relapp")
+        y = _write_yaml(mf_root, """
+pipeline:
+  repo: relapp
+""")
+        got = RS.ensure_pipeline_repo(
+            yaml_path=y, mf_root=mf_root, interactive=False,
+        )
+        assert got == target.resolve()
+
+    def test_repos_list_wins_over_pipeline_repo(self, mf_root, monkeypatch):
+        # repos: list takes precedence over pipeline.repo scalar.
+        monkeypatch.delenv("PIPELINE_REPO", raising=False)
+        a = _git_repo(mf_root / "apps" / "a")
+        _git_repo(mf_root / "apps" / "b")
+        y = _write_yaml(mf_root, """
+repos:
+  - path: apps/a
+    label: aaa
+pipeline:
+  repo: apps/b
+""")
+        got = RS.ensure_pipeline_repo(
+            yaml_path=y, mf_root=mf_root, interactive=False,
+        )
+        assert got == a.resolve()
+
 
 class TestEarlyFlag:
     def test_parse(self):

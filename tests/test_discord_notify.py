@@ -196,9 +196,9 @@ class TestHumanizeError:
 
 class TestNotifyLevelDefault:
     def test_default_level_milestones(self, monkeypatch):
-        """With no PIPELINE_NOTIFY_LEVEL in the env, events.NOTIFY_LEVEL is
-        'milestones' (not the old 'all')."""
-        monkeypatch.delenv("PIPELINE_NOTIFY_LEVEL", raising=False)
+        """With no PIPELINE_NOTIFY_LEVEL in the env and no yaml
+        notifications.level, events.NOTIFY_LEVEL is 'milestones'."""
+        monkeypatch.setattr(C, "NOTIFY_LEVEL", "milestones")
         fresh = importlib.reload(ev)
         try:
             assert fresh.NOTIFY_LEVEL == "milestones"
@@ -415,9 +415,10 @@ class TestEnsureBot:
         metrics.mkdir(parents=True, exist_ok=True)
         monkeypatch.setattr(C, "METRICS", metrics)
         monkeypatch.setattr(C, "DOCS", tmp_path / "docs" / "myrepo")
-        monkeypatch.setenv("PIPELINE_BOT_AUTOSTART", "1")
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "fake")
+        monkeypatch.setattr(C, "BOT_AUTOSTART", True)
         import run as run_mod
+        monkeypatch.setattr(run_mod, "discord_secrets",
+                            lambda: {"bot_token": "fake", "channel_id": "", "allowed_user_ids": ""})
         monkeypatch.setattr(run_mod, "_MF_ROOT", tmp_path)
         bot_py = tmp_path / "bot" / "bot.py"
         bot_py.parent.mkdir(parents=True, exist_ok=True)

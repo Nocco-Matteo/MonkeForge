@@ -168,52 +168,58 @@ class TestStuckClaims(unittest.TestCase):
 
 
 class TestDebateStuckRoundsConfig(unittest.TestCase):
-    """The config clamps are import-time — test via module reload with env."""
+    """The config clamps are import-time — test via module reload with yaml."""
 
     @staticmethod
-    def _with_env(env: dict[str, str | None]):
-        """Context manager: set env vars, reload C, restore env + C on exit."""
-        import os
+    def _with_yaml(pipeline: dict | None = None):
+        """Context manager: write a yaml fixture with the given pipeline: dict,
+        set PIPELINE_WT_YAML, reload C, restore on exit."""
+        import os, tempfile, yaml as _yaml
         from contextlib import contextmanager
+        from pathlib import Path
+        from tests._yaml_fixture import _baseline_yaml
 
         @contextmanager
         def _cm():
-            saved = {k: os.environ.get(k) for k in env}
+            saved_wt = os.environ.get("PIPELINE_WT_YAML")
+            td = tempfile.TemporaryDirectory()
             try:
-                for k, v in env.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
+                ypath = Path(td.name) / "monkeforge.yaml"
+                data = _baseline_yaml()
+                if pipeline is not None:
+                    dumped = _yaml.dump(pipeline, default_flow_style=False, indent=2)
+                    data += "\npipeline:\n" + "\n".join("  " + l for l in dumped.splitlines()) + "\n"
+                ypath.write_text(data)
+                os.environ["PIPELINE_WT_YAML"] = str(ypath)
                 importlib.reload(C)
                 yield
             finally:
-                for k, v in saved.items():
-                    if v is None:
-                        os.environ.pop(k, None)
-                    else:
-                        os.environ[k] = v
+                if saved_wt is not None:
+                    os.environ["PIPELINE_WT_YAML"] = saved_wt
+                else:
+                    os.environ.pop("PIPELINE_WT_YAML", None)
+                td.cleanup()
                 importlib.reload(C)
 
         return _cm()
 
     def test_default_is_2(self):
-        # Without the env var, the default is 2.
-        with self._with_env({"PIPELINE_DEBATE_STUCK_ROUNDS": None}):
+        # Without the yaml key, the default is 2.
+        with self._with_yaml():
             self.assertEqual(C.DEBATE_STUCK_ROUNDS, 2)
 
     def test_non_integer_falls_back_to_default(self):
         # Item 5: try/except fallback on parse failure.
-        with self._with_env({"PIPELINE_DEBATE_STUCK_ROUNDS": "not-a-number"}):
+        with self._with_yaml({"debate_stuck_rounds": "not-a-number"}):
             self.assertEqual(C.DEBATE_STUCK_ROUNDS, 2)
 
     def test_below_1_clamps_to_1(self):
         # Item 6: clamps to minimum 1 with a stderr warning.
-        with self._with_env({"PIPELINE_DEBATE_STUCK_ROUNDS": "0"}):
+        with self._with_yaml({"debate_stuck_rounds": 0}):
             self.assertEqual(C.DEBATE_STUCK_ROUNDS, 1)
 
     def test_negative_clamps_to_1(self):
-        with self._with_env({"PIPELINE_DEBATE_STUCK_ROUNDS": "-3"}):
+        with self._with_yaml({"debate_stuck_rounds": -3}):
             self.assertEqual(C.DEBATE_STUCK_ROUNDS, 1)
 
     def test_clamps_to_condenser_keep_recent_when_smaller(self):
