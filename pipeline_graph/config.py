@@ -210,8 +210,16 @@ def build_role_config(
 
 
 # For agents: and condenser:, the yaml is the only source (no env bridge).
-_yaml_file = MF_ROOT / "monkeforge.yaml"
+# PIPELINE_WT_YAML selects the orchestrator yaml when the imported package
+# lives in a product worktree (self-host gates): never require monkeforge.yaml
+# inside wt-task-* — that file is operator config for MonkeForge, not product.
+_yaml_override = (os.environ.get("PIPELINE_WT_YAML") or "").strip()
+_yaml_file = Path(_yaml_override).expanduser() if _yaml_override else (MF_ROOT / "monkeforge.yaml")
 _example_yaml = MF_ROOT / "monkeforge.example.yaml"
+if _yaml_override:
+    _ex_beside = _yaml_file.parent / "monkeforge.example.yaml"
+    if _ex_beside.exists():
+        _example_yaml = _ex_beside
 _yaml_root: dict = {}
 if _yaml_file.exists():
     import yaml as _yaml
@@ -221,7 +229,7 @@ if _yaml_file.exists():
 
 ROLE_CONFIG: dict[str, dict[str, str]] = build_role_config(
     _yaml_root.get("agents"),
-    yaml_path=_yaml_file if _yaml_file.exists() else MF_ROOT / "monkeforge.yaml",
+    yaml_path=_yaml_file,
     example_path=_example_yaml,
 )
 

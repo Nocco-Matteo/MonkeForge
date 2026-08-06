@@ -22,7 +22,15 @@ from pathlib import Path
 #   test_suites: gate suite list; repos: target list (see repo_select.py).
 #   pipeline.repo is still bridged to PIPELINE_REPO (single-repo shorthand).
 _MF_ROOT = Path(__file__).resolve().parent
-_yaml_file = _MF_ROOT / "monkeforge.yaml"
+# PIPELINE_WT_YAML: orchestrator yaml override (worktree boot). The config
+# module reads this same env to find its yaml, so run.py must agree.
+_yaml_override = (os.environ.get("PIPELINE_WT_YAML") or "").strip()
+_yaml_file = (
+    Path(_yaml_override).expanduser() if _yaml_override
+    else (_MF_ROOT / "monkeforge.yaml")
+)
+if not _yaml_file.is_absolute():
+    _yaml_file = (_MF_ROOT / _yaml_file).resolve()
 _env_file = _MF_ROOT / ".env"
 
 def _envstr(val) -> str:
@@ -267,14 +275,29 @@ NODE_TO_PHASE: dict[str, str] = {
     "escalate":           "",
 }
 
+_PHASE_LABEL: dict[str, str] = {
+    "intake":    "intake",
+    "plan":      "plan",
+    "debate":    "debate",
+    "verdict":   "verdict",
+    "implement": "implement",
+    "visual":    "visual",
+    "final":     "final",
+}
+
+
+def _phase_header(phase: str, task_id: str = "") -> str:
+    """Council-log section header, e.g. ``── 032 · implement ──`` (A/C UX)."""
+    label = _PHASE_LABEL.get(phase, phase)
+    tid = str(task_id or "").strip()
+    if tid:
+        return f"── {tid} · {label} ──"
+    return f"── {label} ──"
+
+
+# Back-compat alias for anything that still indexes the old static map.
 _PHASE_HEADER: dict[str, str] = {
-    "intake":    "── intake ──",
-    "plan":      "── plan ──",
-    "debate":    "── debate ──",
-    "verdict":   "── verdict ──",
-    "implement": "── implement ──",
-    "visual":    "── visual ──",
-    "final":     "── final ──",
+    phase: _phase_header(phase) for phase in _PHASE_LABEL
 }
 
 # --- ANSI colour helpers (D5) ----------------------------------------------
@@ -356,14 +379,143 @@ def _sleep_inhibitor():
 
 
 def _pause_reason(data: dict) -> str:
-    """Return an actionable human summary for a LangGraph interrupt."""
-    reason = str(data.get("reason", "")).strip()
-    if reason:
-        return reason
+    """Return a short actionable headline for a LangGraph interrupt.
+
+    Prefer the structured ``what`` section when the reason was split; fall back
+    to a one-line cleaned summary. Long pytest dumps are never returned raw.
+    """
+    sections = _pause_sections(data)
+    for key in ("what", "what to do"):
+        if key in sections:
+            return sections[key]
     if data.get("stage") == "effort level":
         hint = data.get("hint", "troop-monke")
         return f"choose an effort level (recommended: {hint})"
     return "waiting for a human"
+
+
+def _clean_pause_lines(text: str) -> str:
+    """Strip pytest ``E`` prefixes; keep line breaks (no single-line squash)."""
+    lines: list[str] = []
+    for line in str(text or "").splitlines():
+        s = line.strip()
+        if re.match(r"^E(\s|$)", s) and not s.startswith("error:"):
+            s = re.sub(r"^E\s*", "", s).strip()
+        if s:
+            lines.append(s)
+    return "\n".join(lines)
+
+
+def _flatten_pause_text(text: str, *, limit: int = 1200) -> str:
+    """Single-line cleaned snippet (logs / tty_pick render=True fallback)."""
+    from pipeline_graph.test_runner import _tail
+    return _tail(str(text or ""), limit=limit)
+
+
+_BASELINE_UNMEAS_RE = re.compile(
+    r"^test baseline unmeasurable for batch (?P<batch>\d+)\s*[—\-]\s*"
+    r"(?P<why>.+?)\s*"
+    r"\((?P<detail>.*)\)\.\s*"
+    r"(?P<action>Fix\b.*)?\s*$",
+    re.DOTALL | re.IGNORECASE,
+)
+_SYNTH_DETAIL_RE = re.compile(
+    r"^(?P<summary>.*?),\s*synthetic:\s*(?P<key>.+?)\s*\[(?P<cause>.*)\]\s*$",
+    re.DOTALL,
+)
+
+
+def _pause_sections(data: dict) -> dict[str, str]:
+    """Labeled sections for pause chrome (short lines, scannable).
+
+    Keys are display labels (lowercase). Values are plain text — possibly
+    multi-line for ``cause`` only.
+    """
+    raw = str(data.get("reason", "")).strip()
+    out: dict[str, str] = {}
+
+    if not raw:
+        if data.get("stage") == "effort level":
+            hint = data.get("hint", "troop-monke")
+            out["what"] = f"choose an effort level (recommended: {hint})"
+            return out
+        out["what"] = "waiting for a human"
+        return out
+
+    cleaned = _clean_pause_lines(raw)
+    m = _BASELINE_UNMEAS_RE.match(cleaned.replace("\n", " "))
+    if not m:
+        # Retry on original with newlines flattened only for matching.
+        m = _BASELINE_UNMEAS_RE.match(re.sub(r"\s+", " ", cleaned))
+    if m:
+        batch = m.group("batch")
+        why = m.group("why").strip().rstrip(".")
+        detail = m.group("detail").strip()
+        action = (m.group("action") or "").strip()
+        out["what"] = f"test baseline unmeasurable for batch {batch}"
+        out["why"] = why
+        sm = _SYNTH_DETAIL_RE.match(detail)
+        if sm:
+            summary = sm.group("summary").strip()
+            key = sm.group("key").strip()
+            cause_raw = sm.group("cause").strip()
+            if summary:
+                out["detail"] = summary
+            out["synthetic"] = key
+            cause_clean = _clean_pause_lines(cause_raw)
+            cause = ""
+            if re.search(r"(?i)\berror:", cause_clean):
+                cause = _flatten_pause_text(cause_clean, limit=280)
+                cut = re.search(
+                    r"^(error:\s.+?(?:`agents:`\s+)?(?:block|incomplete)[^.]*\.?)",
+                    cause,
+                    re.IGNORECASE,
+                )
+                if cut:
+                    cause = cut.group(1).rstrip(".") + "."
+                else:
+                    head, _, _rest = cause.partition(". ")
+                    cause = head if head.endswith(".") else head + "."
+            else:
+                # Frozen/truncated tails ("ole needs BOTH…") are noise — prefer
+                # an explicit Fix: line, else omit cause (action still shows).
+                fix = re.search(r"(?is)\bFix:\s*(.+)$", cause_clean)
+                if fix:
+                    cause = "Fix: " + re.sub(r"\s+", " ", fix.group(1)).strip()
+                    if len(cause) > 200:
+                        cause = cause[:197] + "…"
+            if cause:
+                # Avoid duplicating the outer ``action: Fix test config…`` row.
+                if not (action and cause.lower().startswith("fix:")):
+                    out["cause"] = cause
+        else:
+            out["detail"] = _flatten_pause_text(detail, limit=400)
+        if action:
+            out["action"] = action
+        return out
+
+    # Generic long reason: first sentence = what; remainder = detail.
+    flat = re.sub(r"\s+", " ", cleaned).strip()
+    if len(flat) <= 160:
+        out["what"] = flat
+        return out
+    # Split on em-dash or period+space near the start.
+    for sep in (" — ", " - ", ". "):
+        if sep in flat[:200]:
+            head, rest = flat.split(sep, 1)
+            out["what"] = head.strip()
+            out["detail"] = (rest if sep != ". " else rest).strip()
+            if sep == ". " and out["detail"] and not out["detail"].endswith("."):
+                # keep readable
+                pass
+            if len(out["detail"]) > 500:
+                out["detail"] = _flatten_pause_text(out["detail"], limit=500)
+            return out
+    out["what"] = flat[:157] + "…"
+    out["detail"] = flat[157:]
+    if len(out["detail"]) > 500:
+        out["detail"] = _flatten_pause_text(out["detail"], limit=500)
+    return out
 
 
 def _pause_answers(data: dict) -> dict | list:
@@ -449,9 +601,15 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False,
     sys.stderr.write(f"\n{_c('=== PAUSED:', 'bold', color=color)} "
                      f"{_c(stage, 'cyan', color=color)} "
                      f"{_c('===', 'bold', color=color)}\n")
-    sys.stderr.write(
-        f"  {_c('what to do:', 'dim', color=color)} "
-        f"{_sanitize_text(_pause_reason(data), color=color, tty=tty)}\n")
+    sections = _pause_sections(data)
+    for label, value in sections.items():
+        lines = str(value).splitlines() or [""]
+        sys.stderr.write(
+            f"  {_c(f'{label}:', 'dim', color=color)} "
+            f"{_sanitize_text(lines[0], color=color, tty=tty)}\n")
+        for line in lines[1:]:
+            sys.stderr.write(
+                f"    {_sanitize_text(line, color=color, tty=tty)}\n")
     if data.get("context"):
         sys.stderr.write(
             f"  {_c('context:', 'dim', color=color)} "
@@ -502,7 +660,10 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False,
                 parts.append(rationale)
             sys.stderr.write(f"    {_sanitize_text(' · '.join(parts), color=color, tty=tty)}\n")
     options = _options_from_data(data)
-    if options:
+    arrow = bool(in_session and options and _can_arrow_pick())
+    if options and not arrow:
+        # Static list for non-TTY / resume chrome. In-session arrow mode
+        # draws a navigable menu in ``_tty_pick`` instead (no double list).
         sys.stderr.write(f"  {_c('choices:', 'dim', color=color)}\n")
         hint = data.get("hint")
         for opt in options:
@@ -513,8 +674,12 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False,
             sys.stderr.write(
                 f"    {_c(key, 'cyan', color=color)}{marker} — {label}\n")
     if in_session:
-        sys.stderr.write(
-            f"  {_c('pick an option above (or type a key) and press Enter:', 'dim', color=color)}\n")
+        if arrow:
+            sys.stderr.write(
+                f"  {_c('pick an option with ↑/↓ + Enter:', 'dim', color=color)}\n")
+        else:
+            sys.stderr.write(
+                f"  {_c('pick an option above (or type a key) and press Enter:', 'dim', color=color)}\n")
         sys.stderr.write(
             f"  {_c('Discord buttons also work — they answer this pause in-place.', 'dim', color=color)}\n")
     else:
@@ -524,64 +689,96 @@ def _print_pause(data: dict, task_id: str, *, color: bool = False,
 
 
 def _print_pause_rich(data: dict, task_id: str, *, in_session: bool = False) -> None:
-    """Rich-rendered pause (TASK-027 item 27). Every human-facing field is
-    wrapped in ``Text(...)`` (or passed through ``rich.markup.escape``) before
-    being placed into a ``Panel``/``Table`` so markup characters in the fields
-    are escaped. Output goes to stderr via a stderr-backed console (C1)."""
+    """Rich-rendered pause (TASK-027 item 27).
+
+    Uses a capped-width Panel + label/value table (same pattern as status) so
+    long escalation reasons stay scannable instead of one full-bleed paragraph.
+    """
+    from rich import box as _box
+
     console = Console(stderr=True, no_color=False)
-    stage = Text(str(data.get("stage", "")))
-    reason = Text(_pause_reason(data))
-    title = Text("=== PAUSED: ") + stage + Text(" ===")
-    body_lines: list[Text] = []
-    body_lines.append(Text("what to do: ") + reason)
+    panel_w = min(max(int(console.width), 60), 88)
+    stage = str(data.get("stage", "") or "paused")
+
+    kv = Table(
+        show_header=False,
+        box=None,
+        padding=(0, 1),
+        pad_edge=False,
+        collapse_padding=True,
+    )
+    kv.add_column(style="dim", no_wrap=True, justify="right")
+    kv.add_column(overflow="fold")
+
+    def _row(label: str, value: object) -> None:
+        if value is None or value == "":
+            return
+        kv.add_row(label, value if isinstance(value, Text) else str(value))
+
+    for label, value in _pause_sections(data).items():
+        _row(label, value)
     if data.get("context"):
-        body_lines.append(Text("context: ") + Text(str(data["context"])))
+        _row("context", str(data["context"]))
     if data.get("plan"):
-        body_lines.append(Text("plan: ") + Text(str(data["plan"])))
+        _row("plan", str(data["plan"]))
     if data.get("final"):
-        body_lines.append(Text("final: ") + Text(str(data["final"])))
+        _row("final", str(data["final"]))
     batches = data.get("batches")
     if isinstance(batches, list) and batches:
-        body_lines.append(Text("batches:"))
-        for b in batches:
-            body_lines.append(Text("    - ") + Text(str(b)))
+        _row("batches", "\n".join(f"- {b}" for b in batches))
     triage = data.get("triage")
     if isinstance(triage, dict):
-        body_lines.append(Text("triage:"))
-        body_lines.append(Text("    mode: ") + Text(str(triage.get("mode", ""))))
         bc = triage.get("blocker_counts")
-        if isinstance(bc, list) and bc:
-            trend = Text(" → ".join(str(n) for n in bc))
-        else:
-            trend = Text("no active rounds")
-        body_lines.append(Text("    blockers: ") + trend)
+        trend = (" → ".join(str(n) for n in bc)
+                 if isinstance(bc, list) and bc else "no active rounds")
         repeated = triage.get("repeated") or []
         new = triage.get("new") or []
-        body_lines.append(Text(f"    repeated/new: {len(repeated)} / {len(new)}"))
         recommended = str(triage.get("recommended", "") or "").strip()
         rationale = str(triage.get("rationale", "") or "").strip()
+        triage_lines = [
+            f"mode: {triage.get('mode', '')}",
+            f"blockers: {trend}",
+            f"repeated/new: {len(repeated)} / {len(new)}",
+        ]
         if recommended or rationale:
-            parts = []
+            bits = []
             if recommended:
-                parts.append(f"recommended: {recommended}")
+                bits.append(f"recommended: {recommended}")
             if rationale:
-                parts.append(rationale)
-            body_lines.append(Text("    ") + Text(" · ".join(parts)))
+                bits.append(rationale)
+            triage_lines.append(" · ".join(bits))
+        _row("triage", "\n".join(triage_lines))
+
     options = _options_from_data(data)
-    if options:
-        body_lines.append(Text("choices:"))
+    arrow = bool(in_session and options and _can_arrow_pick())
+    if options and not arrow:
         hint = data.get("hint")
+        lines = []
         for opt in options:
-            key = Text(str(opt.get("key", "")))
-            label = Text(str(opt.get("label", "")))
-            marker = Text("  (recommended)") if opt.get("key") == hint else Text("")
-            body_lines.append(Text("    ") + key + marker + Text(" — ") + label)
+            key = str(opt.get("key", ""))
+            label = str(opt.get("label", ""))
+            mark = "  (recommended)" if opt.get("key") == hint else ""
+            lines.append(f"{key}{mark} — {label}")
+        _row("choices", "\n".join(lines))
     if in_session:
-        body_lines.append(Text("pick an option above (or type a key) and press Enter:"))
-        body_lines.append(Text("Discord buttons also work — they answer this pause in-place."))
+        if arrow:
+            _row("next", "pick with ↑/↓ + Enter")
+        else:
+            _row("next", "pick an option above (or type a key) + Enter")
+        _row("discord", "buttons also answer this pause in-place")
     else:
-        body_lines.append(Text(f"action: ./run.py resume {task_id} --answer \"<choice>\""))
-    panel = Panel(Text("\n").join(body_lines), title=title, border_style="cyan")
+        _row("action", f"./run.py resume {task_id} --answer \"<choice>\"")
+
+    panel = Panel(
+        kv,
+        title=f"PAUSED: {stage}",
+        title_align="left",
+        border_style="cyan",
+        box=_box.ROUNDED,
+        expand=False,
+        width=panel_w,
+        padding=(0, 1),
+    )
     console.print(panel)
 
 
@@ -652,6 +849,179 @@ def _validate_answer(answer, options, *, free_text_allowed=False,
             f"(stop, no, abort, cancel)")
 
 
+def _clean_answer(text: str) -> str:
+    """Strip CSI / bare ESC (arrow-key leftovers) then whitespace."""
+    return _strip_ansi(text).strip()
+
+
+def _can_arrow_pick() -> bool:
+    """True when stdin+stderr are real TTYs that support cbreak + cursor motion.
+
+    Fake stdin (StringIO / MagicMock) fails ``fileno``/``tcgetattr`` and
+    correctly falls back to line mode — unit tests stay on readline.
+    """
+    try:
+        if not sys.stdin.isatty() or not sys.stderr.isatty():
+            return False
+    except Exception:
+        return False
+    if os.environ.get("TERM", "") in ("", "dumb"):
+        return False
+    try:
+        import termios
+        fd = sys.stdin.fileno()
+        termios.tcgetattr(fd)
+    except Exception:
+        return False
+    return True
+
+
+def _read_raw_key(fd: int) -> str:
+    """Read one keypress in cbreak mode. Returns UP/DOWN/ENTER/BACKSPACE/EOF/ESC
+    or a decoded printable character (possibly multi-byte UTF-8)."""
+    import select
+
+    ch = os.read(fd, 1)
+    if not ch:
+        return "EOF"
+    if ch == b"\x03":
+        raise KeyboardInterrupt
+    if ch == b"\x04":
+        return "EOF"
+    if ch in (b"\r", b"\n"):
+        return "ENTER"
+    if ch in (b"\x7f", b"\x08"):
+        return "BACKSPACE"
+    if ch == b"\x1b":
+        buf = b""
+        for _ in range(3):
+            ready, _, _ = select.select([fd], [], [], 0.05)
+            if not ready:
+                break
+            buf += os.read(fd, 1)
+            if len(buf) >= 2 and buf[-1:] not in b"[O0123456789;":
+                break
+        if buf[:1] in (b"[", b"O") and buf.endswith(b"A"):
+            return "UP"
+        if buf[:1] in (b"[", b"O") and buf.endswith(b"B"):
+            return "DOWN"
+        return "ESC"
+    # UTF-8 continuation: gather remaining bytes if needed.
+    raw = ch
+    if (ch[0] & 0xE0) == 0xC0:
+        need = 1
+    elif (ch[0] & 0xF0) == 0xE0:
+        need = 2
+    elif (ch[0] & 0xF8) == 0xF0:
+        need = 3
+    else:
+        need = 0
+    for _ in range(need):
+        ready, _, _ = select.select([fd], [], [], 0.05)
+        if not ready:
+            break
+        raw += os.read(fd, 1)
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return ""
+
+
+def _arrow_pick(options: list[dict], data: dict, *, color: bool = False,
+                pending_task_id: str | None = None,
+                eof_raises: bool = False) -> str:
+    """↑/↓ + Enter menu only (no typing). Discord pending answers still win.
+
+    Bare Enter confirms the highlighted row (hint row when set). Ctrl-C /
+    Ctrl-D propagate as ``KeyboardInterrupt`` / ``EOFError`` after the
+    terminal is restored.
+    """
+    import select
+    import termios
+    import tty
+    from pipeline_graph.nodes.common import _canonical_key
+    from pipeline_graph import pending_answer as PA
+
+    hint = str(data.get("hint", "")).strip()
+    idx = 0
+    for i, opt in enumerate(options):
+        if opt.get("key") == hint:
+            idx = i
+            break
+    tty_err = sys.stderr.isatty()
+    n_lines = len(options) + 1  # choices + hint line
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+
+    def _pending() -> str | None:
+        if not pending_task_id:
+            return None
+        return PA.take_pending_answer(pending_task_id)
+
+    taken = _pending()
+    if taken is not None:
+        sys.stderr.write(f"  (answered via Discord: {taken})\n")
+        sys.stderr.flush()
+        return taken
+
+    def _draw(*, first: bool) -> None:
+        if not first:
+            sys.stderr.write(f"\x1b[{n_lines}A")
+        for i, opt in enumerate(options):
+            key = _sanitize_text(opt.get("key", "?"), color=color, tty=tty_err)
+            label = _sanitize_text(opt.get("label", ""), color=color, tty=tty_err)
+            marker = (_c("  (recommended)", "dim", color=color)
+                      if opt.get("key") == hint else "")
+            if i == idx:
+                cursor = _c("❯", "green", color=color)
+                row = (f"\r\x1b[2K  {cursor} {_c(key, 'cyan', color=color)}"
+                       f"{marker} — {label}\n")
+            else:
+                row = (f"\r\x1b[2K    {_c(key, 'cyan', color=color)}"
+                       f"{marker} — {label}\n")
+            sys.stderr.write(row)
+        sys.stderr.write(
+            f"\r\x1b[2K  {_c('↑/↓ move · Enter select', 'dim', color=color)}\n")
+        sys.stderr.flush()
+
+    try:
+        tty.setcbreak(fd)
+        first = True
+        while True:
+            taken = _pending()
+            if taken is not None:
+                sys.stderr.write(f"  (answered via Discord: {taken})\n")
+                sys.stderr.flush()
+                return taken
+            _draw(first=first)
+            first = False
+            timeout = 0.25 if pending_task_id else None
+            ready, _, _ = select.select([fd], [], [], timeout)
+            if not ready:
+                continue
+            key = _read_raw_key(fd)
+            if key == "EOF":
+                if eof_raises:
+                    raise EOFError
+                return _canonical_key(hint) if hint else "ok"
+            if key == "UP":
+                idx = (idx - 1) % len(options)
+                continue
+            if key == "DOWN":
+                idx = (idx + 1) % len(options)
+                continue
+            if key == "ENTER":
+                return _canonical_key(options[idx]["key"])
+            # Ignore typing / ESC / everything else — arrows only.
+            continue
+    except KeyboardInterrupt:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        raise
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
 def _read_answer_line(*, eof_raises: bool = False,
                       pending_task_id: str | None = None) -> str:
     """Read one answer line from stdin and/or a Discord pending-answer file.
@@ -660,6 +1030,9 @@ def _read_answer_line(*, eof_raises: bool = False,
     shared pending-answer file so a Discord button can unblock this process
     without spawning a second ``run.py resume``. Stdin still wins when the
     human types first.
+
+    Returned text is always run through ``_clean_answer`` so leftover CSI
+    sequences from accidental arrow keys never become part of the answer.
     """
     import select
     import time
@@ -671,14 +1044,14 @@ def _read_answer_line(*, eof_raises: bool = False,
         return PA.take_pending_answer(pending_task_id)
 
     def _consume_stdin() -> str | None:
-        """Return stripped line, ``""`` for empty Enter, or raise EOFError."""
+        """Return cleaned line, ``""`` for empty Enter, or raise EOFError."""
         if eof_raises:
             raw = sys.stdin.readline()
             if raw == "":
                 raise EOFError
-            return raw.strip()
+            return _clean_answer(raw)
         try:
-            return sys.stdin.readline().strip()
+            return _clean_answer(sys.stdin.readline())
         except EOFError:
             return ""
 
@@ -731,6 +1104,10 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
     Returns the chosen option's canonical key. Falls back to the hint (or
     ``"ok"``) on an empty line so a bare Enter takes the recommended path.
 
+    On a real TTY with a non-empty option list, uses ↑/↓ + Enter navigation
+    (``_arrow_pick``). Otherwise falls back to classic line input. Typed
+    answers are always cleaned of CSI leftovers via ``_clean_answer``.
+
     TASK-027 items 38-41:
       * ``eof_raises=True`` — when the raw ``sys.stdin.readline()`` returns
         ``""`` (EOF), raise ``EOFError`` BEFORE ``.strip()`` is applied, so the
@@ -744,6 +1121,8 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
         renders the pause chrome via ``_print_pause(..., in_session=True)``
         first and then calls ``_tty_pick(..., render=False, eof_raises=True)``
         to read ONLY the answer line — no double render (item 41 / S5).
+        When arrow-pick is active, the navigable menu is drawn here even with
+        ``render=False`` (``_print_pause`` omits the static choice list).
       * ``pending_task_id`` — when set, also accept a Discord answer written
         to ``pending-answer-{id}.json`` (CLI ↔ Discord synergy).
 
@@ -759,9 +1138,11 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
 
     tty = sys.stderr.isatty()
     hint = str(data.get("hint", "")).strip()
+    arrow = bool(options) and _can_arrow_pick()
+
     if render:
         stage = _sanitize_text(str(data.get("stage", "?")), color=color, tty=tty)
-        reason = _sanitize_text(str(data.get("reason", "")).strip(),
+        reason = _sanitize_text(_flatten_pause_text(str(data.get("reason", "")).strip()),
                                 color=color, tty=tty)
         sys.stderr.write(f"\n{_c('=== PAUSED:', 'bold', color=color)} "
                          f"{_c(stage, 'cyan', color=color)} "
@@ -769,10 +1150,10 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
         if reason:
             sys.stderr.write(f"  {reason}\n")
         if not options:
-            # Free-text pause (plan approval): read a raw line.
+            # Free-text pause: read a raw line.
             sys.stderr.write(
                 f"  {_c('type your answer and press Enter (empty = approve):', 'dim', color=color)}\n")
-        else:
+        elif not arrow:
             sys.stderr.write(f"  {_c('choices:', 'dim', color=color)}\n")
             for i, opt in enumerate(options, 1):
                 key = _sanitize_text(opt.get("key", "?"), color=color, tty=tty)
@@ -793,8 +1174,12 @@ def _tty_pick(options: list[dict], data: dict, *, color: bool = False,
         line = _read_answer_line(eof_raises=eof_raises,
                                  pending_task_id=pending_task_id)
         return line or "ok"
-    line = _read_answer_line(eof_raises=eof_raises,
-                             pending_task_id=pending_task_id)
+    if arrow:
+        return _arrow_pick(options, data, color=color,
+                           pending_task_id=pending_task_id,
+                           eof_raises=eof_raises)
+    line = _clean_answer(_read_answer_line(eof_raises=eof_raises,
+                                           pending_task_id=pending_task_id))
     if not line:
         return _canonical_key(hint) if hint else "ok"
     if line.isdigit() and 1 <= int(line) <= len(options):
@@ -878,6 +1263,7 @@ ui_state: dict = {
     "disabled": False,
     "color": False,
     "tty": False,
+    "task_id": "",
 }
 
 # Drop the instrument's ``[outcome] `` prefix from a return msg in favour of
@@ -896,7 +1282,7 @@ def _finish_progress(*, color: bool, tty: bool) -> None:
     if color:
         sys.stderr.write("\r\x1b[K")
     else:
-        sys.stderr.write("\r" + " " * 80 + "\r")
+        sys.stderr.write("\r" + " " * 96 + "\r")
 
 
 def _emit_dispatch(node: str, *, msg: str, color: bool) -> None:
@@ -917,11 +1303,12 @@ def _emit_dispatch(node: str, *, msg: str, color: bool) -> None:
     phase_changed = bool(phase and phase != ui_state["last_phase"])
     if phase_changed:
         sys.stderr.write("\n")
-        sys.stderr.write(_c(_PHASE_HEADER[phase], "dim", color=color) + "\n")
+        header = _phase_header(phase, str(ui_state.get("task_id") or ""))
+        sys.stderr.write(_c(header, "dim", color=color) + "\n")
         ui_state["last_phase"] = phase
     elif ui_state["last_monke"] and ui_state["last_monke"] != name:
         # Blank line between different monkes inside the same phase (e.g.
-        # Drill → Vervet under ``── implement ──``).
+        # Drill → Vervet under ``── 032 · implement ──``).
         sys.stderr.write("\n")
     body = _sanitize_text(msg, color=color, tty=tty)
     sys.stderr.write(f"  {_c(name, 'cyan', color=color)} · {body}\n")
@@ -1014,11 +1401,17 @@ def _refresh_progress(task_id: str) -> None:
     role = cur.get("role", "")
     name = _sanitize_text(_role_name_for_role(role), color=color, tty=tty)
     step = _sanitize_text(cur.get("step", ""), color=color, tty=tty)
-    body = f"{_c('…', 'dim', color=color)} {_c(name, 'cyan', color=color)} · {step} · {elapsed}s"
+    tid = _sanitize_text(str(task_id), color=color, tty=tty)
+    dur = _WT._fmt_duration(elapsed)
+    body = (
+        f"{_c(tid, 'dim', color=color)} · "
+        f"{_c('…', 'dim', color=color)} {_c(name, 'cyan', color=color)} "
+        f"· {step} · {dur}"
+    )
     if color:
         sys.stderr.write(f"\r\x1b[K{body}")
     else:
-        sys.stderr.write(f"\r{body.ljust(80)}")
+        sys.stderr.write(f"\r{body.ljust(96)}")
 
 
 def _start_ui_thread(task_id: str, stop_event: threading.Event
@@ -1246,6 +1639,7 @@ def _drive(graph, task_id, payload, args=None) -> int:
     ui_state["disabled"] = False
     ui_state["color"] = color
     ui_state["tty"] = tty
+    ui_state["task_id"] = str(task_id)
     # Event-cursor baseline (D13): capture the current byte offset so historical
     # events from earlier runs on the same task id are skipped — only events
     # emitted by THIS drive are rendered.
@@ -2689,7 +3083,27 @@ def main(argv=None) -> int:
                       "rerun with an answer from the pause menu", file=sys.stderr)
                 return 2
             else:
-                args.answer = _tty_pick(_options or [], _data, color=_resume_color)
+                # Same chrome as the in-session loop: Rich panel (when color)
+                # then arrow/line picker without double-rendering choices.
+                _print_pause(_data, args.task_id, color=_resume_color,
+                             in_session=True)
+                from pipeline_graph import pending_answer as _PA
+                _PA.begin_pause_wait(str(args.task_id))
+                try:
+                    args.answer = _tty_pick(
+                        _options or [], _data, color=_resume_color,
+                        render=False, eof_raises=True,
+                        pending_task_id=str(args.task_id),
+                    )
+                except (EOFError, KeyboardInterrupt):
+                    _PA.end_pause_wait(str(args.task_id))
+                    _PA.clear_pending_answer(str(args.task_id))
+                    _mark_idle(str(args.task_id), "paused")
+                    sys.stderr.write(
+                        "\ninterrupted — the run is paused; resume with "
+                        f"./run.py resume {args.task_id}\n")
+                    return 130
+                _PA.end_pause_wait(str(args.task_id))
         # No pending interrupt: args.answer stays None; the resume handler
         # below treats that as "continue at the next node".
 

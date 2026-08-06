@@ -563,6 +563,12 @@ def _copy_brief(target: Path, id_: str, *, src: Path | None = None) -> Path:
     source = src if src is not None else canonical
     source = source.expanduser().resolve()
     if not source.exists():
+        # Isolation keeps the live brief under docs/wt-task-*/. On resume the
+        # canonical docs/<product>/tasks/ copy is often absent (task started
+        # with --file, or never mirrored there) — reuse dst quietly instead of
+        # spamming ``wt: error: brief source missing``.
+        if src is None and dst.exists():
+            return dst
         _fail(f"brief source missing: {source}")
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, dst)
@@ -575,6 +581,18 @@ def build_child_env(wt_path: Path, port: int, parent_env: dict | None = None) ->
     env["PIPELINE_BOT_AUTOSTART"] = "0"
     env.pop("PIPELINE_DOCS_DIR", None)
     env[ISOLATED_ENV] = "1"
+    # ``Popen(cwd=…)`` changes the real cwd but leaves ``PWD`` inherited from
+    # the orchestrator, which runs in MF_ROOT. Agent CLIs that root their
+    # workspace on ``$PWD`` rather than ``getcwd()`` then write into MF_ROOT
+    # while cwd is correctly the worktree — the TASK-032 write-escape.
+    env["PWD"] = str(wt_path.resolve())
+    env.pop("OLDPWD", None)
+    # Orchestrator yaml stays outside the product worktree. Child processes
+    # (esp. self-host pytest importing pipeline_graph.config from the wt)
+    # must resolve agents/config via this path — never by copying yaml into wt.
+    yaml_p = _yaml_path()
+    if yaml_p.exists():
+        env.setdefault("PIPELINE_WT_YAML", str(yaml_p.resolve()))
     has_port = "PIPELINE_E2E_DB_PORT" in env
     has_url = bool(env.get("PIPELINE_E2E_DATABASE_URL", "").strip())
     if not (has_port and has_url):
@@ -598,6 +616,13 @@ def assert_child_env(child_env: dict, target: Path) -> None:
     live = {w["path"].resolve(): w for w in live_worktrees(target)}
     if p not in live:
         _fail(f"pre-exec assert: {p} is not a live worktree of {target}")
+    # A stale PWD pointing at MF_ROOT is what let an agent write onto the
+    # orchestrator checkout while its cwd was correctly the worktree.
+    pwd = child_env.get("PWD")
+    if pwd and Path(pwd).resolve() != p:
+        _fail(
+            f"pre-exec assert: PWD {pwd!r} disagrees with PIPELINE_REPO {str(p)!r}"
+        )
 
 
 def prepare_task_isolation(

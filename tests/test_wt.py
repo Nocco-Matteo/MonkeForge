@@ -81,6 +81,39 @@ class TestChildEnvSetdefault(unittest.TestCase):
             os.environ.clear()
             os.environ.update(saved)
 
+    def test_child_env_points_wt_yaml_at_orchestrator(self):
+        """Product wt must not need its own monkeforge.yaml — child env pins
+        PIPELINE_WT_YAML to the orchestrator file when present."""
+        with tempfile.TemporaryDirectory() as td:
+            mf = Path(td)
+            orch = _write_yaml(mf / "monkeforge.yaml", "pipeline:\n  dry_run: true\n")
+            with patch.object(wt, "MF_ROOT", mf):
+                child = wt.build_child_env(Path("/tmp/wt-task-032"), 5435,
+                                          parent_env={})
+            self.assertEqual(child.get("PIPELINE_WT_YAML"), str(orch.resolve()))
+            # Pre-set override wins (setdefault).
+            child2 = wt.build_child_env(
+                Path("/tmp/wt-task-032"), 5435,
+                parent_env={"PIPELINE_WT_YAML": "/custom.yaml"},
+            )
+            self.assertEqual(child2["PIPELINE_WT_YAML"], "/custom.yaml")
+
+    def test_child_env_pwd_follows_worktree(self):
+        """PWD must agree with PIPELINE_REPO, not stay on the orchestrator.
+
+        ``Popen(cwd=…)`` sets the real cwd but leaves an inherited PWD; an agent
+        CLI rooting its workspace on ``$PWD`` then wrote TASK-032's batch 1 onto
+        MF_ROOT while cwd was correctly the worktree.
+        """
+        wt_path = Path("/tmp/wt-task-032")
+        child = wt.build_child_env(
+            wt_path, 5435,
+            parent_env={"PWD": "/home/someone/MonkeForge", "OLDPWD": "/elsewhere"},
+        )
+        self.assertEqual(child["PWD"], str(wt_path.resolve()))
+        self.assertEqual(child["PWD"], child["PIPELINE_REPO"])
+        self.assertNotIn("OLDPWD", child)
+
     def test_child_env_setdefault_negative(self):
         # Same adversarial fixture WITHOUT child overrides → env gets main/"true".
         saved = os.environ.copy()

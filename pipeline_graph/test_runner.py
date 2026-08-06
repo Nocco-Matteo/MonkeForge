@@ -268,10 +268,50 @@ def _run_cmd(cmd: list[str], cwd: Path, env: dict[str, str], timeout: int) -> tu
     return proc.returncode, (proc.stdout or "") + "\n" + (proc.stderr or "")
 
 
+def _suite_env(suite: "C.TestSuite") -> dict[str, str]:
+    """Env for a suite subprocess: orchestrator yaml, then suite.env overrides.
+
+    Self-host gates run pytest inside ``wt-task-*`` where ``monkeforge.yaml``
+    is intentionally absent (gitignored operator config). Point
+    ``PIPELINE_WT_YAML`` at the orchestrator's yaml so ``config.py`` import
+    in the product tree still resolves agents — without writing into the wt.
+    """
+    env = os.environ.copy()
+    orch = (os.environ.get("PIPELINE_WT_YAML") or "").strip() or str(
+        C.MF_ROOT / "monkeforge.yaml"
+    )
+    orch_path = Path(orch).expanduser()
+    if orch_path.exists():
+        env.setdefault("PIPELINE_WT_YAML", str(orch_path.resolve()))
+    env.update(suite.env or {})
+    return env
+
+
 def _tail(text: str, limit: int = _TAIL_LIMIT) -> str:
-    """Truncated tail of ``text`` for synthetic exit-key summaries."""
+    """Human-readable snippet of runner output for synthetic exit summaries.
+
+    Prefer an ``error:`` banner when present (e.g. AgentsConfigError). Strip
+    pytest's ``E``-prefixed exception dump lines and collapse whitespace so
+    the pause panel does not show a wall of ``E`` / mid-word truncations.
+    """
     text = text or ""
-    return text[-limit:] if len(text) > limit else text
+    m = re.search(r"(?m)^error:\s+.+", text)
+    chunk = text[m.start():] if m else text
+    lines: list[str] = []
+    for line in chunk.splitlines():
+        s = line.strip()
+        # pytest formats exception details as "E   message"
+        if re.match(r"^E(\s|$)", s) and not s.startswith("error:"):
+            s = re.sub(r"^E\s*", "", s).strip()
+        if s:
+            lines.append(s)
+    flat = re.sub(r"\s+", " ", " ".join(lines)).strip()
+    if len(flat) <= limit:
+        return flat
+    # Head is actionable for error: banners; otherwise keep the log tail.
+    if flat.startswith("error:"):
+        return flat[: max(0, limit - 1)] + "…"
+    return "…" + flat[-(limit - 1):]
 
 
 # --- Runner registry -------------------------------------------------------
@@ -291,8 +331,7 @@ def _run_npm_vitest(suite: C.TestSuite, timeout: int) -> tuple[int, set[str], st
     """
     label = suite.label
     cwd = C.REPO / suite.cwd if suite.cwd else C.REPO
-    env = os.environ.copy()
-    env.update(suite.env or {})
+    env = _suite_env(suite)
     failures: set[str] = set()
     parts: list[str] = []
 
@@ -348,8 +387,7 @@ def _run_pytest(suite: C.TestSuite, timeout: int) -> tuple[int, set[str], str]:
     """Run ``python -m pytest -q`` in ``C.REPO/suite.cwd`` and parse FAILED lines."""
     label = suite.label
     cwd = C.REPO / suite.cwd if suite.cwd else C.REPO
-    env = os.environ.copy()
-    env.update(suite.env or {})
+    env = _suite_env(suite)
     # Prefer the interpreter running the pipeline — bare ``python`` is often
     # missing on Debian/Ubuntu (only ``python3``), which produced a synthetic
     # gate failure and a silent hang-adjacent RED baseline on TASK-027.
@@ -370,8 +408,7 @@ def _run_script(suite: C.TestSuite, timeout: int) -> tuple[int, set[str], str]:
     """Run ``suite.cmd`` and surface a non-zero exit as a synthetic failure key."""
     label = suite.label
     cwd = C.REPO / suite.cwd if suite.cwd else C.REPO
-    env = os.environ.copy()
-    env.update(suite.env or {})
+    env = _suite_env(suite)
     cmd = suite.cmd or []
     code, out = _run_cmd(cmd, cwd, env, timeout)
     failures: set[str] = set()

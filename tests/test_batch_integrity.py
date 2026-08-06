@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import re
 from unittest import mock
 
 from pipeline_graph import config as C
@@ -199,13 +200,88 @@ def test_write_escape_escalates_without_retry(monkeypatch):
     assert "test_fix_attempt" not in delta
 
 
-def test_synthetic_failure_key_detection():
+def test_pause_sections_split_baseline_unmeasurable():
+    import run as run_mod
+
+    reason = (
+        "test baseline unmeasurable for batch 1 — suite did not produce a real "
+        "failure list (MonkeForge: 0 failed, synthetic: MonkeForge|pytest exit 4 "
+        "[ole needs BOTH `model:` and `cmd:` — there are no\n"
+        "E     built-in agent defaults\n"
+        "E     Fix: copy the `agents:` section from /tmp/example.yaml\n"
+        "]). Fix test config / monkeforge.yaml agents / runner, then resume."
+    )
+    secs = run_mod._pause_sections({"stage": "escalation", "reason": reason})
+    assert secs["what"] == "test baseline unmeasurable for batch 1"
+    assert secs["why"].startswith("suite did not produce")
+    assert secs["detail"] == "MonkeForge: 0 failed"
+    assert secs["synthetic"] == "MonkeForge|pytest exit 4"
+    assert "cause" not in secs  # Fix: dumped into action, not duplicated
+    assert secs["action"].startswith("Fix test config")
+    assert "E " not in str(secs)
+    assert "ole needs" not in str(secs)
+
+
+def test_suite_env_injects_orchestrator_yaml(monkeypatch, tmp_path):
+    """Gate subprocesses must see PIPELINE_WT_YAML even when cwd is a bare wt."""
+    from pipeline_graph import config as C
+    from pipeline_graph import test_runner as TR
+
+    orch = tmp_path / "monkeforge.yaml"
+    orch.write_text("agents: {}\n")  # existence matters for inject; parse is separate
+    monkeypatch.setattr(C, "MF_ROOT", tmp_path)
+    monkeypatch.delenv("PIPELINE_WT_YAML", raising=False)
+    suite = C.TestSuite(label="x", runner="pytest", cwd="", env={"FOO": "1"})
+    env = TR._suite_env(suite)
+    assert env["PIPELINE_WT_YAML"] == str(orch.resolve())
+    assert env["FOO"] == "1"
+
+
+def test_suite_env_suite_override_wins(monkeypatch, tmp_path):
+    from pipeline_graph import config as C
+    from pipeline_graph import test_runner as TR
+
+    orch = tmp_path / "monkeforge.yaml"
+    orch.write_text("x: 1\n")
+    monkeypatch.setattr(C, "MF_ROOT", tmp_path)
+    monkeypatch.delenv("PIPELINE_WT_YAML", raising=False)
+    suite = C.TestSuite(
+        label="x", runner="pytest", cwd="",
+        env={"PIPELINE_WT_YAML": "/intentional.yaml"},
+    )
+    env = TR._suite_env(suite)
+    assert env["PIPELINE_WT_YAML"] == "/intentional.yaml"
     assert I_mod._is_synthetic_failure_key("MonkeForge|pytest exit 4")
     assert I_mod._is_synthetic_failure_key("x|cwd escapes repo: /tmp")
     assert not I_mod._is_synthetic_failure_key(
         "MonkeForge|tests/test_condenser_archive.py::TestStatusOutput::"
         "test_status_prints_archive_line_when_archive_exists"
     )
+
+
+def test_tail_prefers_error_banner_strips_pytest_e():
+    """Pause chrome must not dump pytest 'E' prefixes / mid-word cuts."""
+    from pipeline_graph import test_runner as TR
+
+    raw = "\n".join([
+        "======= ERRORS =======",
+        "E   ImportError while importing",
+        "E",
+        "error: /tmp/wt/monkeforge.yaml: missing required top-level `agents:` block",
+        "",
+        "  Every role needs BOTH `model:` and `cmd:` — there are no",
+        "  built-in agent defaults in code (not models, not commands).",
+        "",
+        "  Fix: copy the `agents:` section from",
+        "    /tmp/wt/monkeforge.example.yaml",
+        "  into /tmp/wt/monkeforge.yaml, then set the models/CLIs you want to run.",
+    ])
+    out = TR._tail(raw, limit=200)
+    assert not re.search(r"(^|\s)E\s", out)
+    assert out.startswith("error:")
+    assert "agents:" in out
+    assert "Every role needs BOTH" in out  # head kept, not "...ole needs"
+    assert out.endswith("…")
 
 
 def test_baseline_unmeasurable_escalates(monkeypatch):

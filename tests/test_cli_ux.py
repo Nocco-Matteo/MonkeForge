@@ -602,7 +602,11 @@ class TestInProgress:
         # newlines). The progress text shares one prefix across \r refreshes.
         segments = [s for s in err.split("\r") if "· plan ·" in s and "s" in s]
         assert segments, "expected at least one in-place progress segment"
-        prefixes = {seg.rsplit("·", 1)[0] for seg in segments}
+        # Task id leads the progress line (A UX) and stays stable across \r ticks.
+        import re as _re
+        plain = [_re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", s) for s in segments]
+        assert all("tp ·" in s for s in plain), plain[:2]
+        prefixes = {seg.rsplit("·", 1)[0] for seg in plain}
         assert len(prefixes) == 1, (
             f"expected one progress prefix, got {prefixes!r}")
 
@@ -648,12 +652,13 @@ class TestSectionHeaders:
         graph = _FakeGraphEvents(events, "ts")
         err = _drive_capturing(graph, "ts")
         # Section headers appear in order, each preceded by a blank line (C7).
-        for header in ("── intake ──", "── plan ──",
-                       "── debate ──", "── implement ──"):
+        # Task id is baked in so parallel terminals stay identifiable (A/C UX).
+        for header in ("── ts · intake ──", "── ts · plan ──",
+                       "── ts · debate ──", "── ts · implement ──"):
             assert f"\n{header}\n" in err, f"missing blank-line + header {header!r}"
         last = -1
-        for header in ("── intake ──", "── plan ──",
-                       "── debate ──", "── implement ──"):
+        for header in ("── ts · intake ──", "── ts · plan ──",
+                       "── ts · debate ──", "── ts · implement ──"):
             idx = err.index(header)
             assert idx > last, f"header {header!r} out of order"
             last = idx
@@ -702,12 +707,13 @@ class TestSectionHeaders:
         ]
         graph = _FakeGraphEvents(events, "tv")
         err = _drive_capturing(graph, "tv")
-        assert "── debate ──" in err
-        assert "── verdict ──" in err
-        assert err.index("── debate ──") < err.index("── verdict ──")
+        assert "── tv · debate ──" in err
+        assert "── tv · verdict ──" in err
+        assert err.index("── tv · debate ──") < err.index("── tv · verdict ──")
         # summary must not appear under a second debate header after verdict.
-        after_verdict = err[err.index("── verdict ──"):]
-        assert "── debate ──" not in after_verdict
+        after_verdict = err[err.index("── tv · verdict ──"):]
+        assert "── tv · debate ──" not in after_verdict
+        assert "── debate ──" not in after_verdict  # bare form must not reappear
 
 
 # --- F3 / F3b: colour gate (C5/D3) ------------------------------------------
@@ -761,7 +767,7 @@ class TestColorOff:
         # No ANSI ESC anywhere — including the progress clear (C5).
         assert "\x1b" not in err, f"variant {variant!r} leaked ANSI: {err!r}"
         # Unicode structure marks (✓/──) may remain.
-        assert "── plan ──" in err or "plan" in err
+        assert "── tc · plan ──" in err or "plan" in err
 
     def test_resume_pause_path_no_ansi_under_no_color_flag(
             self, monkeypatch, tmp_path):

@@ -70,6 +70,43 @@ def _escape_relevant(paths: set[str]) -> set[str]:
     return out
 
 
+def _sanitize_prompt_paths(text: str) -> str:
+    """Remove absolute MF_ROOT anchors from an isolated run's prompt.
+
+    Judge/debate output quoted into a later prompt carries absolute paths of
+    whatever it wrote (``Deliverables written to /…/MonkeForge/docs/…``). In an
+    isolated run that is the only absolute anchor the agent sees, and it points
+    at the orchestrator checkout rather than the worktree it must edit. Rewrite
+    those to ``<orchestrator>/…`` so the prose still reads but offers no
+    copy-pasteable path outside the workspace. Worktree paths are preserved.
+    """
+    if os.environ.get("PIPELINE_ISOLATED") != "1":
+        return text
+    mf = str(Path(C.MF_ROOT).resolve())
+    repo = str(Path(C.REPO).resolve())
+    if mf == repo or mf not in text:
+        return text
+    # Protect repo paths first: a worktree nested under MF_ROOT would otherwise
+    # have its own prefix rewritten too.
+    guard = "\x00REPO\x00"
+    return text.replace(repo, guard).replace(mf, "<orchestrator>").replace(guard, repo)
+
+
+def _agent_env() -> dict[str, str]:
+    """Env for an agent spawn, with ``PWD`` agreeing with ``cwd=C.REPO``.
+
+    ``Popen(cwd=…)`` sets the real working directory but leaves ``PWD``
+    inherited from the orchestrator, which runs in MF_ROOT. An agent CLI that
+    roots its workspace on ``$PWD`` instead of ``getcwd()`` then edits the
+    orchestrator checkout while cwd is correctly the worktree — how TASK-032's
+    batch 1 landed on MF_ROOT with ``PIPELINE_REPO`` set right the whole time.
+    """
+    env = os.environ.copy()
+    env["PWD"] = str(Path(C.REPO).resolve())
+    env.pop("OLDPWD", None)
+    return env
+
+
 def _assert_agent_repo_cwd() -> None:
     """Fail loud if isolated spawn would use a non-worktree PIPELINE_REPO."""
     repo = Path(C.REPO).resolve()
@@ -367,6 +404,7 @@ def run_agent(role: str, conversation: "Conversation", step: str,
     cfg = C.ROLE_CONFIG[role]
     C.ensure_dirs()
 
+    prompt = _sanitize_prompt_paths(prompt)
     prompt_file = C.PROMPTS / f"{task_id}-{step}.md"
     prompt_file.write_text(prompt)
 
@@ -398,7 +436,8 @@ def run_agent(role: str, conversation: "Conversation", step: str,
             chunks: list[str] = []
             last_beat = time.time()
             with out_file.open("w") as sink:
-                proc = subprocess.Popen(cmd, cwd=C.REPO, stdout=subprocess.PIPE,
+                proc = subprocess.Popen(cmd, cwd=C.REPO, env=_agent_env(),
+                                        stdout=subprocess.PIPE,
                                         stderr=subprocess.STDOUT, text=True, bufsize=1,
                                         stdin=subprocess.PIPE if stdin_text else subprocess.DEVNULL)
                 assert proc.stdout is not None

@@ -223,10 +223,12 @@ def checkpoint_plan(state):
             "batches": [f"{b['n']}: {b['scope']}" for b in state.get("batches", [])],
             "plan": str(C.PLANS / f"PLAN-{tid}.md"),
             "final": str(C.FINAL / f"FINAL-{tid}.md"),
-            # One visible canonical key (clig: brief). Aliases still accepted
-            # in validation below — do not list "same as ok" rows in the UI.
+            # Arrow / TTY menus need real choices — not free-text "type ok".
+            # Aliases (yes/approve/y) still accepted by the check below.
+            "hint": "ok",
             "answers": {
                 "ok": "approve the plan and start implement",
+                "replan": "reject — send back for a new plan",
             },
         }
     )

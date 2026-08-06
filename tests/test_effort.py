@@ -478,6 +478,8 @@ class TestCheckpointPlanGate(unittest.TestCase):
         self.assertTrue(payload.get("plan", "").endswith("PLAN-t.md"))
         self.assertTrue(payload.get("final", "").endswith("FINAL-t.md"))
         self.assertEqual(payload["batches"], ["1: do the thing"])
+        self.assertEqual(payload.get("hint"), "ok")
+        self.assertEqual(set(payload["answers"]), {"ok", "replan"})
 
     def test_forced_effort_still_asks(self):
         with patch.object(F, "interrupt", return_value="ok"):
