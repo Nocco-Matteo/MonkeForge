@@ -263,6 +263,26 @@ def implement(state):
 
     # Stage so the reviewer's `git diff HEAD` sees this batch, new files included.
     _stage_all()
+    # Belt: implementer exited 0 but left nothing in PIPELINE_REPO (write escape).
+    base_ref = (baseline_delta.get("batch_base_ref") or state.get("batch_base_ref") or "").strip()
+    if not C.DRY_RUN and not C.NO_GIT and base_ref:
+        changed = _git("diff", "--name-only", "--cached", base_ref).splitlines()
+        untracked = subprocess.run(
+            ["git", "ls-files", "-o", "--exclude-standard"],
+            cwd=C.REPO, capture_output=True, text=True,
+        ).stdout.splitlines()
+        if not any(p.strip() for p in changed + untracked):
+            return {
+                **baseline_delta,
+                "escalation": (
+                    f"implement batch {b['n']}: no changes in PIPELINE_REPO "
+                    f"vs {base_ref[:12]} after agent exit 0 — refusing review "
+                    f"(likely wrote outside the worktree)"
+                ),
+                "journal": [
+                    f"impl b{b['n']}: EMPTY_BATCH_DIFF vs {base_ref[:12]}"
+                ],
+            }
     suffix = "" if db_ok else " (DB-gated tests skipped)"
     test_note = f", {summary}, 0 new failures" if db_ok and not C.DRY_RUN else suffix
     # Green-path gate-state threading: when the gate actually measured
@@ -302,8 +322,8 @@ def close_batch(state):
     batches = [dict(b) for b in state["batches"]]
     idx = state["batch_idx"]
     b = batches[idx]
-    b["status"] = "DONE"
-    b["outcome"] = f"checklist met; review {state.get('code_verdict', '')}"
+    # Do not mark DONE until a real commit lands (or dry-run / no-git).
+    pending_outcome = f"checklist met; review {state.get('code_verdict', '')}"
 
     impl_log = sorted(C.RAW.glob(f"{tid}-impl-b{b['n']}-*.log"))
     if impl_log:
@@ -315,23 +335,57 @@ def close_batch(state):
 
     mismatch = branch_mismatch_reason(state.get("branch"))
     if mismatch:
-        # Do not mark the batch DONE on disk / progress until commit lands on
-        # the expected branch — leave progress write for the successful path.
         return {
             "escalation": mismatch,
             "journal": [f"batch {b['n']}: refused commit — git branch mismatch"],
         }
 
-    _write_progress(tid, batches)
     sha = ""
+    base = (state.get("batch_base_ref") or "").strip()
     if not C.DRY_RUN and not C.NO_GIT:
+        head_before = _git("rev-parse", "HEAD").strip()
+        # Empty tree vs batch base → nothing for close_batch to ship (033 escape).
+        if base:
+            changed = _git("diff", "--name-only", base).splitlines()
+            untracked = subprocess.run(
+                ["git", "ls-files", "-o", "--exclude-standard"],
+                cwd=C.REPO, capture_output=True, text=True,
+            ).stdout.splitlines()
+            if not any(p.strip() for p in changed + untracked):
+                return {
+                    "escalation": (
+                        f"batch {b['n']}: refusing close — working tree has no "
+                        f"diff vs batch_base_ref {base[:12]} (empty batch / "
+                        f"implement wrote outside PIPELINE_REPO?)"
+                    ),
+                    "journal": [
+                        f"batch {b['n']}: refused commit — empty diff vs {base[:12]}"
+                    ],
+                }
         subprocess.run(["git", "add", "-A"], cwd=C.REPO, capture_output=True)
-        subprocess.run(
+        commit = subprocess.run(
             ["git", "commit", "-m", f"task-{tid}: batch {b['n']} — {b['scope']}"],
             cwd=C.REPO,
             capture_output=True,
+            text=True,
         )
-        sha = _git("rev-parse", "HEAD")
+        sha = _git("rev-parse", "HEAD").strip()
+        if commit.returncode != 0 or (base and sha == base) or sha == head_before:
+            detail = (commit.stderr or commit.stdout or "").strip()[:200]
+            return {
+                "escalation": (
+                    f"batch {b['n']}: git commit did not advance HEAD "
+                    f"(still {sha[:12] or head_before[:12]}); nothing staged "
+                    f"or commit failed — {detail or 'no git output'}"
+                ),
+                "journal": [
+                    f"batch {b['n']}: refused commit — HEAD unchanged "
+                    f"({sha[:12] or head_before[:12]})"
+                ],
+            }
+    b["status"] = "DONE"
+    b["outcome"] = pending_outcome
+    _write_progress(tid, batches)
     ident = git_identity()
     # Prefer post-commit sha; fall back to identity helper (DRY_RUN → empty).
     if sha:

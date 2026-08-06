@@ -466,9 +466,20 @@ DB_DOWN_NOTE = (
 
 
 def _db_note(tid: str, step: str) -> tuple[bool, str]:
-    """Ensure the e2e DB is up. Never blocks the graph: degrade with a note instead."""
+    """Ensure the e2e DB is up when the product requires it.
+
+    Never blocks the graph: degrade with a note instead. If e2e is not
+    configured for this product (no ``E2E_UP_SCRIPT`` on disk), return ok and
+    let the normal suite run — do not skip pytest solely because an injected
+    isolation port is closed (TASK-012 false final-gate escalation).
+    """
     if C.DRY_RUN:
         return True, DB_OK_NOTE
+    if not C.e2e_required():
+        return True, (
+            "E2E Postgres is not configured for this product; run the full "
+            "configured test suite (no DB-gated skip)."
+        )
     if C.db_reachable():
         return True, DB_OK_NOTE
     ev.emit(

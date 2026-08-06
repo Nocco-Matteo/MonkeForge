@@ -942,6 +942,17 @@ def db_reachable() -> bool:
     except OSError:
         return False
 
+
+def e2e_required() -> bool:
+    """True when this product actually expects an e2e Postgres for the test gate.
+
+    Isolation may still inject ``PIPELINE_E2E_DB_PORT`` / URL into the child
+    env for products that use them; that alone must NOT skip the whole suite
+    on standalone hosts (e.g. MonkeForge pytest-only with no ``e2e-up`` script).
+    """
+    return E2E_UP_SCRIPT is not None and E2E_UP_SCRIPT.exists()
+
+
 def ensure_e2e_stack() -> bool:
     """Bring the e2e stack up via scripts/e2e-up.sh. Returns True if the DB answers.
 

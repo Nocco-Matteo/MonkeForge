@@ -59,6 +59,32 @@ def code_review(state):
     # escalate with the hypothesis instead of running fix cycles at it.
     n_items = len(b.get("checklist", []))
     changed = [] if C.DRY_RUN else _git("diff", "--name-only", base).splitlines()
+    changed = [p for p in changed if p.strip()]
+    review_l = (review or "").lower()
+    empty_review = (
+        not changed
+        and (
+            verdict in ("UNKNOWN", "")
+            or "not applicable" in review_l
+            or "empty diff" in review_l
+        )
+    )
+    if empty_review and not C.DRY_RUN:
+        return {
+            "code_verdict": verdict or "UNKNOWN",
+            "not_met": not_met,
+            "open_blockers": max(blockers, 1),
+            "fix_cycle": 0,
+            "escalation": (
+                f"code review for batch {b['n']}: empty diff vs "
+                f"{base[:12] if len(base) > 12 else base} — refusing to "
+                f"close/approve (implement wrote nothing in PIPELINE_REPO, "
+                f"or reviewer saw no changes)"
+            ),
+            "journal": [
+                f"cr b{b['n']}: EMPTY_BATCH_DIFF (verdict={verdict or 'UNKNOWN'})"
+            ],
+        }
     if n_items >= 3 and len(not_met) >= n_items - 1 and changed:
         return {
             "code_verdict": verdict,
