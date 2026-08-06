@@ -572,7 +572,47 @@ def _opt(key: str, label: str, *, free_text: bool = False) -> dict:
     return {"key": key, "label": label, "free_text": free_text}
 
 
-def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict]:
+def _requirements_intake_offered(state: dict | None) -> bool:
+    """TASK-033 (C12): whether a REQUIREMENTS gap is active or claims are
+    extractable from the live/``-full`` debate.
+
+    Stuck/thrash/exhausted ``stop`` labels mention ``redo --from intake`` only
+    when this is true — otherwise the stop label is the plain "blockers may be
+    in the REQUIREMENTS" sentence with no CLI-primary wording (re-intake is
+    in-graph now; the CLI is a fallback, not the primary path).
+    """
+    if not state:
+        return False
+    tid = state.get("task_id", "")
+    if not tid:
+        return False
+    try:
+        from ..requirements_gap import gap_status
+        if gap_status(tid) in ("active", ""):
+            # "" = legacy active file; an active gap file means claims exist.
+            from ..requirements_gap import read_requirements_gap
+            if read_requirements_gap(tid).strip():
+                return True
+    except Exception:
+        pass
+    # Fall back to scanning the live + -full debate for extractable claims.
+    try:
+        from ..condenser import latest_requirements_blockers
+        for path in (C.DEBATES / f"DEBATE-{tid}.md",
+                     C.DEBATES / f"DEBATE-{tid}-full.md"):
+            try:
+                text = path.read_text()
+            except OSError:
+                continue
+            if text.strip() and latest_requirements_blockers(text):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _escalation_options(reason: str, *, triage: dict | None = None,
+                        state: dict | None = None) -> list[dict]:
     """What the valid answers mean for THIS escalation — the payload's menu.
 
     Returns a list of structured option dicts (``key``/``label``/``free_text``)
@@ -586,8 +626,18 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
     a thrashing-specific warning when the exhausted debate was actually
     churning (``triage["mode"] == "thrashing"``) — a ``mode="stuck"``
     exhausted escalation keeps the default exhausted labels (item 14).
+
+    TASK-033: ``state`` threads ``requirements_reintake_count`` into the
+    ``"debate requirements:"`` branch so the menu can offer ``re-intake``
+    (RECOMMENDED) below MAX and add ``ok`` (RECOMMENDED) at MAX. ``None``
+    preserves the legacy below-MAX behaviour for un-updated callers.
     """
     r = reason.lower()
+    # TASK-033: re-intake counter + MAX gate for the debate-requirements menu.
+    reintake_count = (
+        int(state.get("requirements_reintake_count", 0)) if state else 0
+    )
+    at_max = reintake_count >= C.MAX_REQUIREMENTS_REINTAKES
     if r.startswith("debate stuck:"):
         # Stuck-claim early escalation (item 13/14): the debate is not
         # converging — the same BLOCKER persists across k consecutive rounds.
@@ -595,6 +645,18 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
         # critics keep blocking. "ok" proceeds to the verdict with the plan as
         # it stands; "continue" extends the cap; "redo" restarts from round 1;
         # "stop" ends the run (the blockers may be in the REQUIREMENTS).
+        # TASK-033 (C12): the stop label mentions ``redo --from intake`` only
+        # when a REQUIREMENTS gap is active or claims are extractable —
+        # otherwise it is the plain "blockers may be in the REQUIREMENTS"
+        # sentence (re-intake is in-graph now; the CLI is a fallback).
+        stop_label = (
+            "stop the run — the blockers may be in the REQUIREMENTS, not the "
+            "plan: ./run.py redo <id> --from intake so the interviewer re-asks; "
+            "then plan/debate regenerate"
+        ) if _requirements_intake_offered(state) else (
+            "stop the run — the blockers may be in the REQUIREMENTS, not the "
+            "plan"
+        )
         return [
             _opt("continue",
                  "extend the debate by 2 more rounds, keeping the existing "
@@ -602,10 +664,7 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
             _opt("redo",
                  "re-run the debate from round 1 on the SAME plan (use when the "
                  "debate itself derailed — it cannot fix a plan that is wrong)"),
-            _opt("stop",
-                 "stop the run — the stuck blocker may be in the REQUIREMENTS, "
-                 "not the plan: ./run.py redo <id> --from intake so the "
-                 "interviewer re-asks; then plan/debate regenerate"),
+            _opt("stop", stop_label),
             _opt("ok",
                  "proceed to the verdict with the plan as it stands (the stuck "
                  "blocker is recorded in the report) — WARNING: implement will "
@@ -652,40 +711,67 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
                 ok_label + " — recommended when the debate is churning "
                 "without converging"
             )
+        thrashing_stop_label = (
+            "stop the run — the churning blockers may be in the "
+            "REQUIREMENTS, not the plan: ./run.py redo <id> --from intake "
+            "so the interviewer re-asks; then plan/debate regenerate"
+        ) if _requirements_intake_offered(state) else (
+            "stop the run — the churning blockers may be in the "
+            "REQUIREMENTS, not the plan"
+        )
         return [
             _opt("continue", continue_label),
             _opt("redo",
                  "re-run the debate from round 1 on the SAME plan (use when the "
                  "debate itself derailed — a fresh start may break the churn)"),
-            _opt("stop",
-                 "stop the run — the churning blockers may be in the "
-                 "REQUIREMENTS, not the plan: ./run.py redo <id> --from intake "
-                 "so the interviewer re-asks; then plan/debate regenerate"),
+            _opt("stop", thrashing_stop_label),
             _opt("ok", ok_label),
         ]
     if r.startswith("debate requirements:"):
-        # Same keys as stuck/thrashing (continue/redo/stop/ok). A REQUIREMENTS
-        # tag means the *recommended* action is stop + re-intake, but the
-        # debate may also carry PLAN blockers that more rounds can fix — so
-        # continue/redo stay available. Hint/recommended stays "stop".
-        return [
-            _opt("continue",
-                 "extend the debate by 2 more rounds (keeps history) — useful "
-                 "when PLAN blockers remain that more rounds can fix; will NOT "
-                 "clear a REQUIREMENTS/brief issue by itself"),
-            _opt("redo",
-                 "re-run the debate from round 1 on the SAME plan (fresh critic "
-                 "pass; still cannot invent a missing requirement)"),
-            _opt("stop",
-                 "RECOMMENDED — stop the run: the REQUIREMENTS blocker is in "
-                 "the brief, not the plan. The flagged claims are saved for "
-                 "re-intake — ./run.py redo <id> --from intake (interviewer "
-                 "gets those gaps; do not hand-edit the brief)"),
-            _opt("ok",
-                 "proceed to the verdict with the plan as it stands (the "
-                 "REQUIREMENTS blocker is recorded in the report) — the bonus "
-                 "is cleared so a later redo starts from the default cap"),
-        ]
+        # TASK-033: REQUIREMENTS recovery is intake-owned and in-graph. Below
+        # MAX the menu is continue/redo/stop/re-intake (re-intake RECOMMENDED);
+        # at MAX it adds ok (RECOMMENDED) so the run can ship with the gaps
+        # recorded as a degradation, and demotes re-intake to non-recommended.
+        # ``stop`` no longer advertises the CLI as the primary path — the
+        # flagged claims are saved for re-intake either way.
+        continue_opt = _opt(
+            "continue",
+            "extend the debate by 2 more rounds (keeps history) — useful "
+            "when PLAN blockers remain that more rounds can fix; will NOT "
+            "clear a REQUIREMENTS/brief issue by itself",
+        )
+        redo_opt = _opt(
+            "redo",
+            "re-run the debate from round 1 on the SAME plan (fresh critic "
+            "pass; still cannot invent a missing requirement)",
+        )
+        stop_opt = _opt(
+            "stop",
+            "stop the run — the REQUIREMENTS blocker is in the brief, not the "
+            "plan. The flagged claims are saved for re-intake (do not hand-edit "
+            "the brief)",
+        )
+        if at_max:
+            re_intake_opt = _opt(
+                "re-intake",
+                "re-open the interviewer with the flagged REQUIREMENTS gaps "
+                "(max re-intakes reached — ok is the recommended path)",
+            )
+            ok_opt = _opt(
+                "ok",
+                "RECOMMENDED — proceed to the verdict with the plan as it "
+                "stands (the REQUIREMENTS blocker is recorded in the report as "
+                "a degradation; the bonus is cleared so a later redo starts "
+                "from the default cap)",
+            )
+            return [continue_opt, redo_opt, stop_opt, re_intake_opt, ok_opt]
+        re_intake_opt = _opt(
+            "re-intake",
+            "RECOMMENDED — re-open the interviewer with the flagged REQUIREMENTS "
+            "gaps (the claims are saved for re-intake; do not hand-edit the "
+            "brief). After re-intake the debate restarts from round 0",
+        )
+        return [continue_opt, redo_opt, stop_opt, re_intake_opt]
     if "intake" in r or "interviewer" in r:
         return [
             _opt("ok", "answer the questions in the intake file, then resume"),
@@ -756,6 +842,16 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
                 "history (the proposer keeps iterating on the remaining blockers)"
             )
             ok_label = "proceed to the verdict with the plan as it stands"
+        exhausted_stop_label = (
+            "stop the run — the blockers are in the REQUIREMENTS, not the "
+            "plan: ./run.py redo <id> --from intake so the interviewer "
+            "re-asks (no number of debate rounds can invent a missing "
+            "requirement; do not hand-edit the brief as the recovery path)"
+        ) if _requirements_intake_offered(state) else (
+            "stop the run — the blockers may be in the REQUIREMENTS, not "
+            "the plan (no number of debate rounds can invent a missing "
+            "requirement)"
+        )
         return [
             _opt("ok", ok_label),
             _opt("skip", "same — proceed past the debate"),
@@ -763,11 +859,7 @@ def _escalation_options(reason: str, *, triage: dict | None = None) -> list[dict
             _opt("redo",
                  "re-run the debate from round 1 on the SAME plan (use when the "
                  "debate itself derailed — it cannot fix a plan that is wrong)"),
-            _opt("stop",
-                 "stop the run — the blockers are in the REQUIREMENTS, not the "
-                 "plan: ./run.py redo <id> --from intake so the interviewer "
-                 "re-asks (no number of debate rounds can invent a missing "
-                 "requirement; do not hand-edit the brief as the recovery path)"),
+            _opt("stop", exhausted_stop_label),
         ]
     # Item 5: the render predicate matches the same 4 substrings as the
     # ``render_failed`` flag in escalate() — "render the ui", "render command",
@@ -900,7 +992,7 @@ def escalate(state):
     # labels when the exhausted debate was actually churning.
     triage = state.get("triage")
     hint = state.get("hint", "")
-    options = _escalation_options(reason, triage=triage)
+    options = _escalation_options(reason, triage=triage, state=state)
     answer = interrupt(
         {
             "stage": "escalation",
@@ -947,6 +1039,11 @@ def escalate(state):
     # flags so only the stop/ok menu fires.
     debate_stuck = r_low.startswith("debate stuck:")
     debate_requirements = r_low.startswith("debate requirements:")
+    # TASK-033: at_max gates the ``ok`` branch for debate requirements (C7).
+    at_max = (
+        int(state.get("requirements_reintake_count", 0))
+        >= C.MAX_REQUIREMENTS_REINTAKES
+    )
     # TASK-022 item 16: the prefix gate also matches "debate thrashing:" so a
     # thrashing early-escalation suppresses the same substring flags and only
     # the continue/redo/stop/ok menu fires (same gate as debate stuck).
@@ -1025,6 +1122,26 @@ def escalate(state):
     # The intake interview is exempt: there "stop" is one of INTAKE_END_ANSWERS
     # and means "stop interviewing", handled by its own branch below.
     if ans in ("stop", "no", "abort", "cancel") and not intake_escalation:
+        # TASK-033 (D3): on a debate-prefix stop, materialize/merge the gap as
+        # active from the live + -full debate so a later CLI redo --from intake
+        # or a fresh run still finds the claims (a stop after a condensation
+        # emptied the live file into -full, so read both).
+        if debate_prefix:
+            try:
+                from ..condenser import latest_requirements_blockers_structured
+                from ..requirements_gap import write_requirements_gap
+                text = ""
+                for path in (C.DEBATES / f"DEBATE-{tid}.md",
+                             C.DEBATES / f"DEBATE-{tid}-full.md"):
+                    try:
+                        text += path.read_text() + "\n"
+                    except OSError:
+                        continue
+                structured = latest_requirements_blockers_structured(text)
+                if structured:
+                    write_requirements_gap(tid, structured)
+            except Exception:
+                pass
         delta["finished"] = True
         delta["journal"] = [f"escalation resolved: {answer} (run stopped by human)"]
         ev.emit(
@@ -1073,6 +1190,18 @@ def escalate(state):
         # FINAL/BATCHES from the fresh debate outcome.
         for path in (C.DEBATES / f"DEBATE-{tid}.md", C.REVIEWS / f"UX-{tid}.md"):
             path.unlink(missing_ok=True)
+        # TASK-033: a debate-prefix redo conceptually suspends the REQUIREMENTS
+        # gap — a later REQUIREMENTS escalate re-merges and sets it active, and
+        # a re-intake / CLI --from intake reactivates suspended → active.
+        if debate_prefix:
+            try:
+                from ..requirements_gap import (
+                    suspend_requirements_gap, requirements_gap_path,
+                )
+                if requirements_gap_path(tid).exists():
+                    suspend_requirements_gap(tid)
+            except Exception:
+                pass
         delta.update(
             {
                 "debate_round": 0,
@@ -1111,14 +1240,123 @@ def escalate(state):
         )
         return delta
 
+    if ans == "re-intake" and debate_prefix:
+        # TASK-033: in-graph REQUIREMENTS re-intake. Keep PLAN-{id}.md; archive
+        # the live debate → -full (append-only) and delete live; archive the
+        # live intake → -history (append-only) and delete live; reactivate a
+        # suspended gap; clear batches/judge outputs and debate/intake state so
+        # the interviewer re-opens with the gaps carried forward. The count is
+        # NOT incremented here — it increments only on intake COMPLETE or
+        # intake skip/done waiver while a gap was active (intake.py / the
+        # intake_escalation branch below). route_escalation_return handles
+        # intake_done=False → intake_ask.
+        from ..requirements_gap import (
+            archive_live_debate_for_reintake,
+            archive_intake_for_reintake,
+            set_gap_status,
+            gap_status,
+        )
+        archive_live_debate_for_reintake(tid)
+        archive_intake_for_reintake(tid)
+        if gap_status(tid) == "suspended":
+            set_gap_status(tid, "active")
+        delta.update(
+            {
+                "batches": [],
+                "batch_idx": 0,
+                "code_verdict": "",
+                "fix_cycle": 0,
+                "test_fix_attempt": 0,
+                "test_fix_failures": [],
+                "test_fix_summary": "",
+                "debate_round": 0,
+                "debate_round_bonus": 0,
+                "debate_grace_until": 0,
+                "reviewer_verdict": "",
+                "open_blockers": 0,
+                "ux_verdict": "",
+                "ux_blockers": 0,
+                "tech_limits": [],
+                "debate_next": "",
+                "ux_shipped_blocked": False,
+                "intake_done": False,
+                "intake_round": 0,
+                "intake_unanswered": False,
+                "interview": True,
+                "escalation": "",
+                "journal": [
+                    f"escalation resolved: {answer} "
+                    "(re-opening intake with the REQUIREMENTS gaps; debate "
+                    "archived to -full, will restart from round 0)"
+                ],
+            }
+        )
+        ev.emit(
+            "escalation_resolved",
+            tid,
+            "escalate",
+            f"answered {answer!r} — re-intaking; was: {reason}",
+        )
+        return delta
+
     if intake_escalation:
         # `skip` here means "stop interviewing", not "force the batch closed":
         # there are no batches yet, and marking code_verdict=APPROVE would leave
         # a booby trap that sends the *next* escalation straight to close_batch.
         # Lazy import to avoid circular dependency (intake imports from common).
+        # TASK-033: this branch fires ONLY for intake_ask-originated escalations
+        # (round-cap at intake.py, I3 rejection) — NOT for intake_wait human-gate
+        # answers (those are handled in intake_wait directly). Split on active
+        # gap: skip/done/enough with an active gap waives + increments + degrades
+        # + clears batches + sets debate_round=0 (routes to debate_tech via
+        # route_escalation_return); stop/abort/cancel/no with an active gap
+        # finishes the run (gap stays active, count unchanged); no active gap
+        # keeps today's semantics.
         from .intake import INTAKE_END_ANSWERS, _seed_brief, intake_file
+        from ..requirements_gap import (
+            gap_status, waive_requirements_gap,
+        )
 
-        if forced or ans in INTAKE_END_ANSWERS:
+        active_gap = gap_status(tid) == "active"
+        if active_gap and ans in ("skip", "done", "enough"):
+            path = _seed_brief(tid, state.get("request", ""))
+            waive_requirements_gap(tid)
+            delta.update(
+                {
+                    "intake_done": True,
+                    "brief_path": str(path),
+                    "requirements_reintake_count": (
+                        int(state.get("requirements_reintake_count", 0)) + 1
+                    ),
+                    # Single-element list — the operator.add reducer at
+                    # state.py:126 appends it once; do NOT prepend the prior
+                    # degradations list (it would duplicate under operator.add).
+                    "degradations": [
+                        "shipped with REQUIREMENTS gaps waived at intake"
+                    ],
+                    "batches": [],
+                    "batch_idx": 0,
+                    "code_verdict": "",
+                    "fix_cycle": 0,
+                    "test_fix_attempt": 0,
+                    "test_fix_failures": [],
+                    "test_fix_summary": "",
+                    "debate_round": 0,
+                    "journal": [
+                        f"escalation resolved: {answer} "
+                        "(intake ended, REQUIREMENTS gaps waived, count "
+                        "incremented — planning from the brief as it stands)"
+                    ],
+                }
+            )
+        elif active_gap and ans in ("stop", "no", "abort", "cancel"):
+            delta["finished"] = True
+            delta["journal"] = [
+                f"escalation resolved: {answer} "
+                "(intake stopped by user — run finished, REQUIREMENTS gap "
+                "stays active)"
+            ]
+        elif forced or ans in INTAKE_END_ANSWERS:
             path = _seed_brief(tid, state.get("request", ""))
             delta["intake_done"] = True
             delta["brief_path"] = str(path)
@@ -1241,10 +1479,31 @@ def escalate(state):
         # "continue" restarted the debate.
         # Also covers "debate requirements:" (item 35): clear bonus + redo_debate
         # so the graph routes to the verdict rather than restarting.
+        # TASK-033 (C7): ``ok`` at MAX on a ``debate requirements:`` escalation
+        # waives the gap and appends the degradation literal (single-element
+        # list — the operator.add reducer appends it once; do NOT prepend the
+        # prior degradations list, which would duplicate under operator.add).
+        # Below MAX ``ok`` is not in valid_keys so this branch is unreachable
+        # below MAX.
         if debate_escalation and ans in ("ok", "skip"):
             delta["debate_round_bonus"] = 0
             delta["redo_debate"] = False
-            if debate_requirements:
+            if debate_requirements and at_max:
+                try:
+                    from ..requirements_gap import waive_requirements_gap
+                    waive_requirements_gap(tid)
+                except Exception:
+                    pass
+                delta["degradations"] = [
+                    "shipped with unresolved REQUIREMENTS gaps (max re-intakes reached)"
+                ]
+                delta["journal"] = [
+                    f"escalation resolved: {answer} "
+                    "(proceeding to the verdict with the REQUIREMENTS blocker "
+                    "recorded as a degradation; max re-intakes reached; debate "
+                    "bonus cleared)"
+                ]
+            elif debate_requirements:
                 delta["journal"] = [
                     f"escalation resolved: {answer} "
                     "(proceeding to the verdict with the REQUIREMENTS blocker "

@@ -344,9 +344,9 @@ class TestEscalatePayload(unittest.TestCase):
 
         orig = _common._escalation_options
 
-        def _spy(reason, *, triage=None):
+        def _spy(reason, *, triage=None, state=None):
             captured["triage"] = triage
-            return orig(reason, triage=triage)
+            return orig(reason, triage=triage, state=state)
 
         with patch.object(_common, "_escalation_options", side_effect=_spy), \
              patch.object(_common, "interrupt", return_value="ok"), \
@@ -363,9 +363,9 @@ class TestEscalatePayload(unittest.TestCase):
 
         orig = _common._escalation_options
 
-        def _spy(reason, *, triage=None):
+        def _spy(reason, *, triage=None, state=None):
             captured["triage"] = triage
-            return orig(reason, triage=triage)
+            return orig(reason, triage=triage, state=state)
 
         with patch.object(_common, "_escalation_options", side_effect=_spy), \
              patch.object(_common, "interrupt", return_value="ok"), \
@@ -571,14 +571,24 @@ class TestDebateNodeWiring(unittest.TestCase):
         self.assertEqual(triage["mode"], "stuck")
         self.assertEqual(triage["recommended"], "ok")
 
-    def test_build_triage_requirements_forces_mode_and_stop(self):
+    def test_build_triage_requirements_forces_mode_and_reintake_below_max(self):
+        # TASK-033: below MAX the requirements triage recommends re-intake
+        # (the in-graph recovery), not stop. At MAX it recommends ok.
         text = _debate(
             _round(1, "Reviewer", _REJECT),
             _round(2, "Reviewer", _REJECT),
         )
-        triage = D._build_triage(text, "debate requirements")
+        triage = D._build_triage(text, "debate requirements",
+                                 reintake_count=0, max_reintakes=2)
         self.assertEqual(triage["mode"], "requirements")
-        self.assertEqual(triage["recommended"], "stop")
+        self.assertEqual(triage["recommended"], "re-intake")
+        # At MAX the recommendation flips to ok.
+        triage_max = D._build_triage(text, "debate requirements",
+                                     reintake_count=2, max_reintakes=2)
+        self.assertEqual(triage_max["recommended"], "ok")
+        # Legacy callers (max_reintakes=None) keep the below-MAX recommendation.
+        triage_legacy = D._build_triage(text, "debate requirements")
+        self.assertEqual(triage_legacy["recommended"], "re-intake")
 
     def test_build_triage_exhausted_converging_recommends_continue(self):
         # 3 → 2 → 1 strictly decreasing, no claim repeated across the last
@@ -678,11 +688,16 @@ class TestDebateNodeWiring(unittest.TestCase):
             _round(1, "Reviewer",
                    "VERDICT: REJECT\n[BLOCKER:REQUIREMENTS] brief is wrong\n"),
         )
+        # TASK-033: below MAX the hint is re-intake (in-graph recovery).
         result = D._check_requirements_escalation(text)
         self.assertIsNotNone(result)
         self.assertIn("triage", result)
         self.assertIn("hint", result)
-        self.assertEqual(result["hint"], "stop")
+        self.assertEqual(result["hint"], "re-intake")
+        # At MAX the hint flips to ok.
+        result_max = D._check_requirements_escalation(
+            text, reintake_count=2, max_reintakes=2)
+        self.assertEqual(result_max["hint"], "ok")
 
     # --- TASK-024 items 39-41: caller-wiring regression tests ---------------
 

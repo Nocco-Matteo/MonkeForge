@@ -37,6 +37,12 @@ class PipelineState(TypedDict, total=False):
     intake_done: bool              # the brief is final
     intake_unanswered: bool        # resumed without new answers: ask again, don't spend a round
     brief_path: str                # docs/tasks/TASK-<id>-brief.md
+    # TASK-033: REQUIREMENTS re-intake counter — the single source of truth for
+    # the re-intake exit route (count > 0 → intake → debate_tech, not plan).
+    # Increments only on intake COMPLETE or intake skip/done waiver while a
+    # REQUIREMENTS gap was active at cycle start. A plain int (not Annotated) so
+    # LangGraph's channel merge keeps the latest value (no operator.add double-count).
+    requirements_reintake_count: int
 
     # --- debate (two critics in parallel: technical + UX)
     debate_round: int

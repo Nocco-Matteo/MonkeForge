@@ -375,6 +375,39 @@ MAX_FIX_CYCLES    = int(os.environ.get("PIPELINE_MAX_FIX_CYCLES", "2"))
 MAX_TEST_FIXES    = int(os.environ.get("PIPELINE_MAX_TEST_FIXES", "2"))
 MAX_INTAKE_ROUNDS = int(os.environ.get("PIPELINE_MAX_INTAKE_ROUNDS", "4"))
 
+# TASK-033: cap on REQUIREMENTS re-intake cycles. Below MAX the
+# "debate requirements:" menu offers re-intake/continue/redo/stop (re-intake
+# RECOMMENDED); at MAX it adds ok (RECOMMENDED) so the run can ship with the
+# gaps recorded as a degradation. Validation mirrors _parse_condenser_keep_recent
+# style: non-int → stderr warn + default 2; negative → clamp 0 (escape hatch:
+# MAX at count 0 → first menu offers ok immediately).
+def _parse_max_requirements_reintakes(raw, *, default: int = 2) -> int:
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        print(f"PIPELINE_MAX_REQUIREMENTS_REINTAKES={raw!r} not an int; "
+              f"using default {default}", file=sys.stderr)
+        return default
+    if isinstance(raw, int):
+        val = raw
+    else:
+        try:
+            val = int(str(raw).strip())
+        except ValueError:
+            print(f"PIPELINE_MAX_REQUIREMENTS_REINTAKES={raw!r} not an int; "
+                  f"using default {default}", file=sys.stderr)
+            return default
+    if val < 0:
+        print(f"PIPELINE_MAX_REQUIREMENTS_REINTAKES={val} negative; "
+              f"clamping to 0", file=sys.stderr)
+        return 0
+    return val
+
+
+MAX_REQUIREMENTS_REINTAKES = _parse_max_requirements_reintakes(
+    os.environ.get("PIPELINE_MAX_REQUIREMENTS_REINTAKES")
+)
+
 # --- Adaptive effort presets (TASK-011) -----------------------------------
 # Three effort levels. `troop-monke` is byte-equivalent to the pre-existing
 # MAX_DEBATE_ROUNDS / MAX_FIX_CYCLES (C10): the default behaviour is unchanged

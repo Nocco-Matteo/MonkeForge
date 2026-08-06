@@ -477,9 +477,10 @@ _RATIONALE = {
              "not moving",
     "converging": "blockers are strictly decreasing — the debate is closing",
     "unknown": "no clear trend — proceed to the verdict",
-    "requirements": "the blocker is in the brief (REQUIREMENTS), not the plan "
-                     "— stop and ./run.py redo <id> --from intake so the "
-                     "interviewer re-asks the human",
+    "requirements_below_max": "the blocker is in the brief (REQUIREMENTS), not "
+                               "the plan — re-intake carries the gaps to the "
+                               "interviewer",
+    "requirements_at_max": "max re-intakes reached — proceed to the verdict",
 }
 
 # TASK-024: thrashing-refinement rationale strings. Distinct from
@@ -501,7 +502,8 @@ _RATIONALE_THRASHING_FRESH = (
 
 
 def _build_triage(debate_text: str, reason_prefix: str,
-                  *, debate_round_bonus: int = 0) -> dict:
+                  *, debate_round_bonus: int = 0,
+                  reintake_count: int = 0, max_reintakes: int | None = None) -> dict:
     """Build the triage dict attached to a debate escalation.
 
     Always calls ``condenser.thrashing_report`` first to populate
@@ -521,10 +523,12 @@ def _build_triage(debate_text: str, reason_prefix: str,
       (converging → ``"continue"``; else ``"ok"``), EXCEPT when
       ``mode == "thrashing"`` the same refinement policy as the
       ``"debate thrashing"`` branch applies (so both thrashing surfaces agree).
-    - ``"debate requirements"`` → forces ``mode="requirements"`` and
-      ``recommended="stop"`` (the blocker is in the brief, not the plan), while
-      still calling ``thrashing_report`` first so blocker_counts/repeated/new
-      are populated for the CLI/bot rendering.
+    - ``"debate requirements"`` → forces ``mode="requirements"``. TASK-033:
+      below MAX (``reintake_count < max_reintakes``) → ``recommended="re-intake"``
+      (the blocker is in the brief — re-intake carries the gaps to the
+      interviewer); at MAX → ``recommended="ok"`` (max re-intakes reached —
+      proceed to the verdict). ``max_reintakes=None`` preserves the legacy
+      below-MAX behaviour for non-requirements prefixes / un-updated callers.
 
     ``debate_round_bonus`` is the keyword-only state proxy for "the human
     already extended the debate once". It defaults to ``0`` (fresh surface)
@@ -550,8 +554,17 @@ def _build_triage(debate_text: str, reason_prefix: str,
         return "ok", _RATIONALE_THRASHING_FRESH
 
     if reason_prefix == "debate requirements":
-        recommended = "stop"
-        rationale = _RATIONALE["requirements"]
+        # TASK-033: re-intake is the in-graph recovery below MAX; at MAX the
+        # menu offers ok (RECOMMENDED) so the run can ship with the gaps
+        # recorded as a degradation. max_reintakes=None → treat as below-MAX
+        # (preserves old behaviour for un-updated callers).
+        at_max = max_reintakes is not None and reintake_count >= max_reintakes
+        if at_max:
+            recommended = "ok"
+            rationale = _RATIONALE["requirements_at_max"]
+        else:
+            recommended = "re-intake"
+            rationale = _RATIONALE["requirements_below_max"]
         mode = "requirements"
     elif reason_prefix == "debate exhausted":
         if mode == "thrashing":
@@ -578,39 +591,51 @@ def _build_triage(debate_text: str, reason_prefix: str,
 
 
 def _check_requirements_escalation(
-    debate_text: str, *, task_id: str | None = None
+    debate_text: str, *, task_id: str | None = None,
+    reintake_count: int = 0, max_reintakes: int | None = None,
 ) -> dict | None:
     """Detect a REQUIREMENTS-provenanced blocker in the latest round.
 
     Item 29-31: a ``[BLOCKER:REQUIREMENTS]`` tag means the critic believes the
     issue lives in the brief, not the plan — escalate immediately with a
-    ``"debate requirements:"`` prefix. The human menu is the full
-    continue/redo/stop/ok set (same keys as stuck/thrashing); ``recommended``
-    is ``"stop"`` so the CLI/bot highlight re-intake, while ``continue``
-    remains available when PLAN blockers can still be fixed by more rounds.
-    ``ok`` proceeds to the verdict (clearing the bonus); ``stop`` ends the run
-    so ``./run.py redo <id> --from intake`` can re-open the interview.
+    ``"debate requirements:"`` prefix. The human menu is the
+    continue/redo/stop/re-intake set below MAX (re-intake RECOMMENDED) and
+    adds ``ok`` at MAX (ok RECOMMENDED); ``continue`` remains available when
+    PLAN blockers can still be fixed by more rounds. ``ok`` proceeds to the
+    verdict (clearing the bonus); ``stop`` ends the run; ``re-intake`` re-opens
+    the interviewer in-graph with the gaps carried forward.
 
-    When ``task_id`` is set, the claims are persisted to
-    ``TASK-{id}-requirements-gap.md`` so re-intake receives the *same* gaps
-    (not a blind re-interview).
+    TASK-033: when ``task_id`` is set, the structured items (claim +
+    Evidence/Impact) are persisted to ``TASK-{id}-requirements-gap.md`` via
+    ``write_requirements_gap`` (merge + active) — this is the normal
+    REQUIREMENTS escalation Evidence/Impact path, not only debate-prefix
+    ``stop``. The escalation message is built from the claim strings.
+
+    ``reintake_count``/``max_reintakes`` thread into ``_build_triage`` so the
+    recommended hint flips from ``re-intake`` (below MAX) to ``ok`` (at MAX).
+    Defaults (``0``/``None``) preserve the legacy below-MAX behaviour for
+    un-updated callers.
 
     The ``condenser`` import is function-local to avoid the
     ``condenser``↔``nodes.debate`` import cycle (condenser imports
     ``TECH_LIMIT_RE`` from this module at load time) — the same load-bearing
     pattern as ``_check_early_escalation``.
     """
-    from ..condenser import latest_requirements_blockers
+    from ..condenser import latest_requirements_blockers_structured
 
-    claims = latest_requirements_blockers(debate_text)
-    if not claims:
+    structured = latest_requirements_blockers_structured(debate_text)
+    if not structured:
         return None
+    claims = [d["claim"] for d in structured]
     if task_id:
         from ..requirements_gap import write_requirements_gap
 
-        write_requirements_gap(task_id, claims)
+        write_requirements_gap(task_id, structured)
     joined = "; ".join(claims)
-    triage = _build_triage(debate_text, "debate requirements")
+    triage = _build_triage(
+        debate_text, "debate requirements",
+        reintake_count=reintake_count, max_reintakes=max_reintakes,
+    )
     return {
         "escalation": (
             f"debate requirements: {len(claims)} blocker(s) tagged as "
@@ -754,7 +779,11 @@ def debate_tech(state):
         early = None if grace else _check_early_escalation(text, rnd)
         thrash = None if grace else _check_thrashing_escalation(
             text, rnd, debate_round_bonus=state.get("debate_round_bonus") or 0)
-        req = _check_requirements_escalation(text, task_id=tid)
+        req = _check_requirements_escalation(
+            text, task_id=tid,
+            reintake_count=state.get("requirements_reintake_count", 0),
+            max_reintakes=C.MAX_REQUIREMENTS_REINTAKES,
+        )
         if req:
             decision = req
         elif early:
@@ -930,7 +959,11 @@ def debate_ux(state):
     early = None if grace else _check_early_escalation(debate_text, rnd)
     thrash = None if grace else _check_thrashing_escalation(
         debate_text, rnd, debate_round_bonus=state.get("debate_round_bonus") or 0)
-    req = _check_requirements_escalation(debate_text, task_id=tid)
+    req = _check_requirements_escalation(
+        debate_text, task_id=tid,
+        reintake_count=state.get("requirements_reintake_count", 0),
+        max_reintakes=C.MAX_REQUIREMENTS_REINTAKES,
+    )
     if req:
         delta.update(req)
     elif early:

@@ -409,42 +409,71 @@ class TestRequirementsPrecedence(unittest.TestCase):
 
 
 class TestDebateRequirementsMenu(unittest.TestCase):
-    def test_debate_requirements_prefix_returns_correct_keys(self):
+    def test_debate_requirements_prefix_returns_correct_keys_below_max(self):
+        # TASK-033: below MAX the menu is continue/redo/stop/re-intake
+        # (re-intake RECOMMENDED); no ok.
         opts = _common._escalation_options(
-            "debate requirements: 1 blocker(s) tagged as belonging to the REQUIREMENTS"
+            "debate requirements: 1 blocker(s) tagged as belonging to the REQUIREMENTS",
+            state={"requirements_reintake_count": 0},
         )
         self.assertEqual(
-            {o["key"] for o in opts}, {"continue", "redo", "stop", "ok"}
+            {o["key"] for o in opts},
+            {"continue", "redo", "stop", "re-intake"},
         )
+
+    def test_debate_requirements_at_max_adds_ok(self):
+        # TASK-033: at MAX the menu adds ok (RECOMMENDED) and keeps re-intake.
+        opts = _common._escalation_options(
+            "debate requirements: brief issue",
+            state={"requirements_reintake_count": 2},
+        )
+        keys = {o["key"] for o in opts}
+        self.assertIn("ok", keys)
+        self.assertIn("re-intake", keys)
+        ok_label = next(o["label"] for o in opts if o["key"] == "ok")
+        self.assertIn("RECOMMENDED", ok_label)
 
     def test_debate_requirements_tested_before_intake_branch(self):
         # A reason that starts with "debate requirements:" but also contains
         # "intake" must route to the debate-requirements menu, not intake.
         opts = _common._escalation_options(
-            "debate requirements: intake brief is wrong"
+            "debate requirements: intake brief is wrong",
+            state={"requirements_reintake_count": 0},
         )
         keys = {o["key"] for o in opts}
-        self.assertEqual(keys, {"continue", "redo", "stop", "ok"})
+        self.assertEqual(keys, {"continue", "redo", "stop", "re-intake"})
         self.assertNotIn("skip / done", keys)
 
     def test_debate_requirements_no_skip_key(self):
-        opts = _common._escalation_options("debate requirements: brief issue")
+        opts = _common._escalation_options(
+            "debate requirements: brief issue",
+            state={"requirements_reintake_count": 0},
+        )
         keys = {o["key"] for o in opts}
         self.assertNotIn("skip", keys)
-        self.assertEqual(keys, {"continue", "redo", "stop", "ok"})
+        self.assertEqual(keys, {"continue", "redo", "stop", "re-intake"})
 
-    def test_stop_label_marks_recommended(self):
-        opts = _common._escalation_options("debate requirements: brief issue")
+    def test_re_intake_label_marks_recommended_below_max(self):
+        # TASK-033: re-intake is RECOMMENDED below MAX; stop no longer carries
+        # --from intake (the CLI is a fallback, not the primary path).
+        opts = _common._escalation_options(
+            "debate requirements: brief issue",
+            state={"requirements_reintake_count": 0},
+        )
         by_key = {o["key"]: o["label"] for o in opts}
-        self.assertIn("RECOMMENDED", by_key["stop"])
-        self.assertIn("--from intake", by_key["stop"])
-        self.assertIn("saved for", by_key["stop"].lower())
-        self.assertNotIn("amend the brief", by_key["stop"].lower())
+        self.assertIn("RECOMMENDED", by_key["re-intake"])
+        self.assertNotIn("--from intake", by_key["stop"])
+        self.assertIn("saved for", by_key["re-intake"].lower())
+        self.assertNotIn("amend the brief", by_key["re-intake"].lower())
 
     def test_case_insensitive_prefix(self):
-        opts = _common._escalation_options("Debate Requirements: something")
+        opts = _common._escalation_options(
+            "Debate Requirements: something",
+            state={"requirements_reintake_count": 0},
+        )
         self.assertEqual(
-            {o["key"] for o in opts}, {"continue", "redo", "stop", "ok"}
+            {o["key"] for o in opts},
+            {"continue", "redo", "stop", "re-intake"},
         )
 
 # --- escalate() prefix gate (items 34-35) -----------------------------------
@@ -459,24 +488,63 @@ class TestEscalateDebateRequirementsGate(unittest.TestCase):
              patch.object(_common.ev, "close_escalation"):
             return _common.escalate(st)
 
+    def _at_max_state(self, reason, **extra):
+        st = {"task_id": "dr", "escalation": reason, "journal": [],
+              "requirements_reintake_count": 2}
+        st.update(extra)
+        return st
+
     def test_ok_clears_bonus_and_redo_debate_false(self):
-        # Item 35: "ok" on a "debate requirements:" escalation sets
-        # debate_round_bonus=0 and redo_debate=False.
-        d = self._escalate("ok", "debate requirements: brief issue")
+        # Item 35 + TASK-033: "ok" on a "debate requirements:" escalation is
+        # only valid at MAX; at MAX it sets debate_round_bonus=0 and
+        # redo_debate=False.
+        d = self._escalate(
+            "ok", "debate requirements: brief issue",
+            state=self._at_max_state("debate requirements: brief issue"),
+        )
         self.assertEqual(d.get("debate_round_bonus"), 0)
         self.assertEqual(d.get("redo_debate"), False)
         self.assertEqual(d.get("escalation"), "")
 
     def test_ok_clears_bonus_even_if_prior_bonus_existed(self):
-        state = {
-            "task_id": "dr",
-            "escalation": "debate requirements: brief issue",
-            "journal": [],
-            "debate_round_bonus": 4,
-        }
+        state = self._at_max_state(
+            "debate requirements: brief issue", debate_round_bonus=4,
+        )
         d = self._escalate("ok", "debate requirements: brief issue", state=state)
         self.assertEqual(d.get("debate_round_bonus"), 0)
         self.assertEqual(d.get("redo_debate"), False)
+
+    def test_ok_below_max_reopened(self):
+        # TASK-033: below MAX ``ok`` is not in valid_keys → the validator
+        # re-opens the menu (returns the escalation reason, not a resolution).
+        d = self._escalate(
+            "ok", "debate requirements: brief issue",
+            state={"task_id": "dr", "escalation": "debate requirements: brief issue",
+                   "journal": [], "requirements_reintake_count": 0},
+        )
+        self.assertEqual(d.get("escalation"), "debate requirements: brief issue")
+
+    def test_ok_at_max_waives_gap_and_appends_degradation(self):
+        # TASK-033 (C7): ok at MAX waives the gap + appends the degradation
+        # literal (single-element list, no duplication of prior entries).
+        import tempfile
+        from pathlib import Path
+        from pipeline_graph import requirements_gap as RG
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = Path(tmp) / "tasks"
+            tasks.mkdir()
+            with patch.object(RG.C, "TASKS", tasks), \
+                 patch.object(RG.C, "ensure_dirs", lambda: None):
+                RG.write_requirements_gap("dr", ["brief is wrong"])
+                d = self._escalate(
+                    "ok", "debate requirements: brief issue",
+                    state=self._at_max_state("debate requirements: brief issue"),
+                )
+                self.assertEqual(
+                    d.get("degradations"),
+                    ["shipped with unresolved REQUIREMENTS gaps (max re-intakes reached)"],
+                )
+                self.assertEqual(RG.gap_status("dr"), "waived")
 
     def test_stop_stops_run(self):
         d = self._escalate("stop", "debate requirements: brief issue")
@@ -491,6 +559,7 @@ class TestEscalateDebateRequirementsGate(unittest.TestCase):
             "journal": [],
             "debate_round": 1,
             "debate_round_bonus": 0,
+            "requirements_reintake_count": 0,
         }
         d = self._escalate(
             "continue", "debate requirements: brief issue", state=state
@@ -502,23 +571,38 @@ class TestEscalateDebateRequirementsGate(unittest.TestCase):
     def test_does_not_fire_ux_branch(self):
         # The reason contains "blocker" but the prefix gate forces ux_escalation
         # False, so "ok" must NOT set ux_shipped_blocked.
-        d = self._escalate("ok", "debate requirements: UX blocker in brief")
+        d = self._escalate(
+            "ok", "debate requirements: UX blocker in brief",
+            state=self._at_max_state("debate requirements: UX blocker in brief"),
+        )
         self.assertNotIn("ux_shipped_blocked", d)
 
     def test_does_not_fire_render_branch(self):
-        d = self._escalate("ok", "debate requirements: cannot render the brief")
+        d = self._escalate(
+            "ok", "debate requirements: cannot render the brief",
+            state=self._at_max_state("debate requirements: cannot render the brief"),
+        )
         self.assertNotIn("visual_shipped_blocked", d)
 
     def test_does_not_fire_final_test_branch(self):
-        d = self._escalate("ok", "debate requirements: final test gate in brief")
+        d = self._escalate(
+            "ok", "debate requirements: final test gate in brief",
+            state=self._at_max_state("debate requirements: final test gate in brief"),
+        )
         self.assertNotIn("final_tests_waived", d)
 
     def test_does_not_fire_crash_branch(self):
-        d = self._escalate("ok", "debate requirements: step crashed in debate_tech")
+        d = self._escalate(
+            "ok", "debate requirements: step crashed in debate_tech",
+            state=self._at_max_state("debate requirements: step crashed in debate_tech"),
+        )
         self.assertNotIn("code_verdict", d)
 
     def test_does_not_fire_intake_branch(self):
-        d = self._escalate("ok", "debate requirements: intake brief is wrong")
+        d = self._escalate(
+            "ok", "debate requirements: intake brief is wrong",
+            state=self._at_max_state("debate requirements: intake brief is wrong"),
+        )
         self.assertNotIn("intake_done", d)
 
 

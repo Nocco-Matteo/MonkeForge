@@ -416,12 +416,32 @@ class EscalateStopIsUniversal(unittest.TestCase):
     def test_debate_menu_offers_the_requirements_escape(self):
         """A debate that cannot converge because the BRIEF is wrong has no
         in-graph fix; the menu must say so instead of only offering answers
-        that replay the same plan."""
-        opts = _common._escalation_options(self.DEBATE)
-        keys = {o["key"] for o in opts}
-        self.assertIn("stop", keys)
-        stop_label = next(o["label"] for o in opts if o["key"] == "stop")
-        self.assertIn("--from intake", stop_label)
+        that replay the same plan.
+
+        TASK-033 (C12): the stop label mentions ``--from intake`` only when a
+        REQUIREMENTS gap is active or claims are extractable from the live/
+        ``-full`` debate. This test seeds an active gap file so the CLI fallback
+        wording is present (the in-graph re-intake path is exercised by the
+        ``debate requirements:`` menu tests in test_debate_provenance)."""
+        import tempfile
+        from pathlib import Path
+        from pipeline_graph import requirements_gap as RG
+        with tempfile.TemporaryDirectory() as tmp:
+            tasks = Path(tmp) / "tasks"
+            tasks.mkdir()
+            debates = Path(tmp) / "debates"
+            debates.mkdir()
+            with patch.object(RG.C, "TASKS", tasks), \
+                 patch.object(RG.C, "ensure_dirs", lambda: None), \
+                 patch.object(_common.C, "DEBATES", debates):
+                RG.write_requirements_gap("fl", ["brief is wrong"])
+                opts = _common._escalation_options(
+                    self.DEBATE, state={"task_id": "fl"}
+                )
+                keys = {o["key"] for o in opts}
+                self.assertIn("stop", keys)
+                stop_label = next(o["label"] for o in opts if o["key"] == "stop")
+                self.assertIn("--from intake", stop_label)
 
     def test_intake_stop_ends_interview_not_the_run(self):
         """Exempt: for the intake interview "stop" is an INTAKE_END_ANSWERS

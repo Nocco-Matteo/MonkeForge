@@ -2782,13 +2782,44 @@ def main(argv=None) -> int:
                 as_node, nxt = "close_batch", "ux_render"
                 reuse = "the built UI"
             elif args.from_phase == "intake":
-                # REQUIREMENTS recovery: re-open the interviewer with the
-                # concrete gaps from debate (not a blind re-interview). Persist
-                # claims from the debate file if the gap file is missing, THEN
-                # clear plan+debate so they regenerate from the new contract.
-                from pipeline_graph.requirements_gap import ensure_gap_from_debate_file
+                # TASK-033: REQUIREMENTS recovery. Re-open the interviewer with
+                # the concrete gaps from debate (not a blind re-interview).
+                # Keep PLAN-{id}.md (the plan regenerates from the new brief
+                # via the plan node; deleting it would lose the prior plan
+                # context the operator may want to diff against). Archive the
+                # live debate → -full (append-only; NEVER delete -full) and the
+                # live intake → -history (append-only) so I3 sees only the
+                # fresh file's answers. ensure_gap_from_debate_file reconciles
+                # the gap file (active/suspended → active+claims; waived → [];
+                # missing → extract from live/-full debate). When no claims are
+                # extractable AND no gap file exists, exit 2 with a message so
+                # the operator does not re-interview blindly.
+                from pipeline_graph.requirements_gap import (
+                    ensure_gap_from_debate_file,
+                    archive_live_debate_for_reintake,
+                    archive_intake_for_reintake,
+                    read_requirements_gap,
+                )
 
-                ensure_gap_from_debate_file(args.task_id)
+                # Archive BEFORE ensure_gap (ensure_gap reads the live/-full
+                # debate; archiving live→-full first means -full carries the
+                # live body, then ensure_gap extracts from -full if live is
+                # gone). The order is: archive live debate → -full, then
+                # ensure_gap (reads -full if live was just archived), then
+                # archive intake → -history.
+                archive_live_debate_for_reintake(args.task_id)
+                claims = ensure_gap_from_debate_file(args.task_id)
+                gap_body = read_requirements_gap(args.task_id)
+                if not claims and not gap_body.strip():
+                    print(
+                        "redo --from intake: no REQUIREMENTS gaps found in the "
+                        "debate or the gap file — nothing to re-ask. Re-run the "
+                        "debate to surface a REQUIREMENTS blocker first, or use "
+                        "'redo --from plan' to re-plan from the existing brief.",
+                        file=sys.stderr,
+                    )
+                    return 2
+                archive_intake_for_reintake(args.task_id)
                 reset = {
                     "escalation": "", "finished": False,
                     "intake_done": False, "intake_round": 0,
@@ -2811,11 +2842,13 @@ def main(argv=None) -> int:
                 if args.effort:
                     reset["effort"] = args.effort
                     reset["effort_forced"] = True
+                # Keep PLAN-{id}.md and DEBATE-{id}-full.md. Delete only the
+                # live debate (already archived to -full above) and the UX
+                # review (a stale UX verdict would short-circuit the new
+                # debate's UX critic).
                 for path in (
                     C.DEBATES / f"DEBATE-{args.task_id}.md",
-                    C.DEBATES / f"DEBATE-{args.task_id}-full.md",
                     C.REVIEWS / f"UX-{args.task_id}.md",
-                    C.PLANS / f"PLAN-{args.task_id}.md",
                 ):
                     path.unlink(missing_ok=True)
             else:

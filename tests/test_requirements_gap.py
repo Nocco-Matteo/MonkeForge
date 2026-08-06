@@ -56,13 +56,86 @@ class TestRequirementsGapFile(unittest.TestCase):
         claims = RG.ensure_gap_from_debate_file("031")
         self.assertTrue(any("prune" in c for c in claims))
         self.assertIn("prune", RG.read_requirements_gap("031"))
-        # Second call does not overwrite when file exists.
+        # TASK-033: second call with an active gap file returns the parsed
+        # claims (the file is the source of truth once materialized); a later
+        # escalation re-merges via write_requirements_gap, not via this helper.
         debate.write_text(
             "## Round 1 — Reviewer\nVERDICT: REJECT\n"
             "[BLOCKER:REQUIREMENTS] B1: different claim.\n"
         )
-        self.assertEqual(RG.ensure_gap_from_debate_file("031"), [])
+        again = RG.ensure_gap_from_debate_file("031")
+        self.assertTrue(any("prune" in c for c in again))
         self.assertIn("prune", RG.read_requirements_gap("031"))
+
+    def test_structured_items_merge_by_normalized_claim(self):
+        # First write seeds one gap.
+        RG.write_requirements_gap("031", ["prune vs branch collision"])
+        # Second write with the SAME normalized claim (whitespace differs) but
+        # now carrying Evidence/Impact merges — does NOT blind-overwrite, does
+        # NOT duplicate the gap entry.
+        RG.write_requirements_gap(
+            "031",
+            [{"claim": "prune  vs  branch collision",
+              "evidence": "PLAN §2", "impact": "wt/branch drift"}],
+        )
+        body = RG.read_requirements_gap("031")
+        # One gap entry (merge by normalized claim — whitespace collapse).
+        self.assertEqual(body.count("## Gap "), 1)
+        self.assertIn("Evidence: PLAN §2", body)
+        self.assertIn("Impact: wt/branch drift", body)
+        # A genuinely new claim is added (union), not merged away.
+        RG.write_requirements_gap("031", ["a different brief hole"])
+        body = RG.read_requirements_gap("031")
+        self.assertEqual(body.count("## Gap "), 2)
+
+    def test_gap_status_set_gap_status_round_trip(self):
+        RG.write_requirements_gap("031", ["B1: active gap"])
+        self.assertEqual(RG.gap_status("031"), "active")
+        RG.suspend_requirements_gap("031")
+        self.assertEqual(RG.gap_status("031"), "suspended")
+        RG.waive_requirements_gap("031")
+        self.assertEqual(RG.gap_status("031"), "waived")
+        # set_gap_status back to active reactivates in place.
+        RG.set_gap_status("031", "active")
+        self.assertEqual(RG.gap_status("031"), "active")
+
+    def test_gap_block_for_prompt_sentinel_when_suspended_or_waived(self):
+        RG.write_requirements_gap("031", ["B1: active gap"])
+        self.assertIn("active gap", RG.gap_block_for_prompt("031"))
+        RG.suspend_requirements_gap("031")
+        self.assertIn("(none", RG.gap_block_for_prompt("031"))
+        RG.set_gap_status("031", "active")
+        RG.waive_requirements_gap("031")
+        self.assertIn("(none", RG.gap_block_for_prompt("031"))
+
+    def test_ensure_gap_from_debate_file_reactivates_suspended_to_active(self):
+        # Seed an active gap, then suspend it; ensure reactivates → active and
+        # returns the parsed claims.
+        RG.write_requirements_gap("031", ["B1: prune vs branch collision"])
+        RG.suspend_requirements_gap("031")
+        self.assertEqual(RG.gap_status("031"), "suspended")
+        claims = RG.ensure_gap_from_debate_file("031")
+        self.assertEqual(RG.gap_status("031"), "active")
+        self.assertTrue(any("prune" in c for c in claims))
+
+    def test_ensure_gap_from_debate_file_waived_returns_empty(self):
+        RG.write_requirements_gap("031", ["B1: waived gap"])
+        RG.waive_requirements_gap("031")
+        self.assertEqual(RG.ensure_gap_from_debate_file("031"), [])
+
+    def test_evidence_impact_lines_present_when_critic_block_emits_them(self):
+        debate = self.debates / "DEBATE-031.md"
+        debate.write_text(
+            "## Round 1 — Reviewer\n"
+            "VERDICT: REJECT\n"
+            "[BLOCKER:REQUIREMENTS] B1: prune vs branch collision.\n"
+            "Evidence: PLAN §2\n"
+            "Impact: wt/branch drift\n"
+        )
+        RG.ensure_gap_from_debate_file("031")
+        body = RG.read_requirements_gap("031")
+        self.assertIn("Evidence: PLAN §2", body)
+        self.assertIn("Impact: wt/branch drift", body)
 
 
 class TestCheckRequirementsWritesGap(unittest.TestCase):

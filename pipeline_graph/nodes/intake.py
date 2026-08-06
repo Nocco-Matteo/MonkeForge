@@ -16,7 +16,13 @@ from ..intake_materialize import (
     materialize_intake_output,
     missing_contract_sections,
 )
-from ..requirements_gap import clear_requirements_gap, gap_block_for_prompt
+from ..requirements_gap import (
+    clear_requirements_gap,
+    gap_block_for_prompt,
+    gap_status,
+    n_active_gaps,
+    waive_requirements_gap,
+)
 from ..state import Conversation
 from .common import _dirty_blocks_interactive_init, _dirty_paths, _git, _rel
 
@@ -32,6 +38,16 @@ def intake_file(task_id: str) -> Path:
     return C.TASKS / f"TASK-{task_id}-intake.md"
 
 
+def intake_history_file(task_id: str) -> Path:
+    """TASK-033: append-only archive of prior re-intake cycles' transcripts.
+
+    ``archive_intake_for_reintake`` appends the live intake body here then
+    deletes the live file, so I3 sees only the fresh file's answers (no false
+    pass from a prior cycle's ``**A:**`` markers).
+    """
+    return C.TASKS / f"TASK-{task_id}-intake-history.md"
+
+
 def refs_dir(task_id: str) -> Path:
     return C.TASKS / f"TASK-{task_id}-refs"
 
@@ -45,6 +61,41 @@ def intake_answers(task_id: str) -> list[str]:
     if not path.exists():
         return []
     return [a for a in ANSWER_RE.findall(path.read_text()) if a.strip()]
+
+
+# --- TASK-033: I3 (REQUIREMENTS gap answer) gate helpers --------------------
+
+
+def _i3_gap_answered(task_id: str) -> bool:
+    """True iff every active REQUIREMENTS gap has a matching ``**A:**`` line.
+
+    The I3 gate compares the count of ``## Gap N`` entries in the gap file
+    against the count of ``**A:**`` answer markers in the *live* intake file
+    (the history archive is excluded — only this cycle's answers count). A
+    suspended/waived gap (``n_active_gaps`` returns 0) passes trivially.
+    """
+    n_gaps = n_active_gaps(task_id)
+    if n_gaps <= 0:
+        return True
+    n_answers = len(intake_answers(task_id))
+    return n_answers >= n_gaps
+
+
+def _i3_rejection_message(task_id: str) -> str:
+    """The escalation reason when I3 fails (active gap, not enough answers)."""
+    n_gaps = n_active_gaps(task_id)
+    n_answers = len(intake_answers(task_id))
+    return (
+        f"REQUIREMENTS gap re-intake not complete: {n_gaps} active gap(s) but "
+        f"only {n_answers} answer(s) in the intake file — answer each gap "
+        f"with a **A:** line, then resume (or 'skip' to waive the gaps and "
+        f"ship with a degradation)"
+    )
+
+
+def _i3_gap_active(task_id: str) -> bool:
+    """True iff a REQUIREMENTS gap is active (so I3 / the active-gap split apply)."""
+    return gap_status(task_id) == "active"
 
 
 def _seed_brief(task_id: str, request: str) -> Path:
@@ -288,6 +339,17 @@ def intake_ask(state):
         }
 
     if has_brief:
+        # TASK-033 (I3): if a REQUIREMENTS gap is active, the interviewer MUST
+        # have answered each gap (one **A:** line per ``## Gap N``) before
+        # COMPLETE is accepted. Without this gate a re-intake that wrote a
+        # contract brief but skipped the gaps would silently pass and the run
+        # would ship with the brief unchanged on the flagged holes.
+        if _i3_gap_active(tid) and not _i3_gap_answered(tid):
+            return {
+                "intake_round": rnd,
+                "escalation": _i3_rejection_message(tid),
+                "journal": [f"intake r{rnd}: I3 gate failed — gaps unanswered"],
+            }
         ev.emit(
             "intake_complete",
             tid,
@@ -296,14 +358,21 @@ def intake_ask(state):
         )
         # Re-intake handoff consumed: drop the gap file so a later unrelated
         # redo does not re-ask stale debate claims.
+        was_active = _i3_gap_active(tid)
         clear_requirements_gap(tid)
-        # The brief replaces the seed request as what `plan` works from.
-        return {
+        # TASK-033: increment the re-intake counter only when a gap was active
+        # (a first-run COMPLETE with no gap file does not count as a re-intake).
+        delta = {
             "intake_round": rnd,
             "intake_done": True,
             "brief_path": str(brief_file(tid)),
             "journal": [f"intake r{rnd}: brief complete"],
         }
+        if was_active:
+            delta["requirements_reintake_count"] = (
+                int(state.get("requirements_reintake_count", 0)) + 1
+            )
+        return delta
 
     if rnd >= C.MAX_INTAKE_ROUNDS:
         return {
@@ -334,7 +403,19 @@ INTAKE_SUBMIT_ANSWERS = ("ok", "yes", "submit", "continue", "proceed")
 
 
 def intake_wait(state):
-    """Pure human gate: no agent, so replaying it on resume costs nothing."""
+    """Pure human gate: no agent, so replaying it on resume costs nothing.
+
+    TASK-033: when a REQUIREMENTS gap is active, the human-gate answers split:
+    - ``ok``/``submit``/``continue``/``proceed``/``yes`` with answers on disk →
+      run the I3 gate; pass → intake_done + count increment; fail → escalate
+      (the operator answers the gaps or skips);
+    - ``skip``/``done``/``enough`` → waive the gap + count increment +
+      degradation + clear batches + debate_round=0 (route_escalation_return
+      sends intake_done=True to debate_tech);
+    - ``stop``/``no``/``abort``/``cancel`` → finish the run (gap stays active,
+      count unchanged);
+    - no active gap → today's semantics (end/submit/no-new-answers).
+    """
     tid = state["task_id"]
     answered = len(intake_answers(tid))
     answer = interrupt(
@@ -350,6 +431,49 @@ def intake_wait(state):
         }
     )
     ans = str(answer).strip().lower()
+    active_gap = _i3_gap_active(tid)
+
+    if active_gap and ans in ("stop", "no", "abort", "cancel"):
+        # TASK-033: stop with an active gap finishes the run; the gap stays
+        # active so a later CLI redo --from intake or fresh run still finds it.
+        return {
+            "finished": True,
+            "journal": [
+                f"intake: stopped by user ({answer}) — run finished, "
+                "REQUIREMENTS gap stays active"
+            ],
+        }
+
+    if active_gap and ans in ("skip", "done", "enough"):
+        # TASK-033: waive the gap + count increment + degradation + clear
+        # batches + debate_round=0. route_escalation_return sees intake_done
+        # and routes to debate_tech (the plan regenerates from the waived
+        # brief; the degradation is recorded).
+        waive_requirements_gap(tid)
+        path = _seed_brief(tid, state.get("request", ""))
+        return {
+            "intake_done": True,
+            "intake_unanswered": False,
+            "brief_path": str(path),
+            "requirements_reintake_count": (
+                int(state.get("requirements_reintake_count", 0)) + 1
+            ),
+            "degradations": [
+                "shipped with REQUIREMENTS gaps waived at intake"
+            ],
+            "batches": [],
+            "batch_idx": 0,
+            "code_verdict": "",
+            "fix_cycle": 0,
+            "test_fix_attempt": 0,
+            "test_fix_failures": [],
+            "test_fix_summary": "",
+            "debate_round": 0,
+            "journal": [
+                f"intake: ended early by user ({answer}) — REQUIREMENTS gaps "
+                "waived, count incremented, planning from the brief as it stands"
+            ],
+        }
 
     if ans in INTAKE_END_ANSWERS:
         # _seed_brief carries the transcript in, so ending early never discards
@@ -368,6 +492,20 @@ def intake_wait(state):
     # an explicit submit with answers on disk as consent to spend a round.
     n_now = len(intake_answers(tid))
     if ans in INTAKE_SUBMIT_ANSWERS and n_now > 0:
+        # TASK-033 (I3): with an active gap, a submit with answers runs the
+        # I3 gate. Pass → intake_done + count increment (the interviewer's
+        # next intake_ask will write the brief; but if the brief is already
+        # present and contract-shaped, treat this as the COMPLETE path). Fail
+        # → escalate so the operator answers the gaps or skips.
+        if active_gap and not _i3_gap_answered(tid):
+            return {
+                "escalation": _i3_rejection_message(tid),
+                "intake_unanswered": False,
+                "journal": [
+                    f"intake: submitted ({n_now} answers, {answer}) — I3 gate "
+                    "failed, gaps unanswered"
+                ],
+            }
         return {
             "intake_unanswered": False,
             "journal": [f"intake: submitted ({n_now} answers, {answer})"],

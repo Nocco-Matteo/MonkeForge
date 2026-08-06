@@ -69,9 +69,18 @@ def route_after_init(state):
 
 @_safe_router
 def route_intake(state):
-    """After the interviewer ran: done, or go wait for the human."""
+    """After the interviewer ran: done, or go wait for the human.
+
+    TASK-033: ``finished`` (a stop with an active gap from the intake_wait
+    split) routes to END. ``intake_done`` always routes to ``plan`` — a
+    re-intake cycle (count > 0) changed the brief, so the plan MUST regenerate
+    from the new contract before the debate restarts (plan → checkpoint_effort
+    → debate_tech). Routing directly to debate_tech would debate a stale plan.
+    """
     if state.get("escalation"):
         return "escalate"
+    if state.get("finished"):
+        return END
     return "plan" if state.get("intake_done") else "wait"
 
 
@@ -81,9 +90,16 @@ def route_intake_wait(state):
 
     Resuming without having written any new answer must not burn an interviewer
     round — it bounces straight back to the gate instead.
+
+    TASK-033: ``finished`` (a stop with an active gap) routes to END.
+    ``intake_done`` always routes to ``plan`` — a re-intake cycle (count > 0)
+    changed the brief, so the plan MUST regenerate from the new contract
+    before the debate restarts (plan → checkpoint_effort → debate_tech).
     """
     if state.get("escalation"):
         return "escalate"
+    if state.get("finished"):
+        return END
     if state.get("intake_done"):
         return "plan"
     return "wait" if state.get("intake_unanswered") else "ask"
@@ -336,11 +352,12 @@ def build_graph(checkpointer=None):
                              "escalate": "escalate"})
     g.add_conditional_edges("intake_ask", route_intake,
                             {"plan": "plan", "wait": "intake_wait",
-                             "escalate": "escalate"})
+                             "escalate": "escalate", END: END})
     # The loop: answers go back to the interviewer, which may drill down again.
     g.add_conditional_edges("intake_wait", route_intake_wait,
                             {"plan": "plan", "ask": "intake_ask",
-                             "wait": "intake_wait", "escalate": "escalate"})
+                             "wait": "intake_wait",
+                             "escalate": "escalate", END: END})
     g.add_conditional_edges("plan", after(),
                             {"continue": "checkpoint_effort", "escalate": "escalate"})
     # The effort checkpoint routes to summary (scout) or debate_tech (troop/barrel).

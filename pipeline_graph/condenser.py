@@ -490,6 +490,32 @@ def latest_requirements_blockers(debate_text: str) -> list[str]:
 
     Returns the cleaned claims in first-seen order. Empty/None input or no
     rounds → ``[]``.
+
+    TASK-033: now a thin view over ``latest_requirements_blockers_structured``
+    so the structured extractor (claim + Evidence/Impact) is the single source
+    of truth and existing string-form callers are untouched.
+    """
+    return [d["claim"] for d in latest_requirements_blockers_structured(debate_text)]
+
+
+# TASK-033: line-anchored Evidence/Impact extractors. Same ``re.MULTILINE``
+# family as ``_RAISE_LINE_RE``; bounded to the same critic item block (the
+# lines following a raise line up to the next raise line / ``## `` header /
+# section end — matches ``debate_review.md`` lines 102–105 "max 4 lines each").
+_EVIDENCE_LINE_RE = re.compile(r"^\s*Evidence:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_IMPACT_LINE_RE = re.compile(r"^\s*Impact:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+
+
+def latest_requirements_blockers_structured(debate_text: str) -> list[dict]:
+    """Return ``[{claim, evidence, impact}]`` for ``[BLOCKER:REQUIREMENTS]`` raises.
+
+    TASK-033: mirrors ``latest_requirements_blockers`` (last round, last section
+    per critic, verdict filter, REQUIREMENTS-only) but, for each matched raise
+    line, scans the following lines of the same critic item block for
+    ``Evidence:`` and ``Impact:`` line-anchored markers (the format
+    ``debate_review.md`` lines 102–105 mandate). Returns dicts in first-seen
+    order, dedup by ``_normalize_claim(claim)``; ``evidence``/``impact`` are
+    empty strings when the critic did not emit them.
     """
     text = debate_text or ""
     if not text.strip():
@@ -507,13 +533,16 @@ def latest_requirements_blockers(debate_text: str) -> list[str]:
                 order.append(critic)
             last_body[critic] = body
 
-    claims: list[str] = []
+    out: list[dict] = []
     seen: set[str] = set()
     for critic in order:
         body = last_body[critic]
         if parse_verdict(body) in ("APPROVE", "APPROVE_WITH_CHANGES"):
             continue
-        for m in _RAISE_LINE_RE.finditer(body):
+        # Walk raise lines; for each REQUIREMENTS raise, scan forward to the
+        # next raise line / ``## `` header for Evidence/Impact (same block).
+        raise_matches = list(_RAISE_LINE_RE.finditer(body))
+        for i, m in enumerate(raise_matches):
             if m.group(1).upper() != "BLOCKER":
                 continue
             provenance = (m.group(2) or "PLAN").upper()
@@ -521,10 +550,31 @@ def latest_requirements_blockers(debate_text: str) -> list[str]:
                 continue
             claim = _clean_claim(m.group(4))
             norm = _normalize_claim(claim)
-            if norm and norm not in seen:
-                seen.add(norm)
-                claims.append(claim)
-    return claims
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            # Block span: from this raise line up to the next raise line, or
+            # the next ``## `` header, or end of body — whichever comes first.
+            block_start = m.end()
+            block_end = len(body)
+            next_raise = (
+                raise_matches[i + 1].start() if i + 1 < len(raise_matches) else None
+            )
+            if next_raise is not None:
+                block_end = min(block_end, next_raise)
+            header_after = re.search(r"^##\s+", body[block_start:block_end],
+                                     re.MULTILINE)
+            if header_after is not None:
+                block_end = min(block_end, block_start + header_after.start())
+            block = body[block_start:block_end]
+            em = _EVIDENCE_LINE_RE.search(block)
+            im = _IMPACT_LINE_RE.search(block)
+            out.append({
+                "claim": claim,
+                "evidence": em.group(1).strip() if em else "",
+                "impact": im.group(1).strip() if im else "",
+            })
+    return out
 
 
 def _section_has_blockers_without_ids(body: str) -> bool:
