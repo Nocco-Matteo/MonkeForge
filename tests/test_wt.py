@@ -112,7 +112,11 @@ class TestChildEnvPrecedence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             mf = Path(td)
             orch = _write_yaml(mf / "monkeforge.yaml", "pipeline:\n  dry_run: true\n")
-            with patch.object(wt, "MF_ROOT", mf):
+            # _yaml_path() reads PIPELINE_WT_YAML before MF_ROOT, and the
+            # self-host gate always has it set — clear it or the MF_ROOT patch
+            # below is a no-op and this asserts the ambient orchestrator path.
+            with patch.dict(os.environ), patch.object(wt, "MF_ROOT", mf):
+                os.environ.pop("PIPELINE_WT_YAML", None)
                 child = wt.build_child_env(Path("/tmp/wt-task-032"), 5435,
                                           parent_env={})
             self.assertEqual(child.get("PIPELINE_WT_YAML"), str(orch.resolve()))
