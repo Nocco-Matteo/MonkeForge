@@ -63,6 +63,26 @@ Rank candidate questions in this order and keep at most 6:
 Each question must carry the evidence that provoked it: the file, the reference
 page, or the line of the request. A question without evidence is speculation.
 
+BINDING-STANDARD COVERAGE RULE
+When the seed request (or a structured brief seed) names a binding standard —
+detected by any of these case-insensitive trigger phrases: `binding standard:`,
+`binding:`, or `follow <url-or-name> as the binding` (equivalent phrasings like
+"treat <url> as the binding standard" also fire) — the brief MUST cover that
+standard; cherry-picking only the bullets the seed mentions is a failure mode.
+Before INTAKE: COMPLETE you MUST:
+- Read the standard. Prefer a staged `--ref` (place the standard under
+  `{refs_path}` and list it in `{refs_list}`) so you can cite bullet ids
+  verbatim. If only a URL is present and you cannot fetch it, ask exactly ONE
+  question requesting the staged file or the pasted bullet list — do NOT invent
+  bullets you did not read, and do NOT COMPLETE on a URL alone.
+- Emit the `## 3b. Binding-standard coverage` table in the (B) OUTPUT (see
+  below). The table is 3 columns: `Standard bullet | In/Out/Deferred | DoD id
+  or rationale`. Every `In` row MUST map to at least one §5 Definition-of-done
+  item (by DoD id). Every `Out` or `Deferred` row MUST carry a one-line
+  rationale. Omit the `## 3b` section ENTIRELY (no empty/N/A table, no
+  placeholder row) when the trigger does not fire — a brief with no binding
+  standard has no `## 3b` section, and that is correct.
+
 OUTPUT — EXACTLY ONE OF THE TWO
 
 The pipeline persists your message to disk when you end with the markers below.
@@ -108,6 +128,13 @@ contain them):
        Transcribe values as tables, not prose. Where a sequence is not
        derivable by formula, say so explicitly.
 
+    ## 3b. Binding-standard coverage
+       Present ONLY when the BINDING-STANDARD COVERAGE RULE above fired. A
+       3-column table: Standard bullet | In/Out/Deferred | DoD id or
+       rationale. Every In row maps to ≥1 §5 DoD item (by id). Every
+       Out/Deferred row carries a one-line rationale. Omit this section
+       entirely (no empty/N/A table) when no binding standard was named.
+
     ## 4. Codebase anchors
        The files and symbols this will touch, verified to exist, with the
        warning that code is ground truth for signatures while this brief is
@@ -131,6 +158,13 @@ contain them):
        is itself a REQUIREMENTS gap: do not COMPLETE — ask (A) until the human
        makes it observable. Downstream, a REQUIREMENTS blocker re-opens intake;
        do not leave verification implicit.
+       C3 — universal-quantifier enumeration: any DoD item (or brief rule)
+       that uses a universal quantifier — `all`, `every`, `no remaining`, or
+       `zero ... left` — MUST enumerate what it quantifies over (named call
+       sites/files, or a repo query the gate can run), not assert the
+       universal in the abstract. "every caller is updated" is incomplete;
+       "every caller (run.py::main, nodes/intake.py::intake_ask) is updated"
+       is complete. A universal DoD without enumeration is a REQUIREMENTS gap.
 
     ## 6. Scope: in / out
        Explicit non-goals, not silence.
@@ -138,6 +172,13 @@ contain them):
     ## 7. Manual acceptance
        The scenarios a human should walk, including one that exercises each
        exception found under section 2.
+       C4 — global-flag dual position: when a global CLI flag is in scope
+       (a flag accepted before the subcommand, e.g. `./run.py --flag <subcmd>
+       ...`), the acceptance scenarios MUST exercise BOTH positions —
+       `./run.py --flag <subcmd> ...` AND `./run.py <subcmd> ... --flag` —
+       so a parser that only accepts one position is caught. Omit this rule
+       (state "no global CLI flag in scope") when the brief claims no global
+       flag; do not invent one.
 
     ## 8. Unverified assumptions
        Only facts you could not check in the repo or references (unread PDF,

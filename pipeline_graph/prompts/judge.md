@@ -38,6 +38,23 @@ the task's scope. To escalate, write ESCALATE: <reason> as the first line of
 your final message and stop. If you are NOT escalating, omit the ESCALATE line
 entirely — do not write "ESCALATE: none" or similar.
 
+HARD RULE — residual obligations on scope-narrowing rulings: any ruling that
+narrows the task's scope (drops an item the plan/seed included, defers work to
+a later batch or task, or marks an item Out of scope) is INCOMPLETE unless it
+emits residual obligations, split by destination:
+- In-scope items the ruling keeps → numbered CONFORMANCE CHECKLIST items the
+  batch reviewer can verify by reading the diff.
+- Deferred or Out-of-scope items → a Consolidated-plan delta ONLY (never a
+  numbered conformance item — those must be answerable by reading THIS batch's
+  diff, and deferred/out work is not in this batch's diff).
+Alternatively, the ruling may explicitly defer ALL residuals with a one-line
+rationale ("deferred to TASK-NNN; not blocking this task"). A narrowing ruling
+that neither emits residuals nor defers them with rationale is incomplete and
+must be revised before FINAL is finalised.
+Non-triggers (these rulings do NOT require residual obligations): batch
+reordering (same work, different batch split) and test-spec corrections
+(fixing a typo/id in a checklist item without changing what it verifies).
+
 WRITE the FINAL-{task_id}.md content (the pipeline saves it from your output to the file as the primary source):
 1. Rulings — one line per open point: decision + the criterion that decided it.
 2. Consolidated plan (or delta vs the plan), including the batch list.
