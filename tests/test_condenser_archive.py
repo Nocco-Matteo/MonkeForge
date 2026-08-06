@@ -303,7 +303,9 @@ class TestStatusOutput:
 
         assert rc == 0
         out = buf.getvalue()
-        assert "verbatim debate archive: DEBATE-t8-full.md" in out
+        # Status UX copy (compact): "debate archive: <name>" — not the older
+        # "verbatim debate archive:" wording.
+        assert "debate archive: DEBATE-t8-full.md" in out
 
     def test_status_no_archive_line_when_archive_absent(self, monkeypatch, tmp_path):
         debates, final = _setup_env(monkeypatch, tmp_path)
@@ -322,4 +324,4 @@ class TestStatusOutput:
 
         assert rc == 0
         out = buf.getvalue()
-        assert "verbatim debate archive" not in out
+        assert "debate archive:" not in out

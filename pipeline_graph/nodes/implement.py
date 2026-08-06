@@ -23,39 +23,95 @@ from .common import (
 )
 
 
+def _is_synthetic_failure_key(key: str) -> bool:
+    """True for runner infrastructure keys (not a real ``path::test`` failure).
+
+    Synthetic keys must not populate ``batch_test_baseline`` alone — that made
+    TASK-019 treat a later real failure as "new" after a pytest collection
+    exit was laundered as the only baseline row.
+    """
+    k = str(key or "")
+    markers = (
+        "|pytest exit ",
+        "|script exit ",
+        "|cwd escapes",
+        "|unknown runner:",
+        "|vitest exit ",
+        "|npm exit ",
+    )
+    return any(m in k for m in markers)
+
+
 def _capture_test_baseline(state, b: dict, db_ok: bool) -> dict:
-    """Snapshot failing tests before the implementer edits (once per batch)."""
+    """Snapshot failing tests before the implementer edits (once per batch).
+
+    If the suite is not measurable (only synthetic/infrastructure failures, or
+    nothing ran), escalate instead of recording a fake baseline.
+    """
     if state.get("baseline_batch_n") == b["n"] or not db_ok or C.DRY_RUN:
         return {}
-    _, failures, summary = tr.run_repo_tests(task_id=state["task_id"])
+    _code, failures, summary, ran_count = tr.run_repo_tests_detailed(
+        task_id=state["task_id"],
+    )
+    failures = set(failures or [])
+    synth = {f for f in failures if _is_synthetic_failure_key(f)}
+    real = sorted(failures - synth)
+
+    if ran_count == 0 or (failures and not real):
+        detail = summary or ("no suites ran" if ran_count == 0 else "; ".join(sorted(synth)))
+        ev.emit(
+            "step_start",
+            state["task_id"],
+            "implement",
+            f"test baseline batch {b['n']}: UNMEASURABLE ({detail})",
+        )
+        ev.emit("step_end", state["task_id"], "implement", "test baseline unmeasurable")
+        return {
+            "escalation": (
+                f"test baseline unmeasurable for batch {b['n']} — suite did not "
+                f"produce a real failure list ({detail}). Fix test config / "
+                f"monkeforge.yaml agents / runner, then resume."
+            ),
+            "journal": [f"impl b{b['n']}: BASELINE_UNMEASURABLE — {detail}"],
+        }
+
     ev.emit(
         "step_start",
         state["task_id"],
         "implement",
-        f"test baseline batch {b['n']}: {len(failures)} failing ({summary})",
+        f"test baseline batch {b['n']}: {len(real)} failing ({summary})",
     )
     ev.emit("step_end", state["task_id"], "implement", "test baseline captured")
-    delta = {"baseline_batch_n": b["n"], "batch_test_baseline": sorted(failures)}
+    if synth:
+        # Measured real failures; drop infrastructure keys from the baseline set.
+        ev.emit(
+            "degraded",
+            state["task_id"],
+            "implement",
+            f"baseline ignored {len(synth)} synthetic failure key(s); "
+            f"kept {len(real)} real test failure(s)",
+        )
+    delta = {"baseline_batch_n": b["n"], "batch_test_baseline": real}
     if not state.get("task_baseline"):
         # The very first capture (batch 1, before any edits) is the failures
         # present at task START. The FINAL gate tolerates these — they predate
         # the task — instead of sending the fixer to "fix" them (which, out of
         # scope, gutted the backend on TASK-010). Never overwritten by later batches.
-        delta["task_baseline"] = sorted(failures)
+        delta["task_baseline"] = list(real)
     # The gate only forbids NEW failures, so a red base is silently tolerated for
     # the whole task — regressions already on the branch get laundered as
     # "pre-existing". Surface it once, loudly, and carry it to the final report.
-    if failures and b["n"] == state.get("batches", [{}])[0].get("n", 1):
+    if real and b["n"] == state.get("batches", [{}])[0].get("n", 1):
         ev.emit(
             "degraded",
             state["task_id"],
             "implement",
-            f"branch starts RED: {len(failures)} test(s) already failing before "
+            f"branch starts RED: {len(real)} test(s) already failing before "
             "any batch. New failures are still blocked, but these are tolerated "
             "as baseline — fix them or they hide behind the gate.",
         )
         delta["degradations"] = [
-            f"branch started RED: {len(failures)} test(s) already failing "
+            f"branch started RED: {len(real)} test(s) already failing "
             "before any batch — tolerated as baseline"
         ]
     return delta
@@ -108,6 +164,8 @@ def implement(state):
     db_ok, db_note = _db_note(tid, "implement")
     attempt = state.get("test_fix_attempt", 0)
     baseline_delta = _capture_test_baseline(state, b, db_ok)
+    if baseline_delta.get("escalation"):
+        return baseline_delta
     # Record the batch's base commit (HEAD before any edits) so code_review diffs
     # against it, not HEAD — the batch's work then shows whether the implementer
     # left it staged OR committed it (the false-REJECT that hit TASK-010 b1/b5).

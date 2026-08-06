@@ -198,3 +198,76 @@ def test_write_escape_escalates_without_retry(monkeypatch):
     assert "WRITE_ESCAPE" in delta["journal"][0]
     assert "test_fix_attempt" not in delta
 
+
+def test_synthetic_failure_key_detection():
+    assert I_mod._is_synthetic_failure_key("MonkeForge|pytest exit 4")
+    assert I_mod._is_synthetic_failure_key("x|cwd escapes repo: /tmp")
+    assert not I_mod._is_synthetic_failure_key(
+        "MonkeForge|tests/test_condenser_archive.py::TestStatusOutput::"
+        "test_status_prints_archive_line_when_archive_exists"
+    )
+
+
+def test_baseline_unmeasurable_escalates(monkeypatch):
+    """Synthetic-only baseline must not be recorded — escalate infrastructure."""
+    monkeypatch.setattr(C, "DRY_RUN", False)
+
+    def fake_detailed(*, task_id=None):
+        return (
+            4,
+            {"MonkeForge|pytest exit 4"},
+            "MonkeForge: 0 failed, synthetic: MonkeForge|pytest exit 4 [ole…]",
+            1,
+        )
+
+    monkeypatch.setattr(I_mod.tr, "run_repo_tests_detailed", fake_detailed)
+    monkeypatch.setattr(I_mod.ev, "emit", lambda *a, **k: None)
+
+    state = {
+        "task_id": "019",
+        "batches": [{"n": 1, "scope": "x"}],
+    }
+    delta = I_mod._capture_test_baseline(state, state["batches"][0], db_ok=True)
+    assert delta.get("escalation")
+    assert "UNMEASURABLE" in delta["journal"][0]
+    assert "batch_test_baseline" not in delta
+
+
+def test_baseline_keeps_real_drops_synthetic(monkeypatch):
+    monkeypatch.setattr(C, "DRY_RUN", False)
+    real = (
+        "MonkeForge|tests/test_condenser_archive.py::TestStatusOutput::"
+        "test_status_prints_archive_line_when_archive_exists"
+    )
+
+    def fake_detailed(*, task_id=None):
+        return (
+            1,
+            {"MonkeForge|pytest exit 4", real},
+            "mixed",
+            1,
+        )
+
+    monkeypatch.setattr(I_mod.tr, "run_repo_tests_detailed", fake_detailed)
+    monkeypatch.setattr(I_mod.ev, "emit", lambda *a, **k: None)
+
+    state = {
+        "task_id": "019",
+        "batches": [{"n": 1, "scope": "x"}],
+    }
+    delta = I_mod._capture_test_baseline(state, state["batches"][0], db_ok=True)
+    assert not delta.get("escalation")
+    assert delta["batch_test_baseline"] == [real]
+    assert delta["task_baseline"] == [real]
+
+
+def test_implement_prompt_retry_overrides_scope():
+    from pathlib import Path
+    text = (
+        Path(__file__).resolve().parents[1]
+        / "pipeline_graph" / "prompts" / "implement.md"
+    ).read_text(encoding="utf-8")
+    assert "HARD OVERRIDE" in text
+    assert "OVERRIDE batch scope" in text
+    assert "EXCEPT on a" in text and "test-fix retry" in text
+

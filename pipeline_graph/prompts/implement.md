@@ -51,6 +51,13 @@ A <test_summary> block is provided below. Binding rules:
   the previous attempt (red = the listed failures are the NEW regressions
   the gate measured). Trust the failure list as ground truth; do NOT re-run
   the suite to "discover" a different set — fix the listed failures.
+- HARD OVERRIDE (test-fix retry): when FAILING TESTS is non-empty (and/or
+  authoritative="true" with a red list), those failures OVERRIDE batch scope.
+  You MUST apply the minimum diff that clears them — even in files outside
+  this batch's declared scope. Do NOT refuse as "pre-existing", "out of
+  scope", or "acceptance says no file outside scope". Typical fix: update a
+  stale test assertion after an intentional product/UI string change; do NOT
+  revert product code just to satisfy an outdated assert.
 - When authoritative="false", the block is context-only (status
   unconfigured on a first attempt, or skipped on a retry whose prior
   attempt was not measured — dry run, DB down, or tests waived). Do NOT
@@ -71,7 +78,9 @@ as "missing" — a wasted cycle. Do not run `git commit`, `git reset`, or
 ACCEPTANCE CRITERIA (you are done only when all hold):
 - Every CONFORMANCE CHECKLIST item for this batch is MET.
 - The test suite runs and no new failure is introduced.
-- No file outside the batch's declared scope is modified.
+- No file outside the batch's declared scope is modified — EXCEPT on a
+  test-fix retry (FAILING TESTS non-empty): then the minimum out-of-scope
+  diff that clears the listed gate failures is required and allowed.
 - The architecture docs above are followed (folder structure, layer
   responsibilities, anti-patterns, the Next.js guidance) — not just CLAUDE.md.
 - Your work is left uncommitted (the pipeline commits after review).
