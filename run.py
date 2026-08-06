@@ -2334,7 +2334,7 @@ def _print_task_status(args, *, task_id: str, snap, values: dict) -> None:
 
     archive = C.DEBATES / f"DEBATE-{task_id}-full.md"
     if archive.exists():
-        console.print(Text(f"debate archive: {archive.name}", style="dim"))
+        console.print(Text(f"verbatim debate archive: {archive.name}", style="dim"))
 
     live = ev.read_journal(task_id, 10)
     journal_lines = live or list(values.get("journal", [])[-10:])

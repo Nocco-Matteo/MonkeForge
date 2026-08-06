@@ -337,6 +337,16 @@ class TestGreenPathGateStateThreading:
 
     def test_green_measured_sets_last_gate_green(self):
         state = _base_state(test_fix_attempt=0)
+        # _stage_all is mocked to a no-op, so the empty-batch guard's
+        # `git diff --cached` sees nothing staged; feed it a non-empty
+        # changed list so the guard does not fire and swallow the green
+        # delta with an EMPTY_BATCH_DIFF escalation.
+        def _git_side(*args):
+            if args[:2] == ("rev-parse", "HEAD"):
+                return "abc123\n"
+            if args[0] == "diff":
+                return "src/b1.py\n"
+            return ""
         with patch.object(C, "DRY_RUN", False), \
              patch.object(N, "run_agent",
                           return_value=(0, "VERDICT: APPROVE\n" * 5)), \
@@ -346,6 +356,9 @@ class TestGreenPathGateStateThreading:
              patch.object(_impl, "_stage_all"), \
              patch.object(_impl, "_dirty_paths", return_value=False), \
              patch.object(_impl, "_db_note", return_value=(True, "")), \
+             patch.object(_impl, "_git", side_effect=_git_side), \
+             patch.object(_impl.subprocess, "run",
+                          return_value=MagicMock(stdout="")), \
              patch.object(N.ev, "emit"):
             out = N.implement(state)
         assert out["last_gate_status"] == "green"
