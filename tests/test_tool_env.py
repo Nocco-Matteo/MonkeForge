@@ -41,6 +41,7 @@ class TestToolEnvFromYaml(unittest.TestCase):
         env["PIPELINE_HEARTBEAT_INTERVAL_S"] = "1"
         env["PIPELINE_TEST_TIMEOUT"] = "1"
         env["PIPELINE_RECURSION_LIMIT"] = "1"
+        env["PIPELINE_E2E_DB_CONTAINER"] = "stale-container"
         with patch.dict(os.environ, env, clear=False):
             result = tool_env_from_yaml()
         self.assertNotIn("PIPELINE_MAX_DEBATE_ROUNDS", result)
@@ -54,6 +55,7 @@ class TestToolEnvFromYaml(unittest.TestCase):
         self.assertNotIn("PIPELINE_HEARTBEAT_INTERVAL_S", result)
         self.assertNotIn("PIPELINE_TEST_TIMEOUT", result)
         self.assertNotIn("PIPELINE_RECURSION_LIMIT", result)
+        self.assertNotIn("PIPELINE_E2E_DB_CONTAINER", result)
 
     def test_non_pipeline_env_preserved(self):
         # Non-PIPELINE env vars (PATH, HOME, etc.) must survive.

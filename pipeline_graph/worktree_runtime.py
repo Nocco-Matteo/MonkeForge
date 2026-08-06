@@ -120,26 +120,24 @@ def _validate_repo(path: Path) -> Path:
 
 
 def resolve_target_repo(repo_flag: str | None = None) -> Path:
-    if repo_flag:
-        p = Path(repo_flag).expanduser()
-        if not p.is_absolute():
-            p = (MF_ROOT / p).resolve()
-        return _validate_repo(p)
-    if "PIPELINE_REPO" in os.environ:
-        env_val = os.environ["PIPELINE_REPO"]
-        if env_val.strip():
-            return _validate_repo(Path(env_val).expanduser().resolve())
-        _fail(
-            "PIPELINE_REPO is set but empty — set it to a non-empty path or pass --repo"
+    # Shared §3h resolution — delegates to repo_select.ensure_pipeline_repo so
+    # run.py boot, bot/config.py, and the wt commands all follow ONE rule:
+    # --repo > PIPELINE_REPO > repos: (1=auto, N=error non-interactive) >
+    # pipeline.repo > fail. repo_select is import-light (no config import, yaml
+    # loaded lazily), so the local import preserves the --help / early-bootstrap
+    # contract (no top-level pipeline_graph import in this module). The
+    # RepoSelectError → _fail conversion preserves this module's SystemExit(2)
+    # contract that wt callers/tests expect.
+    from pipeline_graph.repo_select import RepoSelectError, ensure_pipeline_repo
+    try:
+        return ensure_pipeline_repo(
+            yaml_path=_yaml_path(),
+            mf_root=MF_ROOT,
+            repo_flag=repo_flag,
+            interactive=False,
         )
-    pl = _pipeline_dict()
-    repo_raw = pl.get("repo")
-    if repo_raw is not None and str(repo_raw).strip():
-        return _validate_repo(Path(str(repo_raw)).expanduser().resolve())
-    _fail(
-        "no target repo configured — pass --repo PATH, set non-empty PIPELINE_REPO, "
-        "or add pipeline.repo to monkeforge.yaml"
-    )
+    except RepoSelectError as exc:
+        _fail(exc.cli_message())
 
 
 def wt_path_for(target: Path, id_: str) -> Path:

@@ -283,5 +283,74 @@ class TestYamlDirectReads(unittest.TestCase):
         self.assertEqual(C.LINT_DEBT_RULES, ("no-unused-vars", "no-explicit-any"))
 
 
+class TestPerKnobYamlReads(unittest.TestCase):
+    """Parametrized per-knob regression: each §3e product knob is read from
+    yaml and not from a stale non-allowlisted PIPELINE_* env var. Runs every
+    knob through the same load → assert cycle so a future knob that
+    accidentally falls back to env is caught."""
+
+    # (yaml_block, env_stale_key, env_stale_value, attr, expected)
+    _CASES = [
+        ("pipeline:\n  max_debate_rounds: 7\n",
+         "PIPELINE_MAX_DEBATE_ROUNDS", "99", "MAX_DEBATE_ROUNDS", 7),
+        ("pipeline:\n  max_fix_cycles: 6\n",
+         "PIPELINE_MAX_FIX_CYCLES", "99", "MAX_FIX_CYCLES", 6),
+        ("pipeline:\n  max_intake_rounds: 9\n",
+         "PIPELINE_MAX_INTAKE_ROUNDS", "99", "MAX_INTAKE_ROUNDS", 9),
+        ("pipeline:\n  agent_timeout: 1500\n",
+         "PIPELINE_AGENT_TIMEOUT", "999", "AGENT_TIMEOUT", 1500),
+        ("pipeline:\n  branch_prefix: 'task/'\n",
+         "PIPELINE_BRANCH_PREFIX", "stale/", "BRANCH_PREFIX", "task/"),
+        ("pipeline:\n  no_git: true\n",
+         "PIPELINE_NO_GIT", "1", "NO_GIT", True),
+        ("pipeline:\n  plateau_threshold: 4\n",
+         "PIPELINE_PLATEAU_THRESHOLD", "99", "PLATEAU_THRESHOLD", 4),
+        ("pipeline:\n  heartbeat_interval_s: 7\n",
+         "PIPELINE_HEARTBEAT_INTERVAL_S", "1", "HEARTBEAT_INTERVAL_S", 7),
+        ("pipeline:\n  test_timeout: 900\n",
+         "PIPELINE_TEST_TIMEOUT", "1", "TEST_TIMEOUT", 900),
+        ("pipeline:\n  recursion_limit: 250\n",
+         "PIPELINE_RECURSION_LIMIT", "1", "RECURSION_LIMIT", 250),
+        ("pipeline:\n  e2e_db_container: pg-stack\n",
+         "PIPELINE_E2E_DB_CONTAINER", "stale", "E2E_DB_CONTAINER", "pg-stack"),
+        ("pipeline:\n  e2e_project: webapp\n",
+         "PIPELINE_E2E_PROJECT", "stale", "E2E_PROJECT", "webapp"),
+        ("pipeline:\n  render_cmd: npm run render\n",
+         "PIPELINE_RENDER_CMD", "stale-cmd", "RENDER_CMD", "npm run render"),
+        ("notifications:\n  level: all\n  rate: 20\n  window: 60\n",
+         "PIPELINE_NOTIFY_RATE", "1", "NOTIFY_RATE", 20),
+        ("discord:\n  bot_name: Param Bot\n  bot_poll_seconds: 15\n",
+         "PIPELINE_BOT_POLL_SECONDS", "1", "BOT_POLL_SECONDS", 15),
+    ]
+
+    def setUp(self):
+        self._saved_wt = os.environ.get("PIPELINE_WT_YAML")
+        self._saved_env = os.environ.copy()
+        self._td = tempfile.TemporaryDirectory()
+        self._yaml_path = Path(self._td.name) / "monkeforge.yaml"
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved_env)
+        _restore_config(self._saved_wt)
+        self._td.cleanup()
+
+    def _run_case(self, yaml_block, env_key, env_val, attr, expected):
+        os.environ[env_key] = env_val
+        _write_baseline_yaml(self._yaml_path, extra=yaml_block)
+        C = _reload_config_with_yaml(self._yaml_path)
+        self.assertEqual(getattr(C, attr), expected,
+                         f"{attr}: stale {env_key}={env_val!r} leaked past yaml")
+
+    def test_per_knob_yaml_wins_over_stale_env(self):
+        for case in self._CASES:
+            with self.subTest(case=case[4]):
+                # subTest does not isolate env mutations between cases — each
+                # case sets its own stale key, and tearDown/restore happens
+                # once at the end. The keys are distinct so there is no
+                # cross-case clobber.
+                self._run_case(*case)
+
+
 if __name__ == "__main__":
     unittest.main()

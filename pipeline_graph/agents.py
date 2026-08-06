@@ -29,6 +29,18 @@ def tool_env_from_yaml() -> dict[str, str]:
     for k in list(env):
         if k.startswith("PIPELINE_") and k not in C._ALLOWLIST_ENV:
             env.pop(k, None)
+    # §3e: the ``tools:`` mapping (non-PIPELINE env vars like
+    # GEMINI_CLI_TRUST_WORKSPACE) is bridged from yaml by run.py at module
+    # load, but a caller that imports tool_env_from_yaml() without going
+    # through run.py (e.g. tests, ad-hoc scripts) would miss it. Merge the
+    # yaml ``tools.gemini_trust_workspace`` value here so the per-spawn env
+    # is correct regardless of how the helper was reached.
+    _trust = C._yaml_root.get("tools") or {}
+    if isinstance(_trust, dict):
+        _val = _trust.get("gemini_trust_workspace")
+        if _val is not None:
+            env.setdefault("GEMINI_CLI_TRUST_WORKSPACE",
+                           "true" if isinstance(_val, bool) else str(_val))
     return env
 
 # Exit code when an isolated agent writes onto MF_ROOT (outside PIPELINE_REPO).

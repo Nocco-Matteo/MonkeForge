@@ -31,7 +31,7 @@ except RepoSelectError as exc:
     raise SystemExit(2) from None
 
 from pipeline_graph import config as C  # noqa: E402
-from pipeline_graph.discord_config import discord_secrets  # noqa: E402
+from pipeline_graph.discord_config import discord_secrets, resolve_discord_webhook  # noqa: E402
 
 # Per-repo docs: MonkeForge/docs/<repo-name>/metrics/...
 _repo_slug = REPO.name
@@ -60,6 +60,12 @@ ALLOWED_USER_IDS = {
 POLL_SECONDS = C.BOT_POLL_SECONDS
 # run.py resume can take minutes (it drives the graph to the next pause); cap it.
 RESUME_TIMEOUT = C.BOT_RESUME_TIMEOUT
+
+# Webhook URL via the shared resolver (§3c/S1) — env DISCORD_WEBHOOK >
+# repo/.discord-webhook file > "". The gateway bot itself posts via
+# BOT_TOKEN/CHANNEL_ID; WEBHOOK is exposed so bot.py can fire webhook-based
+# notifications through the same resolver as notify_daemon/run.py.
+WEBHOOK = resolve_discord_webhook(repo=REPO)
 
 
 def problems() -> list[str]:

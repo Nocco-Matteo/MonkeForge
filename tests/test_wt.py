@@ -411,8 +411,13 @@ class TestRemove(_GitTestBase):
         self.assertNotEqual(out.returncode, 0)
 
     def test_remove_uses_resolved_prefix(self):
-        # With a non-default PIPELINE_BRANCH_PREFIX, remove must delete that ref.
-        os.environ["PIPELINE_BRANCH_PREFIX"] = "task/"
+        # With a non-default branch_prefix from the YAML fixture, remove must
+        # delete that ref. §3c: stale PIPELINE_BRANCH_PREFIX env is ignored —
+        # the prefix is read from monkeforge.yaml (via wt.resolve_branch_prefix).
+        # _GitTestBase already points PIPELINE_WT_YAML at mfroot/monkeforge.yaml.
+        os.environ.pop("PIPELINE_BRANCH_PREFIX", None)
+        _write_yaml(self.mfroot / "monkeforge.yaml",
+                    "pipeline:\n  branch_prefix: 'task/'\n")
         self._write_brief("031")
         args = type("A", (), {"repo": str(self.target), "id": "031", "base": "main"})()
         wt.cmd_ensure(args)

@@ -16,15 +16,18 @@ from pathlib import Path
 
 # --- YAML / env bridge (TASK-032) -------------------------------------------
 # Product knobs are now read DIRECTLY from monkeforge.yaml by config.py (§3e).
-# The old ``_load_yaml_to_env`` bridge and ``.env`` loading are kept as dead
-# code for backward-compat with tests that call the function directly, but are
-# NOT called at module level — a stale shell env no longer leaks product knobs
-# into the pipeline. Only the ``tools:`` mapping (non-PIPELINE env vars like
-# GEMINI_CLI_TRUST_WORKSPACE) is still bridged at module level.
+# The old ``_load_yaml_to_env`` bridge is kept as dead code for backward-compat
+# with tests that call the function directly, and is NOT called at module level
+# — a stale shell env no longer leaks product knobs into the pipeline. The
+# ``.env`` file (secrets only — DISCORD_*, etc.) IS still loaded at module level
+# via ``_load_dotenv_to_env`` with ``setdefault`` so a real env var always wins
+# and no product knob is reintroduced. Only the ``tools:`` mapping (non-PIPELINE
+# env vars like GEMINI_CLI_TRUST_WORKSPACE) is bridged from yaml at module level.
 _MF_ROOT = Path(__file__).resolve().parent
 # PIPELINE_WT_YAML: orchestrator yaml override (worktree boot). The config
 # module reads this same env to find its yaml, so run.py must agree.
 _yaml_file = Path(os.environ.get("PIPELINE_WT_YAML") or (_MF_ROOT / "monkeforge.yaml"))
+_env_file = _MF_ROOT / ".env"
 
 def _envstr(val) -> str:
     """Render a YAML value for an env var. Booleans go to lowercase "true"/"false":
@@ -82,6 +85,25 @@ def _load_yaml_to_env(path: Path) -> None:
         os.environ.setdefault(env_key, _envstr(val))
 
 
+def _load_dotenv_to_env(path: Path) -> None:
+    """Legacy bridge: load a ``.env`` file into ``os.environ`` via setdefault.
+
+    Called at module level (§3e: secrets stay env-owned). The ``.env`` file
+    holds secrets (DISCORD_WEBHOOK, DISCORD_BOT_TOKEN, …), NOT product knobs,
+    so loading it does not reintroduce the stale-product-knob leak that
+    ``_load_yaml_to_env`` was retired for. Each ``KEY=VALUE`` line is applied
+    with ``os.environ.setdefault`` so a real env var always wins; blank lines
+    and ``#`` comments are skipped.
+    """
+    if not path.is_file():
+        return
+    for _line in path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _, _v = _line.partition("=")
+            os.environ.setdefault(_k.strip(), _v.strip())
+
+
 def _bridge_tools_from_yaml(path: Path) -> None:
     """Bridge only the ``tools:`` section (non-PIPELINE env vars) from yaml.
 
@@ -105,6 +127,7 @@ def _bridge_tools_from_yaml(path: Path) -> None:
 
 
 _bridge_tools_from_yaml(_yaml_file)
+_load_dotenv_to_env(_env_file)
 
 # Target repo MUST be chosen before config import (no git-cwd default).
 # Precedence: --repo > PIPELINE_REPO env > yaml repos: (1=auto, N=CLI pick).

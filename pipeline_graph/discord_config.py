@@ -22,10 +22,34 @@ import os
 from pathlib import Path
 
 
+# Config-independence (checklist item 7): the resolver MUST NOT import
+# ``pipeline_graph.config`` — that module requires PIPELINE_REPO and a fully
+# populated agents: block, so importing it here would make webhook/secrets
+# lookup transitively require the whole product config. Instead we read the
+# ``discord:`` mapping straight from the same yaml file config.py would load
+# (PIPELINE_WT_YAML override, else MF_ROOT/monkeforge.yaml), with no config
+# import side effects.
+_MF_ROOT = Path(__file__).resolve().parents[1]
+
+
 def _yaml_discord() -> dict:
-    """The ``discord:`` mapping from the loaded yaml root, or ``{}``."""
-    from pipeline_graph import config as C
-    node = C._yaml_root.get("discord")
+    """The ``discord:`` mapping from the orchestrator yaml, or ``{}``.
+
+    Reads the yaml directly (no ``pipeline_graph.config`` import) so importing
+    this resolver never triggers repo/agent config validation.
+    """
+    override = (os.environ.get("PIPELINE_WT_YAML") or "").strip()
+    yaml_file = Path(override).expanduser() if override else (_MF_ROOT / "monkeforge.yaml")
+    if not yaml_file.is_file():
+        return {}
+    try:
+        import yaml as _yaml
+        data = _yaml.safe_load(yaml_file.read_text()) or {}
+    except (OSError, Exception):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    node = data.get("discord")
     return node if isinstance(node, dict) else {}
 
 
@@ -42,8 +66,12 @@ def resolve_discord_webhook(*, repo: Path | None = None) -> str:
     if wh:
         return wh
     if repo is None:
-        from pipeline_graph import config as C
-        repo = C.REPO
+        # Config-independence: read PIPELINE_REPO directly instead of
+        # importing pipeline_graph.config (which would trigger full config
+        # validation). The .discord-webhook file lives in the target repo
+        # root, set by run.py before any resolver call.
+        _repo_env = (os.environ.get("PIPELINE_REPO") or "").strip()
+        repo = Path(_repo_env).expanduser() if _repo_env else _MF_ROOT
     wh_file = repo / ".discord-webhook"
     if wh_file.exists():
         return wh_file.read_text().strip()
