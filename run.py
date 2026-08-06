@@ -1065,6 +1065,165 @@ def _step_event_hook(task_id: str, step: str, msg: str, **extra) -> None:
         _drain_events(task_id)
 
 
+def _parse_eyes_answer(answer: str) -> dict | None:
+    """Parse a free-text eyes config answer into a ``ui_config`` dict.
+
+    The answer is a minimum-fields free-text contract: ``type`` + (``url`` OR
+    (``start`` AND ``ready``)). Accepted shapes:
+    - JSON object (preferred).
+    - ``key: value`` lines (one per line).
+    Returns ``None`` when the answer does not meet the minimum.
+    """
+    if not answer or not answer.strip():
+        return None
+    text = answer.strip()
+    cfg: dict = {}
+    # Try JSON first.
+    if text.startswith("{"):
+        try:
+            cfg = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            cfg = {}
+    if not cfg:
+        # key: value lines.
+        for line in text.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                continue
+            k, v = line.split(":", 1)
+            cfg[k.strip()] = v.strip()
+    # Minimum check (mirrors config._eyes_config_minimum).
+    if not str(cfg.get("type") or "").strip():
+        return None
+    if str(cfg.get("url") or "").strip():
+        return cfg
+    if str(cfg.get("start") or "").strip() and str(cfg.get("ready") or "").strip():
+        return cfg
+    return None
+
+
+def _eyes_suggested_snippet(ui_config: dict) -> str:
+    """A one-line advise-only yaml snippet for the human (never auto-written)."""
+    lines = ["# Suggested ui: block for monkeforge.yaml (copy if you want it persistent):", "ui:"]
+    for k, v in ui_config.items():
+        if isinstance(v, str):
+            lines.append(f"  {k}: {v}")
+        else:
+            lines.append(f"  {k}: {v}")
+    return "\n".join(lines)
+
+
+def _run_eyes(args, resume_answer: str | None = None) -> int:
+    """The ``./run.py eyes`` diagnostic CLI leg (TASK-012).
+
+    Config resolution: yaml ``ui:`` → checkpointed ``ui_config`` → pause for
+    minimum fields (side file, NOT a LangGraph interrupt). Then calls
+    ``eyes.run_eyes`` diagnostic-only (no LLM ``ux_visual_review``/fix). Prints
+    facts summary + PNG paths + caps → cleanup. Never writes ``monkeforge.yaml``.
+    """
+    from pipeline_graph import eyes as _eyes
+    tid = args.task_id
+    gate_mode = getattr(args, "gate", "standard") or "standard"
+    # 1. yaml ui: (raw, no eager raise).
+    ui_config = dict(C.UI_CONFIG) if C._eyes_config_minimum(C.UI_CONFIG) else {}
+    # 2. checkpointed ui_config (read from the task's latest snapshot).
+    if not ui_config:
+        try:
+            with open_checkpointer() as _cp:
+                _graph = build_graph(_cp)
+                _snap = _graph.get_state(_thread(tid))
+                ck = (_snap.values or {}).get("ui_config") or {}
+                if C._eyes_config_minimum(ck):
+                    ui_config = dict(ck)
+        except Exception:  # noqa: BLE001 — no checkpoint yet is fine (fresh task)
+            pass
+    # 3. Pause for minimum fields when both empty.
+    pause_path = C.eyes_config_pause_path(tid)
+    if not ui_config:
+        answer = resume_answer
+        if answer is None:
+            # Write the pause marker side file (mirrors pending_answer pattern).
+            C.METRICS.mkdir(parents=True, exist_ok=True)
+            pause_path.write_text(json.dumps({
+                "task": tid, "ts": datetime.now(timezone.utc).isoformat(),
+                "stage": "eyes_config", "reason": "minimum ui fields required",
+            }))
+            print(
+                "eyes: no usable ui: yaml and no checkpointed ui_config for this task.\n"
+                "  Provide the minimum fields (type + (url OR (start + ready))).\n"
+                "  Example answer:\n"
+                '    type: web\n    start: "npm run dev"\n    ready: "http://127.0.0.1:3000/"\n\n'
+                "  Resume with:\n"
+                f'    ./run.py resume {tid} --answer "type: web\\nstart: npm run dev\\nready: http://127.0.0.1:3000/"\n\n'
+                "  (monkeforge.yaml is NOT modified — copy the snippet there to make it persistent.)",
+                file=sys.stderr,
+            )
+            return 0
+        # Resume with an answer: parse + validate minimum.
+        ui_config = _parse_eyes_answer(answer) or {}
+        if not C._eyes_config_minimum(ui_config):
+            print("error: the answer does not meet the minimum eyes config fields "
+                  "(type + (url OR (start + ready)))", file=sys.stderr)
+            return 2
+        # Persist ui_config to the checkpointer via update_state(as_node="init").
+        try:
+            with open_checkpointer() as _cp:
+                _graph = build_graph(_cp)
+                _graph.update_state(_thread(tid), {"ui_config": ui_config}, as_node="init")
+        except Exception as exc:  # noqa: BLE001
+            print(f"warning: could not persist ui_config to checkpoint: {exc}",
+                  file=sys.stderr)
+        # Clear the pause marker.
+        pause_path.unlink(missing_ok=True)
+        print(_eyes_suggested_snippet(ui_config), file=sys.stderr)
+    else:
+        # Yaml or state present — clear any stale pause marker.
+        pause_path.unlink(missing_ok=True)
+
+    # Run the eyes runner (diagnostic-only — no LLM ux_visual_review/fix).
+    print(f"eyes: running in {gate_mode} mode for task {tid}", file=sys.stderr)
+    try:
+        result = _eyes.run_eyes(
+            tid, ui_config, gate_mode=gate_mode,
+            docs_dir=C.DOCS, repo=C.REPO)
+    except _eyes.EyesError as exc:
+        print(f"eyes error: {exc}", file=sys.stderr)
+        return 1
+    # Print facts summary + PNG paths + caps.
+    facts = result.get("facts") or {}
+    pngs = result.get("pngs") or []
+    degradations = result.get("degradations") or []
+    print(f"eyes: schema={facts.get('schema', '?')} gate_mode={facts.get('gate_mode', '?')}",
+          file=sys.stderr)
+    print(f"eyes: {len(pngs)} screenshot(s)", file=sys.stderr)
+    for p in pngs:
+        print(f"  {p}", file=sys.stderr)
+    screens = facts.get("screens") or {}
+    for name, sf in screens.items():
+        print(f"  screen {name}: page_loaded={sf.get('page_loaded')} "
+              f"screenshot_empty={sf.get('screenshot_empty')} "
+              f"has_overflow={sf.get('has_overflow')} "
+              f"layout_shifts={sf.get('layout_shifts')} "
+              f"is_stable={sf.get('is_stable')} "
+              f"interactive_count={sf.get('interactive_count')}", file=sys.stderr)
+    if facts.get("console_errors"):
+        print(f"eyes: {len(facts['console_errors'])} console error(s)", file=sys.stderr)
+    if facts.get("failed_requests"):
+        print(f"eyes: {len(facts['failed_requests'])} failed request(s)", file=sys.stderr)
+    if degradations:
+        print("eyes degradations:", file=sys.stderr)
+        for d in degradations:
+            print(f"  {d}", file=sys.stderr)
+    if result.get("unverified"):
+        print("eyes: discovery UNVERIFIED", file=sys.stderr)
+    if result.get("escalation"):
+        print(f"eyes escalation: {result['escalation']}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def _drive(graph, task_id, payload, args=None) -> int:
     """Run until the graph ends or hits an interrupt; print what happened.
 
@@ -2222,6 +2381,22 @@ def main(argv=None) -> int:
                     help="force an effort level for the redo (plan/debate only)")
     rd.add_argument("--no-input", action="store_true",
                     help="never prompt; resolve test suites non-interactively")
+    # eyes subparser (TASK-012): diagnostic-only CLI leg. Shares the runner /
+    # validator / discovery modules but bypasses the graph (no node execution,
+    # no LLM ux_visual_review/fix, no node-state transitions).
+    ey = sub.add_parser("eyes", parents=[_no_color_parent],
+                        help="diagnostic eyes runner: config → start/ready → "
+                             "traces/discovery → facts/PNGs → cleanup "
+                             "(no LLM visual review / fix loop)")
+    ey.add_argument("task_id")
+    ey.add_argument("--gate", dest="gate", default="standard",
+                    choices=["off", "standard", "full"],
+                    help="gate mode for the eyes run (default: standard)")
+    ey.add_argument("--mode", dest="gate", default="standard",
+                    choices=["off", "standard", "full"],
+                    help="alias for --gate")
+    ey.add_argument("--no-isolate", action="store_true",
+                    help="debug escape: run eyes without requiring/using a task worktree")
     rs = sub.add_parser("reset", parents=[_no_color_parent],
                         help="delete the checkpoint state for a task "
                         "so it can be started fresh again")
@@ -2351,6 +2526,33 @@ def main(argv=None) -> int:
         if not C.CHECKPOINT_DB.exists():
             print(f"no checkpoint DB found at {C.CHECKPOINT_DB}", file=sys.stderr)
             return 1
+        # TASK-012: eyes config pause marker side file — checked BEFORE
+        # ``snap.interrupts`` so a config-pause dispatches to ``_run_eyes``
+        # instead of ``_drive``. The side file mirrors the pending_answer
+        # pattern (NOT a LangGraph interrupt — the eyes CLI leg bypasses the
+        # graph). Free-text answer (minimum-fields contract, no option menu).
+        _eyes_pause = C.eyes_config_pause_path(args.task_id)
+        if _eyes_pause.exists():
+            if args.answer is None and _interactive_gate(args):
+                # Prompt for the free-text eyes config answer on a TTY.
+                print(
+                    "eyes config pause: provide the minimum ui fields "
+                    "(type + (url OR (start + ready))).",
+                    file=sys.stderr)
+                try:
+                    args.answer = input("answer: ")
+                except (EOFError, KeyboardInterrupt):
+                    return 0
+            if args.answer is not None:
+                _cfg = _parse_eyes_answer(args.answer)
+                if _cfg is None:
+                    print("error: the answer does not meet the minimum eyes config "
+                          "fields (type + (url OR (start + ready)))", file=sys.stderr)
+                    return 2
+            elif not _interactive_gate(args):
+                print("error: --answer is required on a non-TTY (or with --no-input) "
+                      "to resume an eyes config pause", file=sys.stderr)
+                return 2
         # Compute the colour gate once for the resume pause-handling block so
         # ``resume --no-color`` / ``NO_COLOR`` / ``TERM=dumb`` / non-TTY stderr
         # all suppress ANSI in the interactive picker chrome (C5/C9).
@@ -2358,7 +2560,11 @@ def main(argv=None) -> int:
         with open_checkpointer() as _cp:
             _graph = build_graph(_cp)
             _snap = _graph.get_state(_thread(args.task_id))
-        if _snap.interrupts:
+        if _eyes_pause.exists():
+            # Eyes config pause: dispatch to _run_eyes (NOT _drive). The
+            # side-file check is repeated in the dispatch block below.
+            pass
+        elif _snap.interrupts:
             _data = _snap.interrupts[0].value
             _options = _pending_options(_snap)
             _router_error = bool(_data.get("router_error", False))
@@ -2529,6 +2735,12 @@ def main(argv=None) -> int:
         print(build_graph().get_graph().draw_mermaid())
         return 0
 
+    # TASK-012: eyes diagnostic CLI leg — bypasses the graph (no node
+    # execution, no LLM ux_visual_review/fix). Shares the runner / validator /
+    # discovery modules via _run_eyes.
+    if args.cmd == "eyes":
+        return _run_eyes(args)
+
     inhibit = _sleep_inhibitor() if args.cmd in ("start", "resume", "redo") \
         else contextlib.nullcontext()
     with inhibit, open_checkpointer() as cp:
@@ -2664,6 +2876,14 @@ def main(argv=None) -> int:
         else:
             cfg = _thread(args.task_id)
             snap = graph.get_state(cfg)
+            # TASK-012: eyes config pause marker side file — dispatch to
+            # _run_eyes (NOT _drive) when present. Reuses ui_config from the
+            # checkpointer without re-ask; later yaml wins over state.
+            _eyes_pause = C.eyes_config_pause_path(args.task_id)
+            if _eyes_pause.exists():
+                ev.emit("run_start", args.task_id, "resume",
+                        f"eyes config pause — dispatching to _run_eyes")
+                return _run_eyes(args, resume_answer=args.answer)
             if not snap.created_at:
                 print(f"error: no run found for task {args.task_id}", file=sys.stderr)
                 return 1

@@ -77,6 +77,15 @@ class PipelineState(TypedDict, total=False):
     visual_no_progress: int        # consecutive cycles with no blocker reduction
     render_facts: str              # deterministic signals (overflow, mode-diff, empty space)
     visual_shipped_blocked: bool   # visual blockers overridden at the cap
+    # --- eyes runner (TASK-012): ui_config is checkpointed answers persisted
+    # via graph.update_state(thread, {"ui_config": ...}, as_node="init") as a
+    # plain state value (NOT via a LangGraph interrupt); eyes_gate_mode is a
+    # CLI override; eyes_artifacts holds PNG/facts paths + counts; eyes_engaged
+    # is the cached engagement flag for routers (set by the CLI leg).
+    ui_config: dict
+    eyes_gate_mode: str
+    eyes_artifacts: dict
+    eyes_engaged: bool
     # --- render gate (perf: counts re-renders per subtree, catches regressions)
     has_perf: bool                 # set from the brief's PERF-SURFACE marker (opt-in)
     render_verdict: str            # PASS | REGRESSED | BASELINE | SKIPPED (deterministic)

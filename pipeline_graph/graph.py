@@ -94,10 +94,12 @@ def route_after_tech(state):
     """After the technical critic: get the UX critique too (if any), else decide."""
     if state.get("escalation"):
         return "escalate"
-    # A UI task with no render command configured has its visual review disabled
-    # — skip the UX critic the same way a non-UI task does, so has_ui defaulting
-    # True can't drag a backend repo into a designer critique that renders nothing.
-    if state.get("has_ui") and C.UX_RENDER_CMD.strip():
+    # Eyes engagement gate (TASK-012): replaces the bare ``has_ui AND
+    # UX_RENDER_CMD.strip()`` check. ``eyes_engaged`` returns False for
+    # ``has_ui``-alone, so a backend repo is not dragged into a designer
+    # critique that renders nothing. A valid ``ui:`` yaml engages even when
+    # ``UI_SURFACE_RE`` left ``has_ui=False``.
+    if C.eyes_engaged(state):
         return "ux"
     return state.get("debate_next", "reply")   # no UX critic: tech node already decided
 
@@ -181,11 +183,11 @@ def route_next_batch(state):
         return "final_check"
     # All batches built. A UI task earns the visual gate first; then (or, for a
     # non-UI task, directly) the render gate if this is a perf task; else final.
-    # An empty UX_RENDER_CMD disables the whole visual phase (a repo with no
-    # frontend, e.g. MonkeForge itself): honour it here so has_ui defaulting True
-    # can't drag a backend task into ux_render → visual review → an oscillating
-    # fix loop that renders nothing and escalates on phantom blockers.
-    if state.get("has_ui") and C.UX_RENDER_CMD.strip():
+    # Eyes engagement gate (TASK-012): replaces ``has_ui AND UX_RENDER_CMD.strip()``.
+    # ``eyes_engaged`` returns False for ``has_ui``-alone or ``RENDER_CMD``-only,
+    # so a backend task is not dragged into ux_render → visual review → an
+    # oscillating fix loop that renders nothing and escalates on phantom blockers.
+    if C.eyes_engaged(state):
         return "ux_render"
     return _after_ui_gate(state)
 
@@ -278,10 +280,10 @@ def route_escalation_return(state):
     # and hasn't been explicitly waived, a resolved escalation retries the render
     # — a render-failure escalation resolved with "ok" must re-render, not skip to
     # the final gate (the bug that silently dropped the visual review).
+    # Eyes engagement gate (TASK-012): replaces ``has_ui AND UX_RENDER_CMD.strip()``.
     visual_passed = state.get("visual_verdict") == "APPROVE" and not state.get("visual_blockers", 0)
-    if (state.get("has_ui") and not visual_passed
+    if (C.eyes_engaged(state) and not visual_passed
             and not state.get("visual_shipped_blocked")
-            and C.UX_RENDER_CMD.strip()           # disabled gate → never re-enter it
             and C.resolved_gates_enabled(state)):  # scout-monke → no gates
         return "ux_render"
     # Perf task whose render gate has not passed: a resolved escalation re-profiles

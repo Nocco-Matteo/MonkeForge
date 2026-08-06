@@ -121,6 +121,9 @@ from .review import (
     code_review,
     code_verify,
 )
+# Eyes runner subpackage (TASK-012) — re-exported so tests / quality_gates can
+# import via ``N.eyes`` (mirrors how ``N.run_agent`` etc. are re-exported).
+from .. import eyes as eyes
 
 __all__ = [
     # shared deps
@@ -229,4 +232,6 @@ __all__ = [
     "_final_test_fix_loop",
     "final_check",
     "wrap_up",
+    # eyes subpackage
+    "eyes",
 ]

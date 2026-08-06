@@ -1,13 +1,13 @@
-"""F3: the UX critic is gated on ``has_ui AND UX_RENDER_CMD`` at both the router
+"""F3: the UX critic is gated on ``eyes_engaged`` at both the router
 (``route_after_tech``) and the debate-decision layer (``debate_tech`` /
 ``_debate_decision``).
 
-A UI task whose repo has no render command configured (``UX_RENDER_CMD`` empty)
-must skip the designer critique the same way a non-UI task does — otherwise
-``has_ui`` defaulting True drags a backend repo into a UX critic that renders
-nothing and escalates on phantom blockers. The bypass journal copy is the
-plain-language "visual review disabled — no render command configured for this
-repo", not the bare "UX_RENDER_CMD empty".
+A UI task whose repo has no eyes engagement signal (no usable ``ui:`` yaml, no
+checkpointed ``ui_config``, no legacy ``UX_RENDER_CMD``) must skip the designer
+critique the same way a non-UI task does — otherwise ``has_ui`` defaulting True
+drags a backend repo into a UX critic that renders nothing and escalates on
+phantom blockers. The bypass journal copy is the plain-language "visual review
+disabled — eyes not engaged for this task", not the bare "UX_RENDER_CMD empty".
 """
 import unittest
 
@@ -38,11 +38,13 @@ class RouteAfterTech(unittest.TestCase):
         finally:
             C.UX_RENDER_CMD = prev
 
-    def test_no_has_ui_skips_ux_regardless_of_render_cmd(self):
+    def test_no_has_ui_with_render_cmd_routes_to_ux(self):
+        # Per README: any non-empty PIPELINE_UX_RENDER_CMD engages eyes,
+        # regardless of has_ui. So has_ui=False + render_cmd set → UX.
         prev = C.UX_RENDER_CMD
         try:
             C.UX_RENDER_CMD = "npx playwright test"
-            self.assertEqual(G.route_after_tech(self._state(has_ui=False)), "reply")
+            self.assertEqual(G.route_after_tech(self._state(has_ui=False)), "ux")
         finally:
             C.UX_RENDER_CMD = prev
 
@@ -93,7 +95,7 @@ class DebateTechSkip(unittest.TestCase):
         self.assertEqual(out.get("debate_next"), "summary")
         journal = "\n".join(out.get("journal", []))
         self.assertIn(
-            "visual review disabled — no render command configured for this repo",
+            "visual review disabled — eyes not engaged for this task",
             journal,
         )
         # The old bare string must NOT appear.
@@ -106,18 +108,19 @@ class DebateTechSkip(unittest.TestCase):
         self.assertNotIn("debate_next", out)
         journal = "\n".join(out.get("journal", []))
         self.assertNotIn(
-            "visual review disabled — no render command configured for this repo",
+            "visual review disabled — eyes not engaged for this task",
             journal,
         )
 
-    def test_no_has_ui_skips_ux_without_bypass_note(self):
+    def test_no_has_ui_with_render_cmd_does_not_skip_ux(self):
+        # Per README: any non-empty UX_RENDER_CMD engages eyes regardless of
+        # has_ui, so the UX critic runs and debate_tech does NOT decide the
+        # round itself.
         out = self._run_debate_tech(has_ui=False, render_cmd="npx playwright test")
-        self.assertEqual(out.get("debate_next"), "summary")
+        self.assertNotIn("debate_next", out)
         journal = "\n".join(out.get("journal", []))
-        # Non-UI task: no render-command bypass note (the gate is off for a
-        # different reason — there is no UI surface to review at all).
         self.assertNotIn(
-            "visual review disabled — no render command configured for this repo",
+            "visual review disabled — eyes not engaged for this task",
             journal,
         )
 
@@ -156,10 +159,13 @@ class DebateDecisionUxOk(unittest.TestCase):
                            ux_verdict="APPROVE", ux_blockers=0)
         self.assertEqual(out["debate_next"], "summary")
 
-    def test_no_has_ui_treats_ux_as_satisfied(self):
+    def test_no_has_ui_with_render_cmd_requires_ux_approve(self):
+        # Per README: any non-empty UX_RENDER_CMD engages eyes regardless of
+        # has_ui, so the UX verdict must be APPROVE to converge. UNKNOWN must
+        # NOT converge (the UX critic ran and has not weighed in yet).
         out = self._decide(has_ui=False, render_cmd="npx playwright test",
                            ux_verdict="UNKNOWN")
-        self.assertEqual(out["debate_next"], "summary")
+        self.assertNotEqual(out["debate_next"], "summary")
 
 
 if __name__ == "__main__":

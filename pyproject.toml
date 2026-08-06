@@ -7,6 +7,7 @@ dependencies = [
   "langgraph>=0.2",
   "langgraph-checkpoint-sqlite>=1.0",
   "rich>=13.7",
+  "playwright>=1.40",
 ]
 
 [project.optional-dependencies]
@@ -17,7 +18,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["pipeline_graph", "pipeline_graph.nodes"]
+packages = ["pipeline_graph", "pipeline_graph.nodes", "pipeline_graph.eyes"]
 
 [tool.setuptools.package-data]
 pipeline_graph = ["prompts/*.md"]

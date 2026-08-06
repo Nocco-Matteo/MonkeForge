@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Home — Eyes Fixture</title>
+    <style>
+        body { margin: 0; font-family: sans-serif; }
+        nav { background: #1a1a2e; color: #fff; padding: 1rem; }
+        nav a { color: #e0e0e0; margin-right: 1rem; text-decoration: none; }
+        main { padding: 2rem; max-width: 960px; margin: 0 auto; }
+        .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+        .btn { background: #4a6cf7; color: #fff; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
+        .scroll-region { max-height: 200px; overflow-y: auto; border: 1px solid #ccc; padding: 1rem; }
+        .footer { border-top: 1px solid #ddd; padding: 2rem; text-align: center; color: #666; }
+        .hidden-link { display: none; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/">Home</a>
+        <a href="/settings">Settings</a>
+        <a href="/about">About</a>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/users">Users</a>
+    </nav>
+    <main>
+        <h1>Home</h1>
+        <div class="card">
+            <p>Welcome to the eyes fixture home page.</p>
+            <button class="btn" id="action-btn">Click me</button>
+            <button class="btn" id="toggle-btn" data-target="toggle-target">Toggle</button>
+        </div>
+        <div class="card" id="toggle-target" style="display:none;">
+            <p>This content is toggled visible by the Toggle button.</p>
+            <input type="text" id="search-input" placeholder="Search...">
+            <button class="btn" id="search-btn">Search</button>
+        </div>
+        <div class="card">
+            <h2>Scrollable Region</h2>
+            <div class="scroll-region" id="scroll-area">
+                <p>Line 1: scrollable content for testing the scroll action.</p>
+                <p>Line 2: more content to create overflow.</p>
+                <p>Line 3: additional content for scrolling.</p>
+                <p>Line 4: yet more content.</p>
+                <p>Line 5: content continues.</p>
+                <p>Line 6: content continues.</p>
+                <p>Line 7: content continues.</p>
+                <p>Line 8: content continues.</p>
+                <p>Line 9: content continues.</p>
+                <p>Line 10: end of scrollable content.</p>
+            </div>
+        </div>
+        <div class="card">
+            <h2>Links for Discovery</h2>
+            <ul>
+                <li><a href="/settings">Settings page</a></li>
+                <li><a href="/about">About page</a></li>
+                <li><a href="/dashboard">Dashboard (relative)</a></li>
+                <li><a href="users">Users (no leading slash)</a></li>
+                <li><a href="https://example.com/external">External (off-origin)</a></li>
+                <li><a href="javascript:void(0)">JS link (skip)</a></li>
+                <li><a href="mailto:test@example.com">Mailto (skip)</a></li>
+                <li><a href="#" class="hidden-link">Hidden (same page)</a></li>
+            </ul>
+        </div>
+    </main>
+    <div class="footer">
+        <p>Eyes fixture footer — for scroll-into-view testing.</p>
+        <a href="/about">About</a> | <a href="/settings">Settings</a>
+    </div>
+</body>
+</html>

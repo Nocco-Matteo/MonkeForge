@@ -7,12 +7,24 @@ from unittest.mock import patch
 
 from pipeline_graph import graph as G
 from pipeline_graph import nodes as N
+from pipeline_graph import config as C
 
 
 _REVIEW_2 = "VERDICT: REJECT\n[BLOCKER] a is broken\n[BLOCKER] b is broken\n"
 
 
+def _ensure_png(tid: str):
+    """Create a dummy non-empty PNG so ux_visual_review proceeds past the
+    zero-PNG skip (TASK-012) to the plateau-detection logic under test."""
+    shots = C.SCREENS / f"task-{tid}"
+    shots.mkdir(parents=True, exist_ok=True)
+    png = shots / "home.png"
+    if not png.exists() or png.stat().st_size == 0:
+        png.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+
 def _review(state):
+    _ensure_png(state.get("task_id", "p"))
     with patch.object(N, "run_agent", return_value=(0, _REVIEW_2)), \
          patch.object(N, "render_prompt", return_value="x"), \
          patch.object(N.ev, "emit"):

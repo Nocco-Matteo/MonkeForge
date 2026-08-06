@@ -720,7 +720,7 @@ def early_cmd_and_task_id(argv: list[str]) -> tuple[str | None, str | None]:
     """Find ``start|resume|land|…`` and the following bare task id, if any."""
     known = {
         "start", "resume", "redo", "reset", "status", "doctor", "metrics",
-        "graph", "land", "sync",
+        "graph", "land", "sync", "eyes",
     }
     for i, a in enumerate(argv):
         if a in known:
@@ -734,10 +734,11 @@ def early_cmd_and_task_id(argv: list[str]) -> tuple[str | None, str | None]:
 def bootstrap_run_isolation(argv: list[str], *, run_py: Path | None = None) -> None:
     """If a task-scoped command has a task id, ensure wt and re-exec isolated.
 
-    ``start``/``resume`` create-or-reuse; ``status``/``doctor``/``metrics``/
-    ``reset``/``redo`` reuse only (so status reads ``docs/wt-task-*``, not the
-    product basename docs). No-op when already isolated, ``--no-isolate``, or
-    task id not yet known (start wizard / bare ``status`` list).
+    ``start`` create-or-reuse; ``resume``/``eyes``/``status``/``doctor``/
+    ``metrics``/``reset``/``redo`` reuse only (so status reads
+    ``docs/wt-task-*``, not the product basename docs). No-op when already
+    isolated, ``--no-isolate``, or task id not yet known (start wizard / bare
+    ``status`` list).
     """
     if already_isolated() or "--no-isolate" in argv:
         return
@@ -745,7 +746,7 @@ def bootstrap_run_isolation(argv: list[str], *, run_py: Path | None = None) -> N
     if not tid:
         return
     create_cmds = ("start",)
-    reuse_cmds = ("resume", "status", "doctor", "metrics", "reset", "redo")
+    reuse_cmds = ("resume", "eyes", "status", "doctor", "metrics", "reset", "redo")
     if cmd not in create_cmds and cmd not in reuse_cmds:
         return
     brief = early_argv_flag(argv, "file")

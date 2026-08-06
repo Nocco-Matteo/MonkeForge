@@ -181,3 +181,79 @@ agents:
 #   level: milestones
 #   rate: 30
 #   window: 60
+
+# Eyes runner (TASK-012): declarative ``ui:`` config for the generalized web
+# "eyes" runner. When present with minimum fields (type + (url OR (start +
+# ready))), the visual gate engages and the new MonkeForge-owned Playwright
+# runner replaces the legacy subprocess ``PIPELINE_UX_RENDER_CMD`` path. Legacy
+# env compat is retained (subprocess-only, incl. _db_note + seed).
+#
+# Engagement signals (any one engages eyes):
+#   - usable ``ui:`` yaml here (minimum fields present)
+#   - checkpointed ``ui_config`` on the task's PipelineState
+#   - legacy ``PIPELINE_UX_RENDER_CMD`` non-empty
+#   - explicit ``./run.py eyes <task_id>``
+# ``has_ui`` alone does NOT engage (no phantom visual gate on backend repos).
+#
+# Gate modes (effort → mode via config.resolved_gate_mode):
+#   scout-monke  = off      (no browser/server in-graph)
+#   troop-monke  = standard (1 trace execution per screen)
+#   barrel-monke = full     (2 executions: run + 1 replay; blocks on
+#                            layout_shifts > 0.1 or is_stable != true)
+# ``./run.py eyes`` defaults to ``standard``; override with
+# ``--gate {off,standard,full}`` (alias ``--mode``).
+#
+# type: web (mandatory in v1). ``auto`` resolves to ``web`` (documented alias).
+# ``electron`` is deferred — the new runner returns a clear error, no silent
+# fallback.
+#
+# Discovery caps (when ``screens`` absent): same-origin http(s) link crawl from
+# ``base_url`` — max 12 pages, depth 2, 90 s wall-clock, 40 link expansions.
+# ``UNVERIFIED`` per gate mode (degrade+continue in standard, block in full).
+#
+# Default viewport (when ``ui.viewport`` absent): 1280×720.
+# Default cwd (when ``ui.cwd`` absent): product REPO root. If ``ui.cwd`` set:
+# resolve relative to REPO unless absolute; must stay inside REPO (escape →
+# fail-loud).
+#
+# ``ui.auth_hooks`` allowlist: ``seed_script`` (shell command once before
+# traces) + ``require_e2e_db`` (run e2e-stack / _db_note-equivalent before
+# traces). Unknown keys → fail-loud. No cookie jars / OAuth / login DSL.
+# The new runner does NOT run _db_note globally — only when
+# ``auth_hooks.require_e2e_db`` or ``auth_hooks.seed_script`` is declared.
+#
+# ui:
+#   type: web                  # web (mandatory); auto→web; electron→error (deferred)
+#   # url: "http://127.0.0.1:3000/"   # when set, base_url = origin of url
+#   start: "npm run dev"       # spawned (cwd = ui.cwd or REPO); killed on cleanup
+#   ready: "http://127.0.0.1:3000/"   # GET polled every 500 ms; 2xx/3xx = ready
+#   # ready_timeout_s: 60      # default: min(UX_RENDER_TIMEOUT, 60)
+#   # cwd: ""                  # default: REPO; must stay inside REPO
+#   # viewport: {width: 1280, height: 720}  # default: 1280×720
+#   # manifesto: UX-MANIFESTO.md  # repo-relative; precedence: ui.manifesto → {docs_dir}/UX-MANIFESTO.md
+#   screens:                   # canonical shape; absent → bounded discovery
+#     - name: home
+#       actions:
+#         - {action: goto, url: "http://127.0.0.1:3000/"}
+#         - {action: screenshot, name: home}
+#     - name: settings
+#       actions:
+#         - {action: goto, url: "/settings"}   # path-relative → base_url + path
+#         - {action: screenshot, name: settings}
+#   # auth_hooks:              # allowlist only; unknown keys → fail-loud
+#   #   seed_script: "bash scripts/seed.sh"
+#   #   require_e2e_db: true
+#
+# Trace action allowlist (closed): goto / click / fill / select / press / hover
+# / scroll / wait_for / wait_ms / screenshot. Unknown action → fail-loud before
+# browser launch. ``wait_for.state``: visible|hidden|attached|detached.
+# ``press.key``: Enter|Tab|Escape|Backspace|Delete|Arrow*|Home|End|Page*|Space
+# (no modifier chords). Evals / custom scripts → fail-loud.
+#
+# facts.json shape (``monkeforge.eyes.facts/v1``) at
+# ``{docs_dir}/reviews/screens/task-{task_id}/facts.json``:
+#   schema, task_id, viewport, gate_mode, console_errors (global),
+#   failed_requests (global), screens.* (page_loaded, screenshot_empty,
+#   has_overflow, layout_shifts, is_stable, interactive_count).
+# Legacy subprocess facts normalize at ingest into this shape (aliases:
+# has_overflow↔overflow/overflow_x, is_stable↔mode_identical).

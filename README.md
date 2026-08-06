@@ -323,34 +323,66 @@ dentro un nodo diventa un'escalation con traceback, non la morte del processo.
 ## Il cancello visivo (gli occhi)
 
 Ogni altro cancello legge **testo** (piani, diff) e non può vedere che una UI è
-stretta, vuota, o che due modalità "diverse" renderizzano identiche. Per i task
+stretta, vuota, o che due schermate "diverse" renderizzano identiche. Per i task
 con UI (`has_ui`, dichiarato dall'analista nel brief con `UI-SURFACE: yes`), dopo
-i batch la pipeline **guarda i pixel**:
+i batch la pipeline **guarda i pixel** — ma solo quando gli "eyes" sono
+**ingaggiati** (TASK-012):
 
-- **`ux_render`** tira su lo stack e2e, **semina le fixture** (Fighter + Wizard a
-  id fissi, `scripts/e2e-seed-ux-fixtures.sh`), e lancia lo spec Playwright
-  (`frontend/tests/e2e/ux-render.spec.ts`) che screenshotta Combat/Explore a
-  1280px ed emette **fatti deterministici**: `overflow_x`, `page_scroll_y`,
-  `mode_identical` (screenshot byte-uguali = le modalità non cambiano niente),
-  `board_coverage` (spazio vuoto).
+**Segnali di engagement** (ne basta uno):
+- `ui:` yaml usabile in `monkeforge.yaml` (campi minimi: `type` + (`url` OPPURE
+  (`start` E `ready`)))
+- `ui_config` checkpointato sul `PipelineState` del task
+- `PIPELINE_UX_RENDER_CMD` non vuoto (compat legacy subprocess)
+- `./run.py eyes <task_id>` esplicito
+
+`has_ui` da solo **non** ingaggia — niente gate visivo fantasma su repo backend.
+
+**Il nuovo runner** (`pipeline_graph/eyes/`): dichiara `ui:` in yaml → la
+pipeline spawna `ui.start`, polla `ui.ready`, deriva `base_url`, esegue le
+tracce dichiarate (`ui.screens`) o scopre le schermate con un crawl same-origin
+bounded (max 12 pagine, depth 2, 90 s, 40 link), screenshotta, ed emette
+`monkeforge.eyes.facts/v1` (`facts.json` + PNG in
+`{docs_dir}/reviews/screens/task-{tid}/`). Cleanup dell'albero dei processi su
+successo/timeout/fallimento/escalation. `type: electron` → errore chiaro
+(deferred); `type: auto` → `web`.
+
+**`./run.py eyes <task_id>`** è una CLI diagnostica: config → start/ready →
+tracce/discovery → facts/PNG → cleanup. NON lancia il loop LLM
+`ux_visual_review`/fix. Default `--gate standard`; override con
+`--gate {off,standard,full}` (alias `--mode`). Risoluzione config: yaml →
+`ui_config` checkpointato → interrupt (minimo campi, snippet suggerito, yaml
+NON modificato; `./run.py resume` riutilizza lo stato senza re-ask; yaml
+successivo vince su state).
+
+**`standard` vs `full`**:
+- `standard` (troop-monke): 1 esecuzione trace per schermata; discovery
+  `UNVERIFIED` → degradazione + continua; errori console/rete → degradazione;
+  `page_loaded != true`/`screenshot_empty` → salta review se zero PNG.
+- `full` (barrel-monke): 2 esecuzioni (run + 1 replay); `is_stable` (strutturale)
+  e `layout_shifts` (float CLS-like); blocca quando `layout_shifts > 0.1` o
+  `is_stable != true`; discovery `UNVERIFIED`/errori console-rete/`page_loaded !=
+  true`/`screenshot_empty` → blocca/escala; `interactive_count == 0` è
+  informativo (non blocca).
+
+**Compat legacy**: `PIPELINE_UX_RENDER_CMD` non vuoto → path subprocess
+invariato (incl. `_db_note` + seed quando configurati), ma i facts vengono
+normalizzati a `monkeforge.eyes.facts/v1` prima della review (alias:
+`has_overflow`↔`overflow`/`overflow_x`, `is_stable`↔`mode_identical`).
+
 - **`ux_visual_review`** — VISUAL_REVIEWER (claude, che legge davvero i PNG) —
-  critica il renderizzato contro i fatti + il manifesto. Verdetto + blocker.
+  critica il renderizzato contro i fatti + il manifesto. Salta con
+  `visual_verdict=SKIPPED_NO_SCREENSHOTS` quando zero PNG usabili; PNG parziali
+  → review solo sugli shot usabili.
 - **`ux_visual_fix`** — VISUAL_FIXER (claude, che pure **vede** gli screenshot)
-  corregge; il vedere è ciò che evita il whack-a-mole (fixare una modalità e
+  corregge; il vedere è ciò che evita il whack-a-mole (fixare una schermata e
   romperne un'altra alla cieca). Poi ri-render.
 
 Loop fino a `MAX_UX_RENDER_CYCLES` (default 3, env-overridabile). Se i blocker
 **non calano per due cicli** (oscillazione), escala *prima* del cap: di solito
-serve una decisione di design, non altri cicli. Deterministici **+** visione
-insieme: i fatti prendono i sintomi misurabili (modalità identiche, scroll), la
-vista prende ciò che nessuno strumento becca (un'etichetta troncata a `overflow_x
-= false`). Disabilitabile con `PIPELINE_UX_RENDER_CMD` vuoto. Il cancello
-visivo è **opt-in**: di default `PIPELINE_UX_RENDER_CMD` è vuoto e il gate
-non parte — configurarlo (più `PIPELINE_UX_SEED_SCRIPT`/`PIPELINE_UX_RENDER_CWD`
-se servono) per riattivarlo.
+serve una decisione di design, non altri cicli.
 
-Prerequisito una-tantum: `cd frontend && npx playwright install chromium
-chromium-headless-shell`.
+Prerequisito una-tantum: `pip install playwright && playwright install chromium`
+(Playwright è ora una dipendenza di MonkeForge, non dei repo target).
 
 ## Cosa NON risolve
 

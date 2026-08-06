@@ -711,6 +711,276 @@ UX_RENDER_CWD = os.environ.get("PIPELINE_UX_RENDER_CWD", "")
 # test.setTimeout (600s cold-path for fixture creation) with margin.
 UX_RENDER_TIMEOUT = int(os.environ.get("PIPELINE_UX_RENDER_TIMEOUT", "720"))
 
+# --- Eyes runner (TASK-012) -------------------------------------------------
+# The generalized "eyes" runner: declarative ``ui:`` yaml → checkpointed
+# ``ui_config`` → human interrupt when engaged, validated Playwright traces,
+# ``monkeforge.eyes.facts/v1`` facts + screenshots, and the first real
+# ``standard`` ≠ ``full`` gate split. Legacy subprocess compat retained.
+
+# ``ui:`` is read directly from ``monkeforge.yaml`` (like ``agents:`` /
+# ``condenser:`` / ``test_suites:``), NOT bridged via ``PIPELINE_*`` env.
+# Parsed raw — no eager raise. Missing minimum just means "not usable"; the
+# engagement helpers (``eyes_engaged`` / ``eyes_new_runner_eligible``) test
+# "minimum fields present" without raising. Full structural validation
+# (``validate_ui_config``) runs lazily inside the runner / ``_run_eyes`` on
+# the SELECTED config, immediately before browser launch.
+UI_CONFIG: dict = _yaml_root.get("ui") or {}
+if not isinstance(UI_CONFIG, dict):
+    UI_CONFIG = {}
+
+# Default viewport when ``ui.viewport`` absent.
+EYES_DEFAULT_VIEWPORT = (1280, 720)
+
+# Bounded same-origin discovery caps (when ``ui.screens`` absent).
+EYES_DISCOVERY_MAX_PAGES = 12
+EYES_DISCOVERY_MAX_DEPTH = 2
+EYES_DISCOVERY_TIMEOUT_S = 90
+EYES_DISCOVERY_MAX_LINKS = 40
+
+# Ready-healthcheck polling.
+EYES_READY_POLL_INTERVAL_MS = 500
+
+
+def _eyes_config_minimum(cfg: dict) -> bool:
+    """True when ``cfg`` has the minimum fields for a usable ``ui:`` config.
+
+    Minimum: ``type`` + (``url`` OR (``start`` AND ``ready``)). ``screens`` is
+    optional. No raise — a missing minimum just means "not usable" so the
+    brief §3 fallback chain proceeds to checkpointed state, then interrupt.
+    """
+    if not isinstance(cfg, dict) or not cfg:
+        return False
+    if not str(cfg.get("type") or "").strip():
+        return False
+    if str(cfg.get("url") or "").strip():
+        return True
+    if str(cfg.get("start") or "").strip() and str(cfg.get("ready") or "").strip():
+        return True
+    return False
+
+
+def eyes_engaged(state) -> bool:
+    """The *engagement gate*: should the visual phase run at all?
+
+    True for usable ``ui:`` yaml, checkpointed ``ui_config`` (minimum fields),
+    legacy ``PIPELINE_UX_RENDER_CMD`` non-empty (engages regardless of
+    ``has_ui``, per README §"Il cancello visivo"), or an explicit ``./run.py
+    eyes`` CLI flag (``state["eyes_engaged"]`` set by the CLI leg). False for
+    ``has_ui``-alone or ``PIPELINE_RENDER_CMD``-only. A valid ``ui:`` yaml
+    engages even when ``UI_SURFACE_RE`` left ``has_ui=False``. Consulted by
+    ``route_after_tech``, ``route_next_batch``, ``route_escalation_return``,
+    ``debate_tech``, ``_debate_decision`` — replacing the bare
+    ``C.UX_RENDER_CMD.strip()`` checks.
+    """
+    if not isinstance(state, dict):
+        state = {}
+    # Explicit CLI flag (set by _run_eyes / the eyes subparser).
+    if state.get("eyes_engaged"):
+        return True
+    # Usable ui: yaml (checked first — yaml wins over state/env; engages even
+    # when has_ui=False, per the brief).
+    if _eyes_config_minimum(UI_CONFIG):
+        return True
+    # Checkpointed ui_config on this task's PipelineState.
+    if _eyes_config_minimum(state.get("ui_config") or {}):
+        return True
+    # Legacy PIPELINE_UX_RENDER_CMD non-empty — engages regardless of has_ui
+    # (per README: any non-empty UX_RENDER_CMD engages eyes).
+    if UX_RENDER_CMD.strip():
+        return True
+    return False
+
+
+def eyes_new_runner_eligible(state) -> bool:
+    """The *dispatch discriminator* inside ``ux_render``: True ONLY when usable
+    ``ui:`` yaml OR checkpointed ``state.ui_config`` minimum is present — NOT
+    legacy env alone. Yaml wins over state. ``ux_render`` branches:
+    ``if not eyes_engaged: skip; elif eyes_new_runner_eligible: new-runner;
+    else: compat-subprocess``.
+    """
+    if not isinstance(state, dict):
+        state = {}
+    if _eyes_config_minimum(UI_CONFIG):
+        return True
+    if _eyes_config_minimum(state.get("ui_config") or {}):
+        return True
+    return False
+
+
+def resolved_eyes_gate_mode(state) -> str:
+    """The gate mode for the eyes runner. Defaults to ``resolved_gate_mode``;
+    a CLI override (``--gate``/``--mode`` via ``state["eyes_gate_mode"]``) wins
+    when set to ``off``/``standard``/``full``.
+    """
+    if not isinstance(state, dict):
+        state = {}
+    override = str(state.get("eyes_gate_mode") or "").strip()
+    if override in _EFFORT_GATE_MODES:
+        return override
+    return resolved_gate_mode(state)
+
+
+def eyes_config_pause_path(task_id: str) -> Path:
+    """Side file marking an eyes config pause (mirrors
+    ``pending_answer.pending_answer_path``). Written by ``_run_eyes`` when it
+    pauses for minimum fields; checked by the ``resume`` preflight BEFORE
+    ``snap.interrupts`` so a config-pause dispatches to ``_run_eyes`` instead
+    of ``_drive``.
+    """
+    return METRICS / f"eyes-config-pause-{task_id}.json"
+
+
+# --- Eyes config validation (lazy, full structural) ------------------------
+# Called by the runner / ``_run_eyes`` on the SELECTED config immediately
+# before browser launch. Missing minimum is NOT a raise here (it's handled by
+# the engagement helpers as "not usable"). Unknown keys / invalid ``type`` /
+# ``wait_for.state`` / ``press.key`` / action → ``ValueError``. ``ui.type:
+# auto``→``web``; ``electron``→error.
+
+_EYES_ACTION_ALLOWLIST = frozenset({
+    "goto", "click", "fill", "select", "press", "hover",
+    "scroll", "wait_for", "wait_ms", "screenshot",
+})
+_EYES_WAIT_FOR_STATES = frozenset({
+    "visible", "hidden", "attached", "detached",
+})
+_EYES_PRESS_KEYS = frozenset({
+    "Enter", "Tab", "Escape", "Backspace", "Delete",
+    "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+    "Home", "End", "PageUp", "PageDown", "Space",
+})
+_EYES_SCREEN_KEYS = frozenset({"name", "actions"})
+_EYES_AUTH_HOOK_KEYS = frozenset({"seed_script", "require_e2e_db"})
+_EYES_UI_KEYS = frozenset({
+    "type", "url", "start", "ready", "ready_timeout_s", "cwd",
+    "viewport", "manifesto", "screens", "auth_hooks",
+})
+_EYES_ACTION_REQUIRED: dict[str, tuple[str, ...]] = {
+    "goto": ("url",),
+    "click": ("selector",),
+    "fill": ("selector", "text"),
+    "select": ("selector", "value"),
+    "press": ("selector", "key"),
+    "hover": ("selector",),
+    "scroll": ("selector",),
+    "wait_for": ("selector",),
+    "wait_ms": ("ms",),
+    "screenshot": ("name",),
+}
+_EYES_ACTION_OPTIONAL: dict[str, frozenset[str]] = {
+    "goto": frozenset(),
+    "click": frozenset({"timeout_ms"}),
+    "fill": frozenset(),
+    "select": frozenset(),
+    "press": frozenset(),
+    "hover": frozenset(),
+    "scroll": frozenset({"x", "y"}),
+    "wait_for": frozenset({"state", "timeout_ms"}),
+    "wait_ms": frozenset(),
+    "screenshot": frozenset({"full_page"}),
+}
+
+
+def validate_ui_config(cfg: dict) -> dict:
+    """Full structural validation of a selected ``ui:`` config.
+
+    Raises ``ValueError`` on unknown keys, invalid ``type`` / ``wait_for.state``
+    / ``press.key`` / action, ``electron``→error. Normalizes ``type: auto``→
+    ``web`` in the returned dict. Called LAZILY by the runner / ``_run_eyes``
+    on the selected config before browser launch, NOT at module import.
+    Missing minimum is NOT a raise here (handled by engagement helpers).
+    """
+    if not isinstance(cfg, dict):
+        raise ValueError("ui: config must be a mapping")
+    out = dict(cfg)
+    # Unknown top-level keys.
+    unknown = set(out.keys()) - _EYES_UI_KEYS
+    if unknown:
+        raise ValueError(f"ui: unknown keys: {sorted(unknown)}")
+    # type resolution: auto→web; electron→error; web stays.
+    ui_type = str(out.get("type") or "").strip()
+    if ui_type == "auto":
+        out["type"] = "web"
+    elif ui_type == "electron":
+        raise ValueError(
+            "ui.type: electron is not supported in v1 (deferred). "
+            "Use type: web (or auto, which resolves to web).")
+    elif ui_type not in ("web",):
+        raise ValueError(
+            f"ui.type: {ui_type!r} is not valid (expected web, auto, or electron)")
+    # cwd escape check (relative to REPO unless absolute; must stay inside).
+    cwd = str(out.get("cwd") or "").strip()
+    if cwd:
+        cwd_path = (REPO / cwd).resolve() if not Path(cwd).is_absolute() else Path(cwd).resolve()
+        if not cwd_path.is_relative_to(REPO):
+            raise ValueError(f"ui.cwd: {cwd!r} resolves outside repo {REPO}")
+    # viewport shape.
+    vp = out.get("viewport")
+    if vp is not None:
+        if not isinstance(vp, dict) or "width" not in vp or "height" not in vp:
+            raise ValueError("ui.viewport must be a mapping with width and height")
+    # auth_hooks allowlist.
+    ah = out.get("auth_hooks")
+    if ah is not None:
+        if not isinstance(ah, dict):
+            raise ValueError("ui.auth_hooks must be a mapping")
+        unknown_ah = set(ah.keys()) - _EYES_AUTH_HOOK_KEYS
+        if unknown_ah:
+            raise ValueError(
+                f"ui.auth_hooks: unknown keys {sorted(unknown_ah)} "
+                f"(allowlist: {sorted(_EYES_AUTH_HOOK_KEYS)})")
+    # screens validation.
+    screens = out.get("screens")
+    if screens is not None:
+        if not isinstance(screens, list) or not screens:
+            raise ValueError("ui.screens must be a non-empty list")
+        for i, screen in enumerate(screens):
+            if not isinstance(screen, dict):
+                raise ValueError(f"ui.screens[{i}]: not a mapping")
+            unknown_s = set(screen.keys()) - _EYES_SCREEN_KEYS
+            if unknown_s:
+                raise ValueError(f"ui.screens[{i}]: unknown keys {sorted(unknown_s)}")
+            if not str(screen.get("name") or "").strip():
+                raise ValueError(f"ui.screens[{i}]: missing 'name'")
+            actions = screen.get("actions")
+            if not isinstance(actions, list) or not actions:
+                raise ValueError(f"ui.screens[{i}]: 'actions' must be a non-empty list")
+            for j, act in enumerate(actions):
+                if not isinstance(act, dict):
+                    raise ValueError(f"ui.screens[{i}].actions[{j}]: not a mapping")
+                action = str(act.get("action") or "").strip()
+                if action not in _EYES_ACTION_ALLOWLIST:
+                    raise ValueError(
+                        f"ui.screens[{i}].actions[{j}]: unknown action {action!r} "
+                        f"(allowlist: {sorted(_EYES_ACTION_ALLOWLIST)})")
+                required = _EYES_ACTION_REQUIRED[action]
+                for req in required:
+                    if req not in act or str(act.get(req) or "").strip() == "":
+                        raise ValueError(
+                            f"ui.screens[{i}].actions[{j}] ({action}): "
+                            f"missing required param {req!r}")
+                allowed_keys = frozenset({"action"}) | set(required) | _EYES_ACTION_OPTIONAL[action]
+                unknown_a = set(act.keys()) - allowed_keys
+                if unknown_a:
+                    raise ValueError(
+                        f"ui.screens[{i}].actions[{j}] ({action}): "
+                        f"unknown params {sorted(unknown_a)}")
+                if action == "wait_for":
+                    state_val = str(act.get("state") or "visible").strip()
+                    if state_val not in _EYES_WAIT_FOR_STATES:
+                        raise ValueError(
+                            f"ui.screens[{i}].actions[{j}] (wait_for): "
+                            f"unknown state {state_val!r} "
+                            f"(expected one of {sorted(_EYES_WAIT_FOR_STATES)})")
+                if action == "press":
+                    key = str(act.get("key") or "").strip()
+                    if key not in _EYES_PRESS_KEYS:
+                        raise ValueError(
+                            f"ui.screens[{i}].actions[{j}] (press): "
+                            f"unknown key {key!r} "
+                            f"(expected one of {sorted(_EYES_PRESS_KEYS)})")
+    return out
+
 # --- Render gate (the perf analog of the visual gate) ----------------------
 # Drives a scripted interaction and counts re-renders per instrumented subtree
 # (window.__RENDER_LOG__, fed by <Profiler> hooks) into render-facts.json, then

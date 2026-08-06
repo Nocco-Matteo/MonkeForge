@@ -24,9 +24,68 @@ def _screens_dir(tid: str) -> Path:
 def ux_render(state):
     tid = state["task_id"]
     cyc = state.get("ux_render_cycle", 0)
-    if C.DRY_RUN or not C.UX_RENDER_CMD.strip():
+    if C.DRY_RUN or not C.eyes_engaged(state):
         return {"render_facts": "{}", "journal": ["ux render: skipped (dry run / disabled)"]}
 
+    # Dispatch: new-runner (usable ui: yaml OR checkpointed ui_config) vs
+    # compat-subprocess (legacy PIPELINE_UX_RENDER_CMD only). Yaml wins over
+    # env inside the discriminator.
+    if C.eyes_new_runner_eligible(state):
+        return _ux_render_new_runner(state, tid, cyc)
+    return _ux_render_compat(state, tid, cyc)
+
+
+def _ux_render_new_runner(state, tid, cyc):
+    """The new MonkeForge-owned Playwright runner path."""
+    from .. import eyes as _eyes
+    # Resolve the selected config: yaml wins over checkpointed state.
+    ui_config = dict(C.UI_CONFIG) if C._eyes_config_minimum(C.UI_CONFIG) else {}
+    if not ui_config:
+        ck = state.get("ui_config") or {}
+        if C._eyes_config_minimum(ck):
+            ui_config = dict(ck)
+    gate_mode = C.resolved_eyes_gate_mode(state)
+    try:
+        result = _eyes.run_eyes(
+            tid, ui_config, gate_mode=gate_mode,
+            docs_dir=C.DOCS, repo=C.REPO)
+    except _eyes.EyesError as exc:
+        return {
+            "escalation": f"eyes runner error: {exc}",
+            "journal": [f"ux render c{cyc}: eyes error — {exc}"],
+        }
+    degradations = list(result.get("degradations") or [])
+    journal = [f"ux render c{cyc}: eyes runner — {len(result.get('pngs', []))} screenshot(s)"]
+    if result.get("unverified"):
+        journal.append("ux render: discovery UNVERIFIED")
+    delta: dict = {
+        "render_facts": result.get("facts_json") or "{}",
+        "journal": journal,
+    }
+    if degradations:
+        delta["degradations"] = degradations
+    if result.get("escalation"):
+        delta["escalation"] = result["escalation"]
+    # Persist artifacts + ui_config for resume.
+    artifacts = {
+        "screens_dir": str(result.get("screens_dir") or ""),
+        "pngs": result.get("pngs") or [],
+        "png_count": len(result.get("pngs") or []),
+    }
+    delta["eyes_artifacts"] = artifacts
+    if ui_config:
+        delta["ui_config"] = ui_config
+    return delta
+
+
+def _ux_render_compat(state, tid, cyc):
+    """The legacy subprocess compat path (PIPELINE_UX_RENDER_CMD).
+
+    Unchanged invoke semantics (incl. ``_db_note`` + ``UX_SEED_SCRIPT``) but
+    calls ``normalize_legacy_facts`` on the raw facts before returning so
+    ``render_facts`` is always ``monkeforge.eyes.facts/v1``.
+    """
+    from .. import eyes as _eyes
     # The render drives the real frontend+backend: the e2e stack must be up.
     db_ok, _ = _db_note(tid, "ux_render")
     if not db_ok:
@@ -83,7 +142,15 @@ def ux_render(state):
         }
 
     shots = sorted(out_dir.glob("*.png"))
-    facts = read_if_exists(out_dir / "facts.json") or "{}"
+    raw_facts = read_if_exists(out_dir / "facts.json") or "{}"
+    # Normalize legacy facts to monkeforge.eyes.facts/v1 before review.
+    try:
+        raw_dict = json.loads(raw_facts) if raw_facts else {}
+    except (json.JSONDecodeError, TypeError):
+        raw_dict = {}
+    facts = _eyes.normalize_legacy_facts(raw_dict)
+    facts_json = json.dumps(facts)
+    (out_dir / "facts.json").write_text(facts_json)
     if not shots:
         return {
             "escalation": f"could not render the UI: no screenshots produced "
@@ -91,7 +158,7 @@ def ux_render(state):
             "journal": ["ux render: no screenshots"],
         }
     return {
-        "render_facts": facts,
+        "render_facts": facts_json,
         "journal": [f"ux render: {len(shots)} screenshot(s), facts captured"],
     }
 
@@ -101,6 +168,24 @@ def ux_visual_review(state):
     cyc = state.get("ux_render_cycle", 0)
     shots = _screens_dir(tid)
     conv = Conversation.from_state(state)
+
+    # Zero usable PNGs: skip the LLM review with an explicit non-LLM outcome
+    # (brief §3: "skip ux_visual_review; set visual_verdict=SKIPPED_NO_SCREENSHOTS;
+    # append degradations; route onward"). Partial PNGs review only usable shots.
+    all_pngs = sorted(shots.glob("*.png")) if shots.exists() else []
+    usable_pngs = sorted(p for p in all_pngs if p.stat().st_size > 0)
+    if not usable_pngs:
+        return {
+            "visual_verdict": "SKIPPED_NO_SCREENSHOTS",
+            "visual_blockers": 0,
+            "degradations": ["visual review skipped: zero usable screenshots (SKIPPED_NO_SCREENSHOTS)"],
+            "journal": [f"visual c{cyc}: SKIPPED_NO_SCREENSHOTS — zero usable PNGs"],
+        }
+    # Remove empty PNGs so the reviewer only opens usable screenshots (the
+    # template opens every .png in the directory).
+    for p in all_pngs:
+        if p.stat().st_size == 0:
+            p.unlink()
 
     review, verdict = "", "UNKNOWN"
     for attempt in range(2):

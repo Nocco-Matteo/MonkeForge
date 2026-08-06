@@ -231,6 +231,17 @@ class DebateUxGuard(unittest.TestCase):
 
 
 class UxVisualReviewGuard(unittest.TestCase):
+    def setUp(self):
+        # TASK-012: ux_visual_review now skips with SKIPPED_NO_SCREENSHOTS when
+        # zero usable PNGs exist. Create a dummy non-empty PNG so the guard
+        # tests exercise the LLM review path (the trust guard under test).
+        from pipeline_graph import config as _C
+        shots = _C.SCREENS / "task-fl"
+        shots.mkdir(parents=True, exist_ok=True)
+        png = shots / "home.png"
+        if not png.exists() or png.stat().st_size == 0:
+            png.write_bytes(b"\x89PNG\r\n\x1a\n")
+
     def test_bare_verdict_marker_is_trusted(self):
         # A bare "VERDICT: APPROVE" is a valid terminal marker — the guard
         # must NOT fire (_trust_output whitelists it).
