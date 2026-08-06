@@ -22,7 +22,6 @@ def _reset_gate(monkeypatch):
     """Reset the sentinel + TEST_SUITES so each test starts from unconfigured."""
     monkeypatch.setattr(tr, "_suites_resolved", False)
     monkeypatch.setattr(C, "TEST_SUITES", [])
-    monkeypatch.delenv("PIPELINE_TEST_SUITES", raising=False)
     monkeypatch.delenv("PIPELINE_NO_INPUT", raising=False)
 
 
@@ -38,12 +37,10 @@ class TestConfigLoad(unittest.TestCase):
         # Do not assert against process-global C.TEST_SUITES — the operator's
         # monkeforge.yaml may pin suites (as in a live MonkeForge checkout).
         import tempfile
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop("PIPELINE_TEST_SUITES", None)
-            with tempfile.TemporaryDirectory() as td:
-                mf = Path(td) / "monkeforge.yaml"
-                mf.write_text("pipeline:\n  dry_run: true\n")
-                self.assertEqual(C._load_yaml_test_suites(mf), [])
+        with tempfile.TemporaryDirectory() as td:
+            mf = Path(td) / "monkeforge.yaml"
+            mf.write_text("pipeline:\n  dry_run: true\n")
+            self.assertEqual(C._load_yaml_test_suites(mf), [])
 
     def test_unknown_runner_raises(self):
         with self.assertRaises(ValueError):
@@ -97,17 +94,6 @@ class TestConfigLoad(unittest.TestCase):
     def test_cwd_escape_raises(self):
         with self.assertRaises(ValueError):
             C._validate_test_suite("bad", {"runner": "pytest", "cwd": "../outside"})
-
-    def test_legacy_env_parses_to_npm_vitest(self):
-        suites = C._parse_legacy_test_suites(
-            "backend:backend:DATABASE_URL=postgres://x;frontend:frontend:")
-        self.assertEqual(len(suites), 2)
-        self.assertTrue(all(s.runner == "npm-vitest" for s in suites))
-        self.assertEqual(suites[0].label, "backend")
-        self.assertEqual(suites[0].cwd, "backend")
-        self.assertEqual(suites[0].env["DATABASE_URL"], "postgres://x")
-        self.assertEqual(suites[1].label, "frontend")
-        self.assertEqual(suites[1].env, {})
 
     def test_test_suite_runners_export(self):
         self.assertEqual(C.TEST_SUITE_RUNNERS,

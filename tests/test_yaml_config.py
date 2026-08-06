@@ -283,6 +283,40 @@ class TestYamlDirectReads(unittest.TestCase):
         self.assertEqual(C.LINT_DEBT_RULES, ("no-unused-vars", "no-explicit-any"))
 
 
+class TestEnvFileIgnored(unittest.TestCase):
+    """A ``.env`` file next to the yaml must NOT be read (§3d — no .env loader
+    exists). Regression guard: if a future change re-adds .env loading, the
+    product-knob values written here would leak past the yaml defaults."""
+
+    def setUp(self):
+        self._saved_wt = os.environ.get("PIPELINE_WT_YAML")
+        self._saved_env = os.environ.copy()
+        self._td = tempfile.TemporaryDirectory()
+        self._yaml_path = Path(self._td.name) / "monkeforge.yaml"
+
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved_env)
+        _restore_config(self._saved_wt)
+        self._td.cleanup()
+
+    def test_env_file_values_ignored(self):
+        # Write a .env file with product-knob values next to the yaml.
+        (Path(self._td.name) / ".env").write_text(
+            "PIPELINE_MAX_DEBATE_ROUNDS=99\n"
+            "PIPELINE_RENDER_CMD=stale-cmd\n"
+            "PIPELINE_E2E_DB_CONTAINER=stale-container\n"
+            "PIPELINE_BRANCH_PREFIX=stale/\n"
+        )
+        _write_baseline_yaml(self._yaml_path)
+        C = _reload_config_with_yaml(self._yaml_path)
+        # Defaults observed, not the .env values.
+        self.assertEqual(C.MAX_DEBATE_ROUNDS, 2)
+        self.assertEqual(C.RENDER_CMD, "")
+        self.assertEqual(C.E2E_DB_CONTAINER, "")
+        self.assertEqual(C.BRANCH_PREFIX, "feature/task-")
+
+
 class TestPerKnobYamlReads(unittest.TestCase):
     """Parametrized per-knob regression: each §3e product knob is read from
     yaml and not from a stale non-allowlisted PIPELINE_* env var. Runs every

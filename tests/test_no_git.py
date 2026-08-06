@@ -8,11 +8,14 @@ close_batch with another task's uncommitted work in the tree, whose blind
   2. implement()'s batch-start guard commits pre-existing leftovers separately so
      close_batch can only commit the batch's own work.
 """
+import importlib
+import os
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
 
+from tests._yaml_fixture import _write_baseline_yaml
 from pipeline_graph import config as C
 
 
@@ -29,9 +32,25 @@ class NoGitFlag(unittest.TestCase):
 
     def test_stale_env_ignored(self):
         # A stale PIPELINE_NO_GIT in the shell must NOT enable no-git (§3c).
-        # NO_GIT is read from yaml at import time; env has no effect.
-        with patch.dict("os.environ", {"PIPELINE_NO_GIT": "1"}):
-            self.assertFalse(C.NO_GIT)
+        # NO_GIT is read from yaml at import time; env has no effect. Verified
+        # via the shared yaml fixture (baseline yaml, no no_git key) + reload.
+        saved_wt = os.environ.get("PIPELINE_WT_YAML")
+        saved_env = os.environ.copy()
+        os.environ["PIPELINE_NO_GIT"] = "1"
+        try:
+            with tempfile.TemporaryDirectory() as td:
+                ypath = _write_baseline_yaml(Path(td) / "monkeforge.yaml")
+                os.environ["PIPELINE_WT_YAML"] = str(ypath)
+                importlib.reload(C)
+                self.assertFalse(C.NO_GIT)
+        finally:
+            os.environ.clear()
+            os.environ.update(saved_env)
+            if saved_wt is not None:
+                os.environ["PIPELINE_WT_YAML"] = saved_wt
+            else:
+                os.environ.pop("PIPELINE_WT_YAML", None)
+            importlib.reload(C)
 
     def test_no_git_and_dry_run_are_independent(self):
         # DRY_RUN stubs agents; NO_GIT does not. They must be separate switches.

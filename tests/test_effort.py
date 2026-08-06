@@ -4,7 +4,6 @@ Covers: recommendation rules, resolver fallbacks, router gating, the
 checkpoint_effort node, checkpoint_plan gate (not suppressed by effort),
 YAML→env loading, and the --effort CLI flag.
 """
-import json
 import os
 import tempfile
 import unittest
@@ -501,59 +500,66 @@ class TestCheckpointPlanGate(unittest.TestCase):
         self.assertIn("user rejected the plan", delta["escalation"])
 
 
-# --- YAML → PIPELINE_EFFORT_JSON loading -----------------------------------
+# --- YAML-direct effort loading (TASK-032 §3e) -----------------------------
+# The old ``_load_yaml_to_env`` bridge + ``PIPELINE_EFFORT_JSON`` env var are
+# gone (batch 2). config.py reads the top-level ``effort:`` key straight from
+# monkeforge.yaml via ``_normalize_effort_levels``; these tests verify that
+# yaml-direct read through the shared baseline-yaml fixture + config reload.
 
 class TestYamlEffortLoading(unittest.TestCase):
-    def test_effort_dict_sets_env_var(self):
-        import run
-        with tempfile.TemporaryDirectory() as td:
-            yaml_path = Path(td) / "monkeforge.yaml"
-            yaml_path.write_text(
-                "effort:\n  scout-monke:\n    debate_rounds: 0\n    gates: false\n"
-                "    fix_cycles: 1\n")
-            old = os.environ.pop("PIPELINE_EFFORT_JSON", None)
-            try:
-                run._load_yaml_to_env(yaml_path)
-                raw = os.environ.get("PIPELINE_EFFORT_JSON")
-                self.assertIsNotNone(raw)
-                parsed = json.loads(raw)
-                self.assertIn("scout-monke", parsed)
-            finally:
-                os.environ.pop("PIPELINE_EFFORT_JSON", None)
-                if old is not None:
-                    os.environ["PIPELINE_EFFORT_JSON"] = old
+    def setUp(self):
+        import importlib
+        from tests._yaml_fixture import _write_baseline_yaml
+        self._importlib = importlib
+        self._write_baseline_yaml = _write_baseline_yaml
+        self._saved_wt = os.environ.get("PIPELINE_WT_YAML")
+        self._saved_env = os.environ.copy()
+        self._td = tempfile.TemporaryDirectory()
+        self._yaml_path = Path(self._td.name) / "monkeforge.yaml"
 
-    def test_no_effort_key_does_not_set_env_var(self):
-        import run
-        with tempfile.TemporaryDirectory() as td:
-            yaml_path = Path(td) / "monkeforge.yaml"
-            # dry_run is only a filler key so the yaml is non-empty; must not
-            # leak PIPELINE_DRY_RUN into the process env for later tests.
-            yaml_path.write_text("pipeline:\n  dry_run: true\n")
-            old_effort = os.environ.pop("PIPELINE_EFFORT_JSON", None)
-            old_dry = os.environ.pop("PIPELINE_DRY_RUN", None)
-            try:
-                run._load_yaml_to_env(yaml_path)
-                self.assertIsNone(os.environ.get("PIPELINE_EFFORT_JSON"))
-            finally:
-                os.environ.pop("PIPELINE_DRY_RUN", None)
-                if old_dry is not None:
-                    os.environ["PIPELINE_DRY_RUN"] = old_dry
-                if old_effort is not None:
-                    os.environ["PIPELINE_EFFORT_JSON"] = old_effort
+    def tearDown(self):
+        os.environ.clear()
+        os.environ.update(self._saved_env)
+        if self._saved_wt is not None:
+            os.environ["PIPELINE_WT_YAML"] = self._saved_wt
+        else:
+            os.environ.pop("PIPELINE_WT_YAML", None)
+        from pipeline_graph import config as _C
+        self._importlib.reload(_C)
+        self._td.cleanup()
 
-    def test_effort_not_dict_does_not_set_env_var(self):
-        import run
-        with tempfile.TemporaryDirectory() as td:
-            yaml_path = Path(td) / "monkeforge.yaml"
-            yaml_path.write_text("effort: scout-monke\n")
-            old = os.environ.pop("PIPELINE_EFFORT_JSON", None)
-            try:
-                run._load_yaml_to_env(yaml_path)
-                self.assertIsNone(os.environ.get("PIPELINE_EFFORT_JSON"))
-            finally:
-                if old is not None:
-                    os.environ["PIPELINE_EFFORT_JSON"] = old
+    def _reload(self):
+        os.environ["PIPELINE_WT_YAML"] = str(self._yaml_path)
+        from pipeline_graph import config as _C
+        self._importlib.reload(_C)
+        return _C
+
+    def test_effort_dict_overrides_presets(self):
+        self._write_baseline_yaml(self._yaml_path, extra=(
+            "effort:\n"
+            "  scout-monke:\n"
+            "    debate_rounds: 0\n"
+            "    gates: false\n"
+            "    fix_cycles: 1\n"))
+        C2 = self._reload()
+        self.assertIn("scout-monke", C2.EFFORT_LEVELS)
+        self.assertEqual(C2.EFFORT_LEVELS["scout-monke"]["debate_rounds"], 0)
+        # bool gates:false normalises to "off".
+        self.assertEqual(C2.EFFORT_LEVELS["scout-monke"]["gates"], "off")
+
+    def test_no_effort_key_uses_hardcoded_presets(self):
+        self._write_baseline_yaml(self._yaml_path)
+        C2 = self._reload()
+        self.assertIn("scout-monke", C2.EFFORT_LEVELS)
+        self.assertIn("troop-monke", C2.EFFORT_LEVELS)
+        self.assertIn("barrel-monke", C2.EFFORT_LEVELS)
+
+    def test_effort_not_dict_degrades_to_hardcoded(self):
+        # A scalar effort: value is structurally invalid → silent degrade to the
+        # hardcoded presets (a malformed yaml never breaks an opted-out run).
+        self._write_baseline_yaml(self._yaml_path, extra="effort: scout-monke\n")
+        C2 = self._reload()
+        self.assertIn("troop-monke", C2.EFFORT_LEVELS)
 
 
 # --- --effort argparse wiring ----------------------------------------------

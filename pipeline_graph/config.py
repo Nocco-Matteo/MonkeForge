@@ -1202,12 +1202,10 @@ TEST_AMBIENT_PATTERNS = _yaml_list(_pipeline.get("test_ambient_patterns"), _DEFA
 
 # --- Test suites (repo-agnostic test gate) ---------------------------------
 # Read directly from the top-level `test_suites:` key in monkeforge.yaml
-# (mirroring `_yaml_agents`), NOT via the PIPELINE_* env bridge — run.py's
-# `_load_yaml_to_env` deliberately does not bridge this key. The legacy
-# `PIPELINE_TEST_SUITES` env var remains as a debug-only override of the
-# `label:subdir:ENV=val` shape (parsed into npm-vitest TestSuite objects).
-# An absent yaml key AND an absent/empty env var both yield TEST_SUITES == []
-# (no hardcoded backend/frontend default) — empty triggers discovery in
+# (mirroring `_yaml_agents`), NOT via any PIPELINE_* env bridge. The legacy
+# `PIPELINE_TEST_SUITES` env override was removed in batch 2 — yaml is the
+# only source. An absent yaml key yields TEST_SUITES == [] (no hardcoded
+# backend/frontend default) — empty triggers discovery in
 # test_runner.resolve_test_suites, it does NOT silently disable the gate.
 TEST_SUITE_RUNNERS = frozenset({"npm-vitest", "pytest", "script"})
 
@@ -1268,34 +1266,6 @@ def _validate_test_suite(label: str, entry: dict) -> TestSuite:
     return TestSuite(label=label, cwd=cwd, runner=runner, cmd=cmd, env=env)
 
 
-def _parse_legacy_test_suites(raw: str) -> list[TestSuite]:
-    """Parse the legacy ``PIPELINE_TEST_SUITES`` env string into TestSuites.
-
-    Format: ``label:subdir:ENV_VAR=val,ENV2=val2;label2:subdir2:``. Each entry
-    becomes a TestSuite with ``runner='npm-vitest'``. ``{e2e_db}`` interpolates
-    ``E2E_DATABASE_URL``. An empty/whitespace string yields ``[]``.
-    """
-    suites: list[TestSuite] = []
-    if not raw or not raw.strip():
-        return suites
-    for entry in raw.split(";"):
-        entry = entry.strip()
-        if not entry:
-            continue
-        parts = entry.split(":", 2)
-        label = parts[0]
-        subdir = parts[1] if len(parts) > 1 else ""
-        env_str = parts[2] if len(parts) > 2 else ""
-        env: dict[str, str] = {}
-        for pair in env_str.split(","):
-            if "=" in pair:
-                k, v = pair.split("=", 1)
-                env[k.strip()] = v.format(e2e_db=E2E_DATABASE_URL)
-        suites.append(TestSuite(label=label, cwd=subdir, runner="npm-vitest",
-                                cmd=None, env=env))
-    return suites
-
-
 def _load_yaml_test_suites(yaml_file: Path) -> list[TestSuite]:
     """Load + validate the top-level ``test_suites:`` key from a yaml file.
 
@@ -1325,14 +1295,8 @@ def _load_yaml_test_suites(yaml_file: Path) -> list[TestSuite]:
     return suites
 
 
-TEST_SUITES: list[TestSuite] = []
-_legacy_test_suites_raw = os.environ.get("PIPELINE_TEST_SUITES", "")
-if _legacy_test_suites_raw.strip():
-    # Debug-only override: env wins over yaml, parsed into npm-vitest suites.
-    TEST_SUITES = _parse_legacy_test_suites(_legacy_test_suites_raw)
-else:
-    TEST_SUITES = _load_yaml_test_suites(_yaml_file)
-# Absent yaml key AND absent env → TEST_SUITES stays [] (discovery, not gate-off).
+TEST_SUITES: list[TestSuite] = _load_yaml_test_suites(_yaml_file)
+# Absent yaml key → TEST_SUITES stays [] (discovery, not gate-off).
 
 def db_reachable() -> bool:
     """Check if the e2e Postgres is accepting connections on its mapped port."""

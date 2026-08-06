@@ -5,8 +5,8 @@ Single source for the webhook URL and the bot gateway secrets so ``run.py``,
 webhook is a SECRET — it is never allowlisted into the product-knob env path.
 Resolution order for the webhook:
 
-  1. ``DISCORD_WEBHOOK`` in the real process env (set by ``.env`` or the
-     operator) — secrets stay env-owned.
+  1. ``DISCORD_WEBHOOK`` in the real process env (exported by the operator) —
+     secrets stay env-owned (no ``.env`` file is read).
   2. ``discord.webhook`` in ``monkeforge.yaml`` (kept for legacy installs that
      checked it into a gitignored yaml).
   3. ``.discord-webhook`` file in the repo root (the original opt-in path).

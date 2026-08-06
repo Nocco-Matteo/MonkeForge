@@ -259,12 +259,11 @@ repo target: `PIPELINE_DOCS_DIR=$REPO/docs`).
   zero failure parsati appende una chiave sintetica `label|<runner> exit N`
   (più coda del subprocess nel summary) — un crash (Node rotto,
   `node_modules` corrotto, config di tool errata) non può mai passare il
-  gate in silenzio. `PIPELINE_TEST_SUITES` (formato `label:subdir:ENV=val`)
-  è un override solo-debug che vince sulla yaml e parse in suite
-  `npm-vitest`. Prima del primo tentativo di batch con DB up cattura i FAIL
-  come baseline; dopo l'implementer passa solo se non ci sono **nuovi**
-  FAIL rispetto alla baseline, meno sottostringhe in
-  `test_failure_allowlist` nel JSON del giudice (schema in `prompts/judge.md`).
+  gate in silenzio. La yaml è l'unica sorgente delle suite. Prima del primo tentativo
+  di batch con DB up cattura i FAIL come baseline; dopo l'implementer passa
+  solo se non ci sono **nuovi** FAIL rispetto alla baseline, meno
+  sottostringhe in `test_failure_allowlist` nel JSON del giudice (schema in
+  `prompts/judge.md`).
 - **Tuning del gate (falsi positivi su debito preesistente)**: su un branch
   che parte RED, il confronto baseline-vs-current può scambiare debito
   preesistente per una regressione del batch. Due manopole in `config.py`
@@ -537,8 +536,10 @@ langgraph dev --tunnel   # endpoint HTTPS pubblico -> apribile dal telefono
 ```
 
 Il manifest è già incluso (`langgraph.json`, entrypoint
-`pipeline_graph/app.py:graph`). Copia `.env.example` in `.env` e imposta
-almeno `PIPELINE_REPO`.
+`pipeline_graph/app.py:graph`). Imposta almeno `PIPELINE_REPO` nell'ambiente
+(`langgraph dev` legge un eventuale `.env` per le variabili di ambiente;
+MonkeForge stesso non legge più `.env` — i secret vanno esportati nel
+processo reale).
 
 **Come usarlo dal telefono**: lanci `langgraph dev --tunnel` sul Debian (dentro
 tmux), salvi l'URL tra i preferiti del telefono, e da lì segui il grafo che

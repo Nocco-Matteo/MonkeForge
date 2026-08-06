@@ -1,8 +1,10 @@
 # MonkeForge configuration example.
 # Copy this file to monkeforge.yaml for a local configuration.
-# Precedence: real environment variables > monkeforge.yaml > .env > code defaults
-# (where any remain). agents.*: both model: and cmd: required — no code defaults.
-# Keep secrets (tokens, credentials, private paths) out of this file.
+# Precedence: allowlisted real environment variables > monkeforge.yaml > code
+# defaults. agents.*: both model: and cmd: required — no code defaults.
+# Keep secrets (tokens, credentials, private paths) out of this file — export
+# them in the real process env (DISCORD_WEBHOOK, DISCORD_BOT_TOKEN, …); no
+# ``.env`` file is read.
 
 # Target git repo(s). There is NO default (cwd / git root is NOT used).
 # Precedence:
@@ -152,7 +154,7 @@ agents:
 #   gemini_trust_workspace: true
 
 # Test suites for the in-graph test gate. Read directly by config.py from
-# this top-level `test_suites:` key (NOT bridged via PIPELINE_* env). Each
+# this top-level `test_suites:` key (NOT via any PIPELINE_* env bridge). Each
 # entry is a mapping with: label, cwd (repo-relative), runner, and optional
 # cmd (for `script`) / env (per-suite override map applied on top of
 # os.environ). Runners: `npm-vitest` (tsc + vitest + lint), `pytest`
@@ -161,9 +163,7 @@ agents:
 # the first run_repo_tests() call; it does NOT silently disable the gate.
 # A non-zero subprocess exit with zero parsed failures appends a synthetic
 # `label|<runner> exit N` key so a crash can never silently yield a green
-# gate. The legacy PIPELINE_TEST_SUITES env var (label:subdir:ENV=val) is a
-# debug-only override that wins over this yaml and parses into npm-vitest
-# suites.
+# gate. yaml is the only source — no env override is supported.
 # test_suites:
 #   - label: backend
 #     cwd: backend

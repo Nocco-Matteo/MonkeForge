@@ -15,19 +15,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 # --- YAML / env bridge (TASK-032) -------------------------------------------
-# Product knobs are now read DIRECTLY from monkeforge.yaml by config.py (§3e).
-# The old ``_load_yaml_to_env`` bridge is kept as dead code for backward-compat
-# with tests that call the function directly, and is NOT called at module level
-# — a stale shell env no longer leaks product knobs into the pipeline. The
-# ``.env`` file (secrets only — DISCORD_*, etc.) IS still loaded at module level
-# via ``_load_dotenv_to_env`` with ``setdefault`` so a real env var always wins
-# and no product knob is reintroduced. Only the ``tools:`` mapping (non-PIPELINE
-# env vars like GEMINI_CLI_TRUST_WORKSPACE) is bridged from yaml at module level.
+# Product knobs are read DIRECTLY from monkeforge.yaml by config.py (§3e). The
+# old ``_load_yaml_to_env`` bridge and the ``.env`` file loader are both GONE
+# (batch 2) — a stale shell env no longer leaks product knobs into the pipeline,
+# and secrets (DISCORD_*) are env-owned: the operator exports them in the real
+# process env (no ``.env`` file is read). Only the ``tools:`` mapping (non-
+# PIPELINE env vars like GEMINI_CLI_TRUST_WORKSPACE) is still bridged from yaml
+# at module level so agent CLIs that read the process env see it; the per-spawn
+# ``tool_env_from_yaml()`` helper in agents.py merges the same mapping directly
+# for callers that bypass run.py.
 _MF_ROOT = Path(__file__).resolve().parent
 # PIPELINE_WT_YAML: orchestrator yaml override (worktree boot). The config
 # module reads this same env to find its yaml, so run.py must agree.
 _yaml_file = Path(os.environ.get("PIPELINE_WT_YAML") or (_MF_ROOT / "monkeforge.yaml"))
-_env_file = _MF_ROOT / ".env"
 
 def _envstr(val) -> str:
     """Render a YAML value for an env var. Booleans go to lowercase "true"/"false":
@@ -37,71 +37,6 @@ def _envstr(val) -> str:
     if isinstance(val, bool):
         return "true" if val else "false"
     return str(val)
-
-
-def _load_yaml_to_env(path: Path) -> None:
-    """Legacy bridge: flatten monkeforge.yaml into PIPELINE_* / DISCORD_* env vars.
-
-    Kept for backward-compat with tests that call it directly. NOT called at
-    module level anymore (§3e) — config.py reads yaml directly, and a stale
-    shell env no longer leaks product knobs into the pipeline.
-    """
-    import yaml as _yaml
-    data = _yaml.safe_load(path.read_text()) or {}
-
-    # pipeline: -> PIPELINE_*
-    _PIPELINE_LIST_KEYS = frozenset(("arch_docs", "lint_debt_rules", "test_ambient_patterns"))
-    for key, val in (data.get("pipeline") or {}).items():
-        if key in _PIPELINE_LIST_KEYS:
-            val = ";".join(val) if isinstance(val, list) else str(val)
-        elif key == "dry_run":
-            val = "1" if val else ""
-        os.environ.setdefault(f"PIPELINE_{key.upper()}", _envstr(val))
-
-    # effort: -> PIPELINE_EFFORT_JSON (a top-level dict is JSON-serialised; the
-    # config module reads it at import time to override the effort presets).
-    effort = data.get("effort")
-    if isinstance(effort, dict):
-        os.environ.setdefault("PIPELINE_EFFORT_JSON", json.dumps(effort))
-
-    # agents: / condenser: / test_suites: read directly by config.py from
-    # monkeforge.yaml — NOT bridged into env here. Legacy PIPELINE_TEST_SUITES
-    # remains a debug-only override for suites only.
-
-    # tools: -> direct env var names (with explicit mapping)
-    _tool_keys = {"gemini_trust_workspace": "GEMINI_CLI_TRUST_WORKSPACE"}
-    for key, val in (data.get("tools") or {}).items():
-        env_key = _tool_keys.get(key, key.upper())
-        os.environ.setdefault(env_key, _envstr(val))
-
-    # notifications: -> PIPELINE_NOTIFY_*
-    for key, val in (data.get("notifications") or {}).items():
-        os.environ.setdefault(f"PIPELINE_NOTIFY_{key.upper()}", _envstr(val))
-
-    # discord: -> DISCORD_* (with special cases)
-    _discord_keys = {"bot_autostart": "PIPELINE_BOT_AUTOSTART"}
-    for key, val in (data.get("discord") or {}).items():
-        env_key = _discord_keys.get(key, f"DISCORD_{key.upper()}")
-        os.environ.setdefault(env_key, _envstr(val))
-
-
-def _load_dotenv_to_env(path: Path) -> None:
-    """Legacy bridge: load a ``.env`` file into ``os.environ`` via setdefault.
-
-    Called at module level (§3e: secrets stay env-owned). The ``.env`` file
-    holds secrets (DISCORD_WEBHOOK, DISCORD_BOT_TOKEN, …), NOT product knobs,
-    so loading it does not reintroduce the stale-product-knob leak that
-    ``_load_yaml_to_env`` was retired for. Each ``KEY=VALUE`` line is applied
-    with ``os.environ.setdefault`` so a real env var always wins; blank lines
-    and ``#`` comments are skipped.
-    """
-    if not path.is_file():
-        return
-    for _line in path.read_text().splitlines():
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _, _v = _line.partition("=")
-            os.environ.setdefault(_k.strip(), _v.strip())
 
 
 def _bridge_tools_from_yaml(path: Path) -> None:
@@ -127,7 +62,6 @@ def _bridge_tools_from_yaml(path: Path) -> None:
 
 
 _bridge_tools_from_yaml(_yaml_file)
-_load_dotenv_to_env(_env_file)
 
 # Target repo MUST be chosen before config import (no git-cwd default).
 # Precedence: --repo > PIPELINE_REPO env > yaml repos: (1=auto, N=CLI pick).

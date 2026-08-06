@@ -17,11 +17,13 @@ MonkeForge stays standalone: the pipeline never imports this and runs fine witho
    permission to send messages in one channel.
 2. In Discord (Developer Mode on): right-click the target channel → **Copy ID**;
    right-click your user → **Copy ID**.
-3. Add to `.env` (same file as the webhook):
+3. Export these in your real process env (MonkeForge no longer reads a
+   ``.env`` file — secrets are env-owned):
    ```
-   DISCORD_BOT_TOKEN=<the bot token>
-   DISCORD_CHANNEL_ID=<channel id>
-   DISCORD_ALLOWED_USER_IDS=<your user id>[,another]
+   export DISCORD_BOT_TOKEN=<the bot token>
+   export DISCORD_CHANNEL_ID=<channel id>
+   export DISCORD_ALLOWED_USER_IDS=<your user id>[,another]
+   export DISCORD_WEBHOOK=<the outbound webhook URL for plain notifications>
    ```
 4. Install the dep into the pipeline venv:
    ```

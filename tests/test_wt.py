@@ -12,6 +12,7 @@ run --cwd override, and the common.py DB_OK/DB_DOWN note tracking C.E2E_DB_PORT.
 """
 from __future__ import annotations
 
+import importlib
 import importlib.util
 import io
 import os
@@ -22,15 +23,24 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests._yaml_fixture import _write_baseline_yaml  # noqa: E402
+
 # Load pipeline_graph/worktree_runtime.py (scripts/wt.py is a thin re-export).
 _WT_PATH = Path(__file__).resolve().parents[1] / "pipeline_graph" / "worktree_runtime.py"
 _spec = importlib.util.spec_from_file_location("wt_cli", _WT_PATH)
 wt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(wt)
 
-import run  # noqa: E402  — for _load_yaml_to_env in the setdefault tests
 from pipeline_graph import config as C  # noqa: E402
 from pipeline_graph.nodes import common  # noqa: E402
+
+
+def _reload_config_with_yaml(yaml_path: Path):
+    """Reload config with PIPELINE_WT_YAML pointing at yaml_path. Returns C."""
+    os.environ["PIPELINE_WT_YAML"] = str(yaml_path)
+    from pipeline_graph import config as _C
+    importlib.reload(_C)
+    return _C
 
 
 def _load_wt():
@@ -58,28 +68,43 @@ def _write_yaml(path: Path, text: str) -> Path:
     return path
 
 
-class TestChildEnvSetdefault(unittest.TestCase):
-    def test_child_env_setdefault_strong(self):
+class TestChildEnvPrecedence(unittest.TestCase):
+    """§3a precedence for the wt-run child env (replaces the old setdefault-
+    bridge tests). The yaml→env bridge is gone (batch 2); config.py reads yaml
+    directly, and allowlisted §3b env (PIPELINE_BOT_AUTOSTART,
+    PIPELINE_E2E_DB_PORT) wins over yaml. ``wt.build_child_env`` pre-sets those
+    allowlisted keys, so config.py must honour the child env over the
+    operator's yaml — the strong case. With the child keys absent, yaml wins
+    — the negative case."""
+
+    def test_allowlisted_child_env_wins_over_yaml(self):
         wt_path = Path("/tmp/wt-task-031")
         child = wt.build_child_env(wt_path, 5435, parent_env={})
         self.assertEqual(child["PIPELINE_REPO"], str(wt_path))
         self.assertEqual(child["PIPELINE_BOT_AUTOSTART"], "0")
         self.assertNotIn("PIPELINE_DOCS_DIR", child)
         saved = os.environ.copy()
+        saved_wt = os.environ.get("PIPELINE_WT_YAML")
         os.environ.clear()
         os.environ.update(child)
         try:
             with tempfile.TemporaryDirectory() as td:
-                adv = _write_yaml(Path(td) / "adv.yaml",
-                                  "pipeline:\n  repo: /main/clone\n"
-                                  "discord:\n  bot_autostart: true\n")
-                run._load_yaml_to_env(adv)
-            # setdefault must NOT override the child's pre-set values.
-            self.assertEqual(os.environ["PIPELINE_REPO"], str(wt_path))
-            self.assertEqual(os.environ["PIPELINE_BOT_AUTOSTART"], "0")
+                ypath = _write_baseline_yaml(
+                    Path(td) / "monkeforge.yaml",
+                    extra="discord:\n  bot_autostart: true\n"
+                          "pipeline:\n  e2e_db_port: 6666\n")
+                C2 = _reload_config_with_yaml(ypath)
+            # Allowlisted child env wins over the conflicting yaml.
+            self.assertEqual(C2.BOT_AUTOSTART, False)
+            self.assertEqual(C2.E2E_DB_PORT, 5435)
         finally:
             os.environ.clear()
             os.environ.update(saved)
+            if saved_wt is not None:
+                os.environ["PIPELINE_WT_YAML"] = saved_wt
+            else:
+                os.environ.pop("PIPELINE_WT_YAML", None)
+            importlib.reload(C)
 
     def test_child_env_points_wt_yaml_at_orchestrator(self):
         """Product wt must not need its own monkeforge.yaml — child env pins
@@ -114,23 +139,31 @@ class TestChildEnvSetdefault(unittest.TestCase):
         self.assertEqual(child["PWD"], child["PIPELINE_REPO"])
         self.assertNotIn("OLDPWD", child)
 
-    def test_child_env_setdefault_negative(self):
-        # Same adversarial fixture WITHOUT child overrides → env gets main/"true".
+    def test_yaml_wins_when_allowlisted_env_unset(self):
+        # No child overrides → yaml wins over the code defaults.
         saved = os.environ.copy()
+        saved_wt = os.environ.get("PIPELINE_WT_YAML")
         os.environ.clear()
-        os.environ.pop("PIPELINE_REPO", None)
+        os.environ["PIPELINE_REPO"] = str(Path("/tmp/wt-task-031"))
         os.environ.pop("PIPELINE_BOT_AUTOSTART", None)
+        os.environ.pop("PIPELINE_E2E_DB_PORT", None)
         try:
             with tempfile.TemporaryDirectory() as td:
-                adv = _write_yaml(Path(td) / "adv.yaml",
-                                  "pipeline:\n  repo: /main/clone\n"
-                                  "discord:\n  bot_autostart: true\n")
-                run._load_yaml_to_env(adv)
-            self.assertEqual(os.environ.get("PIPELINE_REPO"), "/main/clone")
-            self.assertEqual(os.environ.get("PIPELINE_BOT_AUTOSTART"), "true")
+                ypath = _write_baseline_yaml(
+                    Path(td) / "monkeforge.yaml",
+                    extra="discord:\n  bot_autostart: true\n"
+                          "pipeline:\n  e2e_db_port: 6666\n")
+                C2 = _reload_config_with_yaml(ypath)
+            self.assertTrue(C2.BOT_AUTOSTART)
+            self.assertEqual(C2.E2E_DB_PORT, 6666)
         finally:
             os.environ.clear()
             os.environ.update(saved)
+            if saved_wt is not None:
+                os.environ["PIPELINE_WT_YAML"] = saved_wt
+            else:
+                os.environ.pop("PIPELINE_WT_YAML", None)
+            importlib.reload(C)
 
 
 class TestChildEnvPortUrlCoupled(unittest.TestCase):
