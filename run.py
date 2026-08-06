@@ -1594,6 +1594,241 @@ def _liveness_warning() -> str | None:
     return None
 
 
+def _print_worktree_status_table(args, rows: list[dict]) -> None:
+    """Render ``./run.py status`` (no id) as a Rich table."""
+    console = _rich_console(args, stream=sys.stdout)
+    # Rich's size getter short-circuits dumb terminals to 80×25 unless BOTH
+    # width and height are set — otherwise Note collapses to a few glyphs.
+    try:
+        import shutil
+        term_w = shutil.get_terminal_size(fallback=(120, 24)).columns
+    except OSError:
+        term_w = 120
+    if console.is_dumb_terminal or not sys.stdout.isatty() or term_w < 100:
+        console.size = (max(term_w, 120), 40)
+    table = Table(
+        title="Live task worktrees",
+        show_header=True,
+        header_style="bold",
+        expand=True,
+        pad_edge=False,
+    )
+    table.add_column("ID", style="cyan", no_wrap=True)
+    table.add_column("State", no_wrap=True)
+    table.add_column("Last", no_wrap=True)
+    table.add_column("Wall", no_wrap=True)
+    table.add_column("tok≈in→out", no_wrap=True)
+    table.add_column("Branch", overflow="ellipsis", no_wrap=True)
+    table.add_column("Note", overflow="ellipsis", no_wrap=True, ratio=1)
+    state_style = {
+        "running": "green",
+        "paused": "yellow",
+        "finished": "blue",
+        "stalled": "red",
+        "dead": "red",
+        "idle": "dim",
+        "unknown": "dim",
+    }
+    for r in rows:
+        st = str(r.get("state") or "?")
+        tid = str(r.get("id") or "")
+        detail = str(r.get("detail") or "").strip() or "—"
+        table.add_row(
+            tid,
+            Text(st, style=state_style.get(st, "")),
+            str(r.get("updated") or "—"),
+            str(r.get("wall") or "—"),
+            str(r.get("tokens") or "—"),
+            str(r.get("branch") or ""),
+            Text(detail, style="dim"),
+        )
+    console.print(table)
+    console.print()
+    console.print(
+        Text("tok≈ ", style="dim")
+        + Text("est. prompts/ + agent output (~4 chars/tok); ", style="dim")
+        + Text("Last", style="dim bold")
+        + Text(" = last activity (stall after pause counts).", style="dim")
+    )
+    console.print(
+        Text("tip: ", style="dim")
+        + Text("./run.py status <id>", style="cyan")
+        + Text(" · ", style="dim")
+        + Text("resume <id>", style="cyan")
+        + Text(" · ", style="dim")
+        + Text("land <id>", style="cyan")
+    )
+
+
+def _print_task_status(args, *, task_id: str, snap, values: dict) -> None:
+    """Readable Rich layout for ``./run.py status <id>`` (compact panels)."""
+    from rich import box as _box
+
+    console = _rich_console(args, stream=sys.stdout)
+    try:
+        br = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=str(C.REPO), capture_output=True, text=True, check=False,
+        ).stdout.strip()
+    except OSError:
+        br = ""
+    overview = _WT.worktree_run_summary(task_id, wt=C.REPO, branch=br or None)
+    state = overview.get("state") or "?"
+    state_style = {
+        "running": "green",
+        "paused": "yellow",
+        "finished": "blue",
+        "stalled": "red",
+        "dead": "red",
+    }.get(state, "dim")
+
+    nxt = snap.next or ("END",)
+    nxt_s = ", ".join(str(x) for x in nxt) if isinstance(nxt, (list, tuple)) else str(nxt)
+
+    docs = Path(str(overview.get("docs") or C.DOCS))
+    docs_s = str(docs)
+    for root in (Path(str(C.REPO)), Path.cwd()):
+        try:
+            docs_s = str(docs.relative_to(root))
+            break
+        except ValueError:
+            continue
+
+    # Cap panel width so long reason/log lines don't stretch into a full-bleed
+    # "punch" on wide terminals; short panels (Task meta) still shrink-wrap.
+    panel_w = min(max(int(console.width), 60), 88)
+
+    def _kv(*rows: tuple[str, object]) -> Table:
+        t = Table(
+            show_header=False,
+            box=None,
+            padding=(0, 1),
+            pad_edge=False,
+            collapse_padding=True,
+        )
+        t.add_column(style="dim", no_wrap=True)
+        t.add_column(overflow="fold")
+        for k, v in rows:
+            if v is None or v == "":
+                continue
+            t.add_row(k, v if isinstance(v, Text) else str(v))
+        return t
+
+    def _panel(renderable, *, title: str, border_style: str = "dim") -> Panel:
+        return Panel(
+            renderable,
+            title=title,
+            title_align="left",
+            border_style=border_style,
+            box=_box.ROUNDED,
+            expand=False,
+            width=panel_w,
+            padding=(0, 1),
+        )
+
+    head = _kv(
+        ("state", Text(state, style=state_style)),
+        ("next", nxt_s),
+        ("branch", str(overview.get("branch") or "—")),
+        ("docs", docs_s),
+        ("paused", str(overview.get("paused_at") or "")),
+        ("last", str(overview.get("updated") or "—")),
+        ("wall", str(overview.get("wall") or "—")),
+        ("active", str(overview.get("active") or "—")),
+        (
+            "agent",
+            _WT._fmt_duration(float(overview.get("agent_s") or 0)),
+        ),
+        (
+            "tok≈",
+            f"{_WT._fmt_tokens(int(overview.get('tokens_in') or 0))}→"
+            f"{_WT._fmt_tokens(int(overview.get('tokens_out') or 0))}",
+        ),
+    )
+    # Meta fits content; don't force panel_w (avoids empty right side).
+    console.print(Panel(
+        head,
+        title=f"Task {task_id}",
+        title_align="left",
+        border_style="dim",
+        box=_box.ROUNDED,
+        expand=False,
+        padding=(0, 1),
+    ))
+
+    if snap.interrupts:
+        iv = snap.interrupts[0].value
+        opts = iv.get("options") or []
+        keys = ", ".join(
+            (o.get("key") if isinstance(o, dict) else str(o)) for o in opts
+        ) if opts else ""
+        hint = str(iv.get("hint") or "").strip()
+        pause = _kv(
+            ("stage", str(iv.get("stage") or "")),
+            ("reason", " ".join(str(iv.get("reason") or "").split())),
+            ("options", keys),
+            ("hint", hint if hint and hint not in keys.split(", ") else ""),
+        )
+        console.print(_panel(pause, title="Paused", border_style="yellow"))
+
+    batches = values.get("batches") or []
+    if batches:
+        bt = Table(
+            show_header=True,
+            header_style="dim",
+            box=_box.SIMPLE,
+            expand=True,
+            padding=(0, 1),
+            pad_edge=False,
+        )
+        bt.add_column("#", no_wrap=True, style="cyan")
+        bt.add_column("Status", no_wrap=True)
+        bt.add_column("Scope", overflow="fold")
+        for b in batches:
+            bt.add_row(str(b.get("n")), str(b.get("status")), str(b.get("scope") or ""))
+        console.print(_panel(bt, title="Batches"))
+
+    # Liveness is about the driver PID / stale current.json — NOT the
+    # escalation reason. When already paused/finished/stalled it is usually
+    # leftover metrics after a crash or shutdown; soften so it is not mistaken
+    # for the pause itself.
+    dead = _liveness_warning()
+    if dead:
+        if state in ("paused", "finished", "stalled"):
+            console.print(Text(
+                "note: driver process gone, current.json still looks active "
+                "(stale after pause/crash — not the escalation). Resume when ready.",
+                style="dim",
+            ))
+        else:
+            console.print(_panel(
+                Text(" ".join(str(dead).split()), style="red"),
+                title="Warning",
+                border_style="red",
+            ))
+
+    archive = C.DEBATES / f"DEBATE-{task_id}-full.md"
+    if archive.exists():
+        console.print(Text(f"debate archive: {archive.name}", style="dim"))
+
+    live = ev.read_journal(task_id, 10)
+    journal_lines = live or list(values.get("journal", [])[-10:])
+    if journal_lines:
+        body = Text()
+        for i, line in enumerate(journal_lines):
+            if i:
+                body.append("\n")
+            body.append(str(line), style="dim")
+        console.print(_panel(body, title="Recent log"))
+
+    console.print(
+        Text("resume: ", style="dim")
+        + Text(f"./run.py resume {task_id} --answer …", style="cyan")
+        + Text("   land: ", style="dim")
+        + Text(f"./run.py land {task_id}", style="cyan")
+    )
+
+
 def _metrics(args) -> int:
     """`./run.py metrics <ID> | --all`: aggregate events.jsonl into a report.
 
@@ -2086,7 +2321,8 @@ def main(argv=None) -> int:
         return 0
 
     if args.cmd == "status" and not args.task_id:
-        # Live feature worktrees for the configured product target.
+        # Live feature worktrees for the configured product target — overview
+        # table (state from each docs/wt-task-*/metrics, no graph open).
         try:
             target = _WT.resolve_target_repo(getattr(args, "repo", None))
             live = _WT.live_feature_worktrees(target)
@@ -2096,11 +2332,14 @@ def main(argv=None) -> int:
         if not live:
             print("(no live feature worktrees)")
             return 0
+        rows = []
         for w in live:
             name = w["path"].name
             tid = name[len("wt-task-"):] if name.startswith("wt-task-") else name
             branch = w.get("branch") or "(detached)"
-            print(f"{tid}\t{w['path']}\t{branch}")
+            rows.append(_WT.worktree_run_summary(
+                tid, wt=w["path"], branch=branch))
+        _print_worktree_status_table(args, rows)
         return 0
 
     # Early DB guard + answer validation for resume/redo (items 19-21).
@@ -2301,33 +2540,7 @@ def main(argv=None) -> int:
             if not snap.created_at:
                 print("no run found for this task")
                 return 0
-            v = snap.values
-            print(f"task {args.task_id} — next: {snap.next or 'END'}")
-            for b in v.get("batches", []):
-                print(f"  batch {b['n']}: {b['status']:<8} {b['scope']}")
-            if snap.interrupts:
-                iv = snap.interrupts[0].value
-                print(f"  PAUSED at {iv.get('stage')}: {iv.get('reason', '')}")
-            dead = _liveness_warning()
-            if dead:
-                print(f"  ⚠ {dead}")
-            # Standing pointer to the verbatim debate archive, if one exists
-            # (created by the condenser when a debate was over budget).
-            archive = C.DEBATES / f"DEBATE-{args.task_id}-full.md"
-            if archive.exists():
-                print(f"  verbatim debate archive: DEBATE-{args.task_id}-full.md")
-            # The live journal, not the checkpointed one: state only updates
-            # when a node returns, so during a 40-minute step the checkpointed
-            # journal shows the step before this one.
-            live = ev.read_journal(args.task_id, 15)
-            if live:
-                print(f"  live log ({ev.PIPELINE_LOG}):")
-                for line in live:
-                    print("   ", line)
-            else:
-                print("  journal:")
-                for line in v.get("journal", [])[-10:]:
-                    print("   ", line)
+            _print_task_status(args, task_id=args.task_id, snap=snap, values=snap.values)
             return 0
 
         if args.cmd == "doctor":

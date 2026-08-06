@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -199,6 +200,312 @@ def live_feature_worktrees(target: Path) -> list[dict]:
     return [w for w in live_worktrees(target) if _WT_NAME_RE.match(w["path"].name)]
 
 
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _read_jsonl(path: Path, *, limit: int | None = None) -> list[dict]:
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    if limit is not None:
+        lines = lines[-limit:]
+    out: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        if isinstance(obj, dict):
+            out.append(obj)
+    return out
+
+
+def _est_tokens_from_bytes(n: int) -> int:
+    """Same ~4 chars/token heuristic as ``condenser.estimate_tokens``."""
+    return max(0, int(n) // 4) if n else 0
+
+
+def _fmt_duration(seconds: float) -> str:
+    s = int(max(0, seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h{m:02d}m"
+    if m:
+        return f"{m}m{sec:02d}s"
+    return f"{sec}s"
+
+
+def _fmt_tokens(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 10_000:
+        return f"{n / 1000:.0f}k"
+    if n >= 1000:
+        return f"{n / 1000:.1f}k"
+    return str(n)
+
+
+def _short_ts(ts: str) -> str:
+    if "T" not in ts:
+        return ts
+    try:
+        date, _, rest = ts.partition("T")
+        return f"{date[5:]} {rest[:5]}"
+    except Exception:
+        return ts
+
+
+def _parse_iso_ts(ts: str) -> float:
+    if not ts:
+        return 0.0
+    try:
+        from datetime import datetime
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _usage_stats(docs: Path, events: list[dict]) -> dict:
+    """Wall/active time + estimated prompt/completion tokens from on-disk logs."""
+    metrics = docs / "metrics"
+    starts = [e for e in events if e.get("kind") == "run_start"]
+    ends = [e for e in events if e.get("kind") == "run_end"]
+    t0 = 0.0
+    if starts:
+        t0 = _parse_iso_ts(str(starts[0].get("ts") or ""))
+    elif events:
+        t0 = _parse_iso_ts(str(events[0].get("ts") or ""))
+    t1 = 0.0
+    for e in events:
+        t1 = max(t1, _parse_iso_ts(str(e.get("ts") or "")))
+    if ends:
+        t1 = max(t1, _parse_iso_ts(str(ends[-1].get("ts") or "")))
+    wall_s = max(0.0, t1 - t0) if t0 else 0.0
+
+    active_ms = 0
+    agent_ms = 0
+    for e in events:
+        kind = e.get("kind")
+        if kind == "step_end":
+            active_ms += int(e.get("ms") or 0)
+        elif kind == "agent_end":
+            agent_ms += int(e.get("duration_ms") or 0)
+
+    out_bytes = 0
+    for rec in _read_jsonl(metrics / "runs.jsonl"):
+        if rec.get("event") == "end":
+            out_bytes += int(rec.get("output_bytes") or 0)
+    if out_bytes == 0:
+        raw = metrics / "raw"
+        if raw.is_dir():
+            for f in raw.iterdir():
+                if f.is_file():
+                    try:
+                        out_bytes += f.stat().st_size
+                    except OSError:
+                        pass
+
+    in_bytes = 0
+    prompts = docs / "prompts"
+    if prompts.is_dir():
+        for f in prompts.iterdir():
+            if f.is_file():
+                try:
+                    in_bytes += f.stat().st_size
+                except OSError:
+                    pass
+
+    tin = _est_tokens_from_bytes(in_bytes)
+    tout = _est_tokens_from_bytes(out_bytes)
+    return {
+        "wall_s": wall_s,
+        "active_s": active_ms / 1000.0,
+        "agent_s": agent_ms / 1000.0,
+        "tokens_in": tin,
+        "tokens_out": tout,
+        "wall": _fmt_duration(wall_s),
+        "active": _fmt_duration(active_ms / 1000.0),
+        "tokens": f"{_fmt_tokens(tin)}→{_fmt_tokens(tout)}",
+    }
+
+
+def worktree_run_summary(id_: str, *, wt: Path | None = None,
+                         branch: str | None = None) -> dict:
+    """Overview of an isolated task for ``./run.py status`` (no graph).
+
+    Reads docs/metrics (current.json, events.jsonl, runs.jsonl, prompts/).
+    """
+    id_ = validate_id(id_)
+    docs = docs_dir_for(id_)
+    metrics = docs / "metrics"
+    current_path = metrics / "current.json"
+    events_path = metrics / "events.jsonl"
+
+    cur: dict = {}
+    if current_path.is_file():
+        try:
+            cur = json.loads(current_path.read_text(encoding="utf-8"))
+            if not isinstance(cur, dict):
+                cur = {}
+        except Exception:
+            cur = {}
+
+    events = _read_jsonl(events_path)
+    last_by: dict[str, dict] = {}
+    latest_any: dict | None = None
+    latest_any_ts = -1.0
+    for ev in events:
+        kind = str(ev.get("kind") or "")
+        ts = _parse_iso_ts(str(ev.get("ts") or ""))
+        if ts >= latest_any_ts:
+            latest_any_ts = ts
+            latest_any = ev
+        if kind in ("run_end", "run_paused", "run_stalled", "run_start",
+                    "escalation_open"):
+            last_by[kind] = ev
+
+    def _ev_ts(ev: dict | None) -> str:
+        return str((ev or {}).get("ts") or "")
+
+    def _ev_msg(ev: dict | None) -> str:
+        return str((ev or {}).get("msg") or "")
+
+    def _ev_step(ev: dict | None) -> str:
+        return str((ev or {}).get("step") or "")
+
+    end_ev = last_by.get("run_end")
+    pause_ev = last_by.get("run_paused")
+    stall_ev = last_by.get("run_stalled")
+    start_ev = last_by.get("run_start")
+
+    pid = cur.get("pid")
+    try:
+        pid_i = int(pid) if pid is not None else None
+    except (TypeError, ValueError):
+        pid_i = None
+    alive = bool(pid_i is not None and _pid_alive(pid_i))
+
+    state = "unknown"
+    detail = ""
+    pause_ts = ""
+
+    if end_ev and (
+        not pause_ev or _ev_ts(end_ev) >= _ev_ts(pause_ev)
+    ) and (
+        not stall_ev or _ev_ts(end_ev) >= _ev_ts(stall_ev)
+    ):
+        state = "finished"
+        detail = _ev_msg(end_ev) or "run finished"
+    elif cur.get("idle") and cur.get("why") == "finished":
+        state = "finished"
+        detail = "run finished"
+    elif pause_ev and (
+        not end_ev or _ev_ts(pause_ev) > _ev_ts(end_ev)
+    ):
+        state = "paused"
+        detail = _ev_msg(pause_ev) or f"paused at {_ev_step(pause_ev) or '?'}"
+        pause_ts = _ev_ts(pause_ev)
+    elif cur.get("idle") and cur.get("why") == "paused":
+        state = "paused"
+        detail = "paused"
+        pause_ts = str(cur.get("at") or "")
+    elif stall_ev:
+        state = "stalled"
+        detail = _ev_msg(stall_ev) or "driver stalled"
+    elif alive:
+        state = "running"
+        detail = str(cur.get("step") or _ev_step(start_ev) or "in progress")
+        if cur.get("agent"):
+            detail = f"{detail} ({cur.get('agent')})"
+    elif pid_i is not None and not alive:
+        state = "dead"
+        detail = (
+            f"process pid {pid_i} gone"
+            + (f"; last step {cur.get('step')}" if cur.get("step") else "")
+        )
+    elif not current_path.exists() and not events_path.exists():
+        state = "idle"
+        detail = "no metrics yet"
+    else:
+        state = "idle"
+        detail = str(cur.get("why") or "no active run")
+
+    if state == "paused" and pause_ev:
+        stage = _ev_step(pause_ev)
+        msg = _ev_msg(pause_ev)
+        if stage and msg:
+            detail = f"{stage}: {msg}"
+        elif msg:
+            detail = msg
+        elif stage:
+            detail = f"paused at {stage}"
+        if stall_ev and _ev_ts(stall_ev) > _ev_ts(pause_ev) and not alive:
+            detail = f"{detail} (driver died after pause)"
+    elif state == "finished" and detail:
+        for sep in (" — repo=", " — land:", " — "):
+            if sep in detail:
+                detail = detail.split(sep, 1)[0].strip()
+                break
+        if "land" not in detail.lower():
+            detail = f"{detail} · land when ready"
+
+    detail = " ".join(detail.split())
+    if len(detail) > 64:
+        detail = detail[:61] + "…"
+
+    br = branch or ""
+    if br.startswith("refs/heads/"):
+        br = br[len("refs/heads/"):]
+
+    activity_candidates = [
+        _ev_ts(latest_any),
+        _ev_ts(stall_ev),
+        _ev_ts(end_ev),
+        _ev_ts(pause_ev),
+        str(cur.get("heartbeat") or ""),
+        str(cur.get("at") or ""),
+        pause_ts,
+    ]
+    activity_ts = max(activity_candidates, key=_parse_iso_ts) if any(
+        activity_candidates) else ""
+
+    usage = _usage_stats(docs, events)
+
+    return {
+        "id": id_,
+        "state": state,
+        "detail": detail,
+        "step": str(cur.get("step") or _ev_step(pause_ev) or _ev_step(start_ev) or ""),
+        "updated": _short_ts(activity_ts),
+        "paused_at": _short_ts(pause_ts) if pause_ts else "",
+        "branch": br,
+        "path": str(wt) if wt is not None else "",
+        "docs": str(docs),
+        "pid": pid_i,
+        "alive": alive,
+        "wall": usage["wall"],
+        "active": usage["active"],
+        "wall_s": usage["wall_s"],
+        "active_s": usage["active_s"],
+        "agent_s": usage["agent_s"],
+        "tokens_in": usage["tokens_in"],
+        "tokens_out": usage["tokens_out"],
+        "tokens": usage["tokens"],
+    }
+
+
 def _branch_exists(target: Path, branch: str) -> bool:
     out = _git(["show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
                cwd=target, check=False)
@@ -292,11 +599,13 @@ def prepare_task_isolation(
     base: str = "main",
     brief_src: str | Path | None = None,
     create: bool = True,
+    copy_brief: bool = True,
 ) -> dict:
     """Create or reuse ``wt-task-{id}`` for a task run.
 
     ``create=True`` (start): create the worktree if missing; reuse if present.
     ``create=False`` (resume): require an existing worktree.
+    ``copy_brief=False`` (status/doctor/…): skip brief refresh entirely.
 
     Returns dict with target/wt/branch/docs/brief/created/live_feature_count.
     """
@@ -337,12 +646,16 @@ def prepare_task_isolation(
         )
 
     brief_path = None
-    src_path = Path(brief_src).expanduser() if brief_src else None
-    try:
-        brief_path = _copy_brief(target, id_, src=src_path)
-    except SystemExit:
-        if created or src_path is not None:
-            raise
+    if copy_brief:
+        src_path = Path(brief_src).expanduser() if brief_src else None
+        try:
+            brief_path = _copy_brief(target, id_, src=src_path)
+        except SystemExit:
+            if created or src_path is not None:
+                raise
+            _, dst = _brief_paths(target, id_)
+            brief_path = dst if dst.exists() else None
+    else:
         _, dst = _brief_paths(target, id_)
         brief_path = dst if dst.exists() else None
 
@@ -379,12 +692,14 @@ def isolation_child_env(info: dict, parent_env: dict | None = None) -> dict:
     return env
 
 
-def reexec_isolated(info: dict, argv: list[str], *, run_py: Path | None = None) -> NoReturn:
+def reexec_isolated(info: dict, argv: list[str], *, run_py: Path | None = None,
+                    quiet: bool = False) -> NoReturn:
     """Replace this process with ``run.py`` under the isolation child env."""
     env = isolation_child_env(info)
     script = str(run_py or (MF_ROOT / "run.py"))
-    sys.stderr.write(format_isolation_banner(info))
-    sys.stderr.flush()
+    if not quiet:
+        sys.stderr.write(format_isolation_banner(info))
+        sys.stderr.flush()
     os.execve(sys.executable, [sys.executable, script, *argv], env)
 
 
@@ -417,25 +732,35 @@ def early_cmd_and_task_id(argv: list[str]) -> tuple[str | None, str | None]:
 
 
 def bootstrap_run_isolation(argv: list[str], *, run_py: Path | None = None) -> None:
-    """If ``start``/``resume`` with a task id, ensure wt and re-exec isolated.
+    """If a task-scoped command has a task id, ensure wt and re-exec isolated.
 
-    No-op when already isolated, ``--no-isolate`` present, or task id not yet
-    known (start wizard path). Raises ``SystemExit`` on isolation errors.
+    ``start``/``resume`` create-or-reuse; ``status``/``doctor``/``metrics``/
+    ``reset``/``redo`` reuse only (so status reads ``docs/wt-task-*``, not the
+    product basename docs). No-op when already isolated, ``--no-isolate``, or
+    task id not yet known (start wizard / bare ``status`` list).
     """
     if already_isolated() or "--no-isolate" in argv:
         return
     cmd, tid = early_cmd_and_task_id(argv)
-    if cmd not in ("start", "resume") or not tid:
+    if not tid:
+        return
+    create_cmds = ("start",)
+    reuse_cmds = ("resume", "status", "doctor", "metrics", "reset", "redo")
+    if cmd not in create_cmds and cmd not in reuse_cmds:
         return
     brief = early_argv_flag(argv, "file")
     repo = early_argv_flag(argv, "repo")
+    # status/doctor/metrics: don't refresh briefs (and don't stderr on missing
+    # canonical source). start/resume/redo/reset keep the copy behaviour.
+    copy_brief = cmd not in ("status", "doctor", "metrics")
     info = prepare_task_isolation(
         tid,
         repo_flag=repo or None,
         brief_src=brief or None,
-        create=(cmd == "start"),
+        create=(cmd in create_cmds),
+        copy_brief=copy_brief,
     )
-    reexec_isolated(info, argv, run_py=run_py)
+    reexec_isolated(info, argv, run_py=run_py, quiet=(cmd == "status"))
 
 
 # --------------------------------------------------------------------------- #

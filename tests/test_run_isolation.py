@@ -98,6 +98,52 @@ class TestPrepareIsolation(unittest.TestCase):
             ("resume", "033"),
         )
         self.assertEqual(RT.early_cmd_and_task_id(["status"]), ("status", None))
+        self.assertEqual(
+            RT.early_cmd_and_task_id(["status", "012"]),
+            ("status", "012"),
+        )
+
+    def test_worktree_run_summary_paused_and_finished(self):
+        docs = self.mfroot / "docs" / "wt-task-033"
+        metrics = docs / "metrics"
+        metrics.mkdir(parents=True)
+        (metrics / "current.json").write_text(
+            '{"idle": true, "why": "finished", "task": "033", "at": "2026-08-05T23:38:12Z"}'
+        )
+        (metrics / "events.jsonl").write_text(
+            '{"ts":"2026-08-05T23:38:12Z","kind":"run_end","task":"033","step":"wrap_up",'
+            '"msg":"all batches done — land: ./run.py land 033"}\n'
+        )
+        row = RT.worktree_run_summary(
+            "033", wt=self.root / "wt-task-033", branch="refs/heads/feature/task-033",
+        )
+        self.assertEqual(row["state"], "finished")
+        self.assertEqual(row["branch"], "feature/task-033")
+        self.assertIn("land", row["detail"])
+
+        docs012 = self.mfroot / "docs" / "wt-task-012"
+        m012 = docs012 / "metrics"
+        m012.mkdir(parents=True)
+        (m012 / "current.json").write_text(
+            '{"pid": 1, "task": "012", "step": "debate-r2-tech", '
+            '"heartbeat": "2026-08-05T23:22:08Z"}'
+        )
+        (m012 / "events.jsonl").write_text(
+            '{"ts":"2026-08-05T23:22:08Z","kind":"run_paused","task":"012","step":"escalation",'
+            '"msg":"debate stuck: B1; B2"}\n'
+            '{"ts":"2026-08-06T03:29:39Z","kind":"run_stalled","task":"012","step":"driver",'
+            '"msg":"driver crashed: OSError"}\n'
+        )
+        with patch.object(RT, "_pid_alive", return_value=False):
+            row2 = RT.worktree_run_summary(
+                "012", wt=self.root / "wt-task-012", branch="feature/task-012",
+            )
+        self.assertEqual(row2["state"], "paused")
+        self.assertIn("debate stuck", row2["detail"])
+        # Last activity is the stall (after pause), not the pause stamp alone.
+        self.assertEqual(row2["updated"], "08-06 03:29")
+        self.assertIn("→", row2["tokens"])
+        self.assertTrue(row2["wall"])
 
     def test_bootstrap_noop_when_no_isolate(self):
         # Must not execve / raise when --no-isolate.
