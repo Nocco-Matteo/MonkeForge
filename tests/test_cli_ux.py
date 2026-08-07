@@ -396,7 +396,16 @@ def _mock_side_effects(monkeypatch, *, mock_drive=False, mock_emit=True):
     starters, ``_warn_if_notifications_off``, ``_warn_stale_task_files``, and
     ``C.preflight``.  When ``mock_drive`` is True, ``_drive`` is replaced with
     a no-op returning 0.  When ``mock_emit`` is True, ``ev.emit`` is silenced.
+
+    Isolation is reported as already done: these are CLI-behaviour tests, and
+    the real ``start`` path would otherwise create a worktree and a branch in
+    the developer's own repo. That made ``start <id>`` tests pass on a fresh
+    clone and fail on any machine that had ever run task <id> ("branch
+    collision: feature/task-001 already exists" → rc 2, before the assertions
+    under test). ``prepare_task_isolation`` itself is covered by
+    ``tests/test_run_isolation.py`` against a throwaway target repo.
     """
+    monkeypatch.setattr(run_mod._WT, "already_isolated", lambda: True)
     monkeypatch.setattr(run_mod, "_sleep_inhibitor",
                         lambda: contextlib.nullcontext())
     monkeypatch.setattr(run_mod, "open_checkpointer", _open_checkpointer_cm)

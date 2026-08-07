@@ -686,7 +686,10 @@ def _print_pause_rich(data: dict, task_id: str, *, in_session: bool = False) -> 
     def _row(label: str, value: object) -> None:
         if value is None or value == "":
             return
-        kv.add_row(label, value if isinstance(value, Text) else str(value))
+        # Wrap plain strings in Text: cell values carry agent output (escalation
+        # reasons, synthetic gate summaries), and a stray "[bold]" there would
+        # be read as rich markup — swallowed at best, a MarkupError at worst.
+        kv.add_row(label, value if isinstance(value, Text) else Text(str(value)))
 
     for label, value in _pause_sections(data).items():
         _row(label, value)
@@ -744,7 +747,7 @@ def _print_pause_rich(data: dict, task_id: str, *, in_session: bool = False) -> 
 
     panel = Panel(
         kv,
-        title=f"PAUSED: {stage}",
+        title=f"PAUSED: {_rich_escape(stage)}",
         title_align="left",
         border_style="cyan",
         box=_box.ROUNDED,
